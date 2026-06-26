@@ -983,8 +983,9 @@ where
 
         // Resolve EIP-7702 delegation: if the target has a delegation designator,
         // load the delegate's code so the child frame executes correct bytecode.
-        if let Some(Bytecode::Eip7702(delegation)) = &target.code {
-            let delegate_address = delegation.address();
+        // revm 36: `Bytecode` is an opaque struct; `eip7702_address()` returns the
+        // delegated address iff this is an EIP-7702 designator (else None).
+        if let Some(delegate_address) = target.code.as_ref().and_then(|c| c.eip7702_address()) {
 
             let Some(delegate) = load_account_with_code_metered(
                 self.inner.ctx.journal_mut(),
@@ -4044,9 +4045,8 @@ mod tests {
         }
 
         fn insert_eip7702_account(evm: &mut NoOpTestEvm, address: Address, delegate: Address) {
-            use revm::bytecode::eip7702::Eip7702Bytecode;
-
-            let eip7702_code = Bytecode::Eip7702(Arc::new(Eip7702Bytecode::new(delegate)));
+            // revm 36: construct via the `new_eip7702` constructor.
+            let eip7702_code = Bytecode::new_eip7702(delegate);
             evm.inner.ctx.journal_mut().db_mut().insert_account_info(
                 address,
                 AccountInfo {

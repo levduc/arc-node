@@ -356,8 +356,10 @@ where
     type Result = ArcTxResult<E::HaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
-        // Spurious Dragon hardfork is enabled
-        self.evm.db_mut().set_state_clear_flag(true);
+        // Spurious Dragon hardfork is enabled. revm 36 removed the explicit
+        // `set_state_clear_flag` and now applies EIP-161 empty-account clearing
+        // unconditionally (see revm-database CacheState), which is equivalent to
+        // the previous `set_state_clear_flag(true)`.
 
         // Zero5+ pre-execution checks: beneficiary blocklist, gas limit validation
         let block_number = self.block_number_u64()?;
