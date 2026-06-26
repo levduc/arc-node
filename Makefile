@@ -88,7 +88,7 @@ build-contract: check-foundry ## Build the contracts and bindings
 	$(HARDHAT) compile
 
 genesis: build-contract  ## Generate the localdev genesis file idempotently
-	$(HARDHAT) genesis --network localdev --num-validators $(NUM_VALIDATORS)
+	$(HARDHAT) genesis --network localdev --num-validators $(NUM_VALIDATORS) $(if $(BLOCK_GAS_LIMIT),--block-gas-limit $(BLOCK_GAS_LIMIT)) $(if $(EXTRA_ACCOUNTS),--num-extra-accounts $(EXTRA_ACCOUNTS))
 
 genesis-mainnet: build-contract  ## Generate the mainnet genesis file
 	$(HARDHAT) genesis --network mainnet
