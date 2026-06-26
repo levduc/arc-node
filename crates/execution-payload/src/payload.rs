@@ -42,8 +42,9 @@ use reth_node_api::{NodeTypes, PrimitivesTy};
 use reth_node_builder::{
     components::PayloadBuilderBuilder, node::FullNodeTypes, BuilderContext, PayloadBuilderConfig,
 };
-use reth_payload_builder::{BlobSidecars, EthBuiltPayload, EthPayloadBuilderAttributes};
-use reth_payload_primitives::{PayloadBuilderAttributes, PayloadBuilderError};
+use reth_ethereum_engine_primitives::EthPayloadAttributes;
+use reth_payload_builder::{BlobSidecars, EthBuiltPayload};
+use reth_payload_primitives::{PayloadAttributes, PayloadBuilderError};
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_revm::{database::StateProviderDatabase, db::State};
 use reth_storage_api::StateProviderFactory;
@@ -108,8 +109,9 @@ where
         + 'static,
     <Node::Types as NodeTypes>::Payload: reth_node_api::PayloadTypes<
         BuiltPayload = EthBuiltPayload,
+        // reth 2.0: `PayloadTypes` dropped the separate `PayloadBuilderAttributes`
+        // assoc type; only the raw `PayloadAttributes` remains.
         PayloadAttributes = reth_ethereum_engine_primitives::EthPayloadAttributes,
-        PayloadBuilderAttributes = EthPayloadBuilderAttributes,
     >,
 {
     type PayloadBuilder = InvalidTxFilteringPayloadBuilder<
@@ -422,12 +424,12 @@ where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + Clone,
     Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TransactionSigned>>,
 {
-    type Attributes = EthPayloadBuilderAttributes;
+    type Attributes = EthPayloadAttributes;
     type BuiltPayload = EthBuiltPayload;
 
     fn try_build(
         &self,
-        args: BuildArguments<EthPayloadBuilderAttributes, EthBuiltPayload>,
+        args: BuildArguments<EthPayloadAttributes, EthBuiltPayload>,
     ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError> {
         arc_ethereum_payload(
             self.evm_config.clone(),
@@ -457,7 +459,10 @@ where
         &self,
         config: PayloadConfig<Self::Attributes>,
     ) -> Result<Self::BuiltPayload, PayloadBuilderError> {
-        let args = BuildArguments::new(Default::default(), config, Default::default(), None);
+        // reth 2.0 BuildArguments::new gained execution_cache + trie_handle
+        // (engine-shared sparse-trie cache); pass None — not threaded through yet.
+        let args =
+            BuildArguments::new(Default::default(), None, None, config, Default::default(), None);
 
         // This is what's done in upstream EthereumPayloadBuilder::build_empty_payload
         arc_ethereum_payload(
@@ -503,7 +508,7 @@ pub fn arc_ethereum_payload<EvmConfig, Client, Pool, F>(
     _pool: Pool,
     builder_config: EthereumBuilderConfig,
     loop_time_limit: Option<Duration>,
-    args: BuildArguments<EthPayloadBuilderAttributes, EthBuiltPayload>,
+    args: BuildArguments<EthPayloadAttributes, EthBuiltPayload>,
     best_txs: F,
 ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError>
 where
@@ -514,6 +519,11 @@ where
 {
     let BuildArguments {
         mut cached_reads,
+        // reth 2.0: engine-shared sparse-trie cache handles; not yet threaded
+        // through Arc's build path (perf TODO — this is where reth 2.0's payload
+        // build would reuse the cached trie).
+        execution_cache: _,
+        trie_handle: _,
         config,
         cancel,
         best_payload,
@@ -521,6 +531,8 @@ where
     let PayloadConfig {
         parent_header,
         attributes,
+        // reth 2.0: payload_id moved out of the attributes into PayloadConfig.
+        payload_id,
     } = config;
 
     let total_start = Instant::now();
@@ -539,12 +551,14 @@ where
             &mut db,
             &parent_header,
             NextBlockEnvAttributes {
+                // reth 2.0: raw `PayloadAttributes` — these are now struct fields
+                // (timestamp/parent_beacon_block_root remain trait methods).
                 timestamp: attributes.timestamp(),
-                suggested_fee_recipient: attributes.suggested_fee_recipient(),
-                prev_randao: attributes.prev_randao(),
+                suggested_fee_recipient: attributes.suggested_fee_recipient,
+                prev_randao: attributes.prev_randao,
                 gas_limit: builder_config.gas_limit(parent_header.gas_limit),
                 parent_beacon_block_root: attributes.parent_beacon_block_root(),
-                withdrawals: Some(attributes.withdrawals().clone()),
+                withdrawals: attributes.withdrawals.clone().map(Into::into),
                 extra_data: builder_config.extra_data,
             },
         )
@@ -552,7 +566,7 @@ where
 
     let chain_spec = client.chain_spec();
 
-    info!(target: "payload_builder", id=%attributes.id, parent_header = ?parent_header.hash(), parent_number = parent_header.number, "(arc) building new payload");
+    info!(target: "payload_builder", id=%payload_id, parent_header = ?parent_header.hash(), parent_number = parent_header.number, "(arc) building new payload");
     let mut cumulative_gas_used = 0u64;
     let block_gas_limit: u64 = builder.evm_mut().block().gas_limit();
     let base_fee = builder.evm_mut().block().basefee();
@@ -573,7 +587,8 @@ where
     let mut block_transactions_rlp_length = 0usize;
     let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp);
 
-    let withdrawals_rlp_length = attributes.withdrawals().length();
+    let withdrawals_rlp_length =
+        attributes.withdrawals.as_ref().map(|withdrawals| withdrawals.length()).unwrap_or(0);
 
     let loop_started = Instant::now();
 
@@ -700,7 +715,7 @@ where
         execution_result,
         block,
         ..
-    } = builder.finish(state_provider.as_ref())?;
+    } = builder.finish(state_provider.as_ref(), None)?;
     PayloadBuildMetrics::record_stage_post_execution(builder_finish.elapsed());
 
     let stage_start = Instant::now();
@@ -709,7 +724,7 @@ where
         .then_some(execution_result.requests);
 
     let sealed_block = Arc::new(block.sealed_block().clone());
-    debug!(target: "payload_builder", id=%attributes.id, sealed_block_header = ?sealed_block.sealed_header(), "(arc) sealed built block");
+    debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?sealed_block.sealed_header(), "(arc) sealed built block");
 
     if is_osaka && sealed_block.rlp_length() > MAX_RLP_BLOCK_SIZE {
         PayloadBuildMetrics::record_stage_assembly_and_sealing(stage_start.elapsed());
@@ -720,7 +735,8 @@ where
         }));
     }
 
-    let payload = EthBuiltPayload::new(attributes.id, sealed_block, total_fees, requests)
+    // reth 2.0: EthBuiltPayload::new no longer takes the payload id.
+    let payload = EthBuiltPayload::new(sealed_block, total_fees, requests)
         // add blob sidecars from the executed txs; empty for now
         .with_sidecars(BlobSidecars::Empty);
     PayloadBuildMetrics::record_stage_assembly_and_sealing(stage_start.elapsed());
@@ -1031,7 +1047,7 @@ mod tests {
     }
 
     impl RethPayloadBuilder for MockInnerBuilder {
-        type Attributes = EthPayloadBuilderAttributes;
+        type Attributes = EthPayloadAttributes;
         type BuiltPayload = EthBuiltPayload;
 
         fn try_build(
@@ -1057,8 +1073,8 @@ mod tests {
         }
     }
 
-    fn empty_payload_config() -> PayloadConfig<EthPayloadBuilderAttributes> {
-        let attributes = EthPayloadBuilderAttributes::new(
+    fn empty_payload_config() -> PayloadConfig<EthPayloadAttributes> {
+        let attributes = EthPayloadAttributes::new(
             Default::default(),
             reth_ethereum_engine_primitives::EthPayloadAttributes {
                 timestamp: 1,
