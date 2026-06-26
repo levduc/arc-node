@@ -1063,7 +1063,7 @@ dependencies = [
  "futures-util",
  "prometheus-parse",
  "redb",
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "tokio",
@@ -1151,7 +1151,7 @@ dependencies = [
  "color-eyre",
  "csv",
  "eyre",
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "reth-cli",
  "serde",
  "serde_json",
@@ -1190,7 +1190,7 @@ dependencies = [
  "jsonrpsee-types",
  "jsonwebtoken 9.3.1",
  "mockall",
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "reth-chainspec",
  "reth-ipc",
  "reth-node-builder",
@@ -1257,7 +1257,7 @@ dependencies = [
  "backon",
  "eyre",
  "jsonrpsee",
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "reth-chainspec",
  "reth-engine-primitives",
  "reth-ethereum",
@@ -1782,7 +1782,7 @@ dependencies = [
  "color-eyre",
  "futures-util",
  "prometheus-parse",
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "tokio",
  "url",
 ]
@@ -1837,7 +1837,7 @@ dependencies = [
  "ractor",
  "rand 0.8.6",
  "redb",
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "schnellru",
  "serde",
  "serde_json",
@@ -1876,7 +1876,7 @@ dependencies = [
  "itertools 0.14.0",
  "lz4",
  "rand 0.8.6",
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "tar",
@@ -2022,7 +2022,7 @@ dependencies = [
  "directories",
  "eyre",
  "lz4",
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "tar",
@@ -6037,7 +6037,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -9521,7 +9520,7 @@ dependencies = [
  "quake-macros",
  "rand 0.8.6",
  "regex",
- "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "reth-network-peers",
  "rmcp",
  "schemars 1.2.1",
@@ -10029,11 +10028,9 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-rustls",
- "hyper-tls",
  "hyper-util",
  "js-sys",
  "log",
- "native-tls",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -10045,18 +10042,14 @@ dependencies = [
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
- "tokio-native-tls",
  "tokio-rustls",
- "tokio-util",
  "tower 0.5.3",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams 0.4.2",
  "web-sys",
- "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -10075,9 +10068,11 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-rustls",
+ "hyper-tls",
  "hyper-util",
  "js-sys",
  "log",
+ "native-tls",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -10089,6 +10084,7 @@ dependencies = [
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
+ "tokio-native-tls",
  "tokio-rustls",
  "tokio-util",
  "tower 0.5.3",
@@ -10097,7 +10093,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams 0.5.0",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -15758,19 +15754,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "wasm-streams"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
-dependencies = [
- "futures-util",
- "js-sys",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]

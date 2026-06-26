@@ -16,7 +16,7 @@ futures = { workspace = true }
 futures-util = { workspace = true }
 prometheus-parse = { workspace = true }
 redb = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

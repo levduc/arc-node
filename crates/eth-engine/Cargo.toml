@@ -36,7 +36,7 @@ jsonrpsee-types = { workspace = true }
 jsonwebtoken = { workspace = true }
 malachitebft-core-types = { workspace = true }
 mockall = { workspace = true, optional = true }
-reqwest = { workspace = true, features = ["blocking", "json", "stream", "rustls-tls", "native-tls-vendored"] }
+reqwest = { workspace = true, features = ["blocking", "json", "stream", "rustls", "native-tls-vendored"] }
 reth-chainspec = { workspace = true }
 reth-ipc = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
