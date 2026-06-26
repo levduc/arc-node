@@ -29,9 +29,7 @@ use arc_execution_validation::ArcConsensus;
 use reth_chainspec::{EthereumHardforks, Hardforks};
 use reth_engine_primitives::EngineTypes;
 use reth_ethereum::{node::EthEngineTypes, node::EthEvmConfig};
-use reth_ethereum_engine_primitives::{
-    EthBuiltPayload, EthPayloadAttributes, EthPayloadBuilderAttributes,
-};
+use reth_ethereum_engine_primitives::{EthBuiltPayload, EthPayloadAttributes};
 use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::{ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes};
 use reth_network::{primitives::BasicNetworkPrimitives, NetworkHandle, PeersInfo};
@@ -182,8 +180,8 @@ impl ArcNode {
         Node: FullNodeTypes<Types: NodeTypes<ChainSpec = ArcChainSpec, Primitives = EthPrimitives>>,
         <Node::Types as NodeTypes>::Payload: PayloadTypes<
             BuiltPayload = EthBuiltPayload,
+            // reth 2.0: PayloadTypes dropped the PayloadBuilderAttributes assoc type.
             PayloadAttributes = EthPayloadAttributes,
-            PayloadBuilderAttributes = EthPayloadBuilderAttributes,
         >,
     {
         let invalid_tx_list_opt = if invalid_tx_list_cfg.enabled {
@@ -415,7 +413,9 @@ where
             Arc::new(ctx.node.consensus().clone()),
             ctx.node.evm_config().clone(),
             ctx.config.rpc.flashbots_config(),
-            Box::new(ctx.node.task_executor().clone()),
+            // reth 2.0: TaskExecutor is now a type alias for reth_tasks::Runtime;
+            // pass it directly (no Box<dyn TaskSpawner>).
+            ctx.node.task_executor().clone(),
             Arc::new(ArcEngineValidator::new(ctx.config.chain.clone())),
         );
 
