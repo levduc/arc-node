@@ -43,7 +43,7 @@ use reth_ethereum::evm::revm::context::block::BlockEnv;
 use reth_ethereum::evm::revm::primitives::U256;
 use reth_ethereum::{
     evm::{
-        primitives::{Database, EvmEnv, InspectorFor, NextBlockEnvAttributes},
+        primitives::{Database, EvmEnv, NextBlockEnvAttributes},
         revm::{
             context::{Context, ContextTr, JournalTr, TxEnv},
             context_interface::result::{EVMError, HaltReason},
@@ -62,11 +62,11 @@ use reth_evm::execute::BlockBuilder;
 use reth_evm::{ConfigureEngineEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor};
 use reth_primitives_traits::NodePrimitives;
 use revm::bytecode::opcode::SELFDESTRUCT;
-use revm::bytecode::Bytecode;
 use revm::context_interface::result::ResultAndState;
 use revm::handler::evm::{ContextDbError, FrameInitResult};
 use revm::handler::instructions::InstructionProvider;
 use revm::handler::{EvmTr, FrameInitOrResult, FrameResult, FrameTr, Handler, ItemOrResult};
+use alloy_evm::block::StateDB;
 use revm::inspector::{InspectorEvmTr, InspectorHandler, JournalExt};
 use revm::state::AccountInfo;
 use revm::Database as RevmDatabase;
@@ -1784,12 +1784,14 @@ impl BlockExecutorFactory for ArcEvmConfig {
 
     fn create_executor<'a, DB, I>(
         &'a self,
-        evm: <Self::EvmFactory as EvmFactory>::Evm<&'a mut State<DB>, I>,
+        // alloy-evm 0.30: the `DB` generic is now the state-DB itself
+        // (`StateDB: Database + DatabaseCommit`), not `&mut State<DB>`.
+        evm: <Self::EvmFactory as EvmFactory>::Evm<DB, I>,
         ctx: EthBlockExecutionCtx<'a>,
     ) -> impl BlockExecutorFor<'a, Self, DB, I>
     where
-        DB: Database + 'a,
-        I: InspectorFor<Self, &'a mut State<DB>> + 'a,
+        DB: StateDB + 'a,
+        I: Inspector<<Self::EvmFactory as EvmFactory>::Context<DB>> + 'a,
     {
         ArcBlockExecutor::new(
             evm,
@@ -1827,7 +1829,9 @@ impl ConfigureEvm for ArcEvmConfig {
     ) -> Result<
         impl BlockBuilder<
             Primitives = Self::Primitives,
-            Executor: BlockExecutorFor<'a, Self::BlockExecutorFactory, DB>,
+            // alloy-evm 0.30: the executor's DB is the state-wrapped db
+            // (`&mut State<DB>` implements `StateDB`), not the raw `DB`.
+            Executor: BlockExecutorFor<'a, Self::BlockExecutorFactory, &'a mut State<DB>>,
         >,
         Self::Error,
     > {

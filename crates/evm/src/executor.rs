@@ -40,6 +40,7 @@ use alloy_eips::eip7685::Requests;
 use alloy_evm::block::BlockValidationError;
 use alloy_evm::block::InternalBlockExecutionError;
 use alloy_evm::block::StateChangeSource;
+use alloy_evm::block::StateDB;
 use alloy_evm::block::SystemCaller;
 use alloy_evm::eth::receipt_builder::ReceiptBuilderCtx;
 use alloy_evm::eth::spec::EthExecutorSpec;
@@ -82,6 +83,12 @@ impl<H, T> TxResult for ArcTxResult<H, T> {
 
     fn result(&self) -> &ResultAndState<Self::HaltReason> {
         &self.result
+    }
+
+    // reth 2.0 / alloy-evm 0.30 added this to the `TxResult` trait (mirrors
+    // `EthTxResult::into_result`): consume self and yield the inner result.
+    fn into_result(self) -> ResultAndState<Self::HaltReason> {
+        self.result
     }
 }
 
@@ -194,11 +201,11 @@ fn validate_beneficiary_not_blocklisted<DB: Database>(
     Ok(())
 }
 
-impl<'db, DB, E, Spec, R> ArcBlockExecutor<'_, E, Spec, R>
+impl<E, Spec, R> ArcBlockExecutor<'_, E, Spec, R>
 where
-    DB: Database + 'db,
+    // alloy-evm 0.30 DB model: bound the EVM's DB by `StateDB` directly.
     E: Evm<
-        DB = &'db mut State<DB>,
+        DB: StateDB,
         Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
     >,
     Spec:
@@ -339,11 +346,12 @@ where
     }
 }
 
-impl<'db, DB, E, Spec, R> BlockExecutor for ArcBlockExecutor<'_, E, Spec, R>
+impl<E, Spec, R> BlockExecutor for ArcBlockExecutor<'_, E, Spec, R>
 where
-    DB: Database + 'db,
+    // alloy-evm 0.30: bound the EVM's DB by `StateDB` (Database + DatabaseCommit)
+    // directly rather than the old `DB = &'db mut State<DB>` shape.
     E: Evm<
-        DB = &'db mut State<DB>,
+        DB: StateDB,
         Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
     >,
     Spec:
