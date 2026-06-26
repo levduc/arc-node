@@ -17,7 +17,7 @@
 use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, Bytes, StorageKey, U256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
-use reth_ethereum::evm::revm::precompile::{PrecompileError, PrecompileOutput};
+use reth_ethereum::evm::revm::precompile::{PrecompileError, PrecompileHalt, PrecompileOutput};
 use reth_evm::precompiles::PrecompileInput;
 use revm::context_interface::journaled_state::TransferError;
 use revm::state::AccountInfo;
@@ -87,25 +87,28 @@ pub(crate) const PRECOMPILE_EARLY_REVERT_GAS_PENALTY: u64 = 200;
 /// Enum to represent either a reverted precompile output or an error
 pub(crate) enum PrecompileErrorOrRevert {
     Revert(PrecompileOutput),
+    Halt(PrecompileHalt),
     Error(PrecompileError),
 }
 
 impl PrecompileErrorOrRevert {
     pub(crate) fn new_reverted(gas_counter: Gas, msg: &str) -> Self {
-        Self::Revert(PrecompileOutput::new_reverted(
+        Self::Revert(PrecompileOutput::revert(
             gas_counter.used(),
             revert_message_to_bytes(msg),
+            0,
         ))
     }
 
     pub(crate) fn new_reverted_with_penalty(gas_counter: Gas, gas_penalty: u64, msg: &str) -> Self {
         let mut gas_with_penalty = gas_counter;
         if !gas_with_penalty.record_cost(gas_penalty) {
-            return Self::Error(PrecompileError::OutOfGas);
+            return Self::Halt(PrecompileHalt::OutOfGas);
         }
-        Self::Revert(PrecompileOutput::new_reverted(
+        Self::Revert(PrecompileOutput::revert(
             gas_with_penalty.used(),
             revert_message_to_bytes(msg),
+            0,
         ))
     }
 }
@@ -128,9 +131,9 @@ fn account_load_cost(is_cold: bool, hardfork_flags: ArcHardforkFlags) -> u64 {
 }
 
 fn storage_io_error(op: &str, e: impl core::fmt::Debug) -> PrecompileErrorOrRevert {
-    PrecompileErrorOrRevert::Error(PrecompileError::Other(
-        format!("Storage {op} failed: {e:?}").into(),
-    ))
+    PrecompileErrorOrRevert::Error(PrecompileError::Fatal(format!(
+        "Storage {op} failed: {e:?}"
+    )))
 }
 
 fn record_zero6_empty_account_creation_cost(
@@ -151,7 +154,7 @@ pub(crate) fn record_cost_or_out_of_gas(
     cost: u64,
 ) -> Result<(), PrecompileErrorOrRevert> {
     if !gas_counter.record_cost(cost) {
-        return Err(PrecompileErrorOrRevert::Error(PrecompileError::OutOfGas));
+        return Err(PrecompileErrorOrRevert::Halt(PrecompileHalt::OutOfGas));
     }
     Ok(())
 }
@@ -161,7 +164,7 @@ pub(crate) fn check_gas_remaining(
     cost: u64,
 ) -> Result<(), PrecompileErrorOrRevert> {
     if gas_counter.remaining() < cost {
-        return Err(PrecompileErrorOrRevert::Error(PrecompileError::OutOfGas));
+        return Err(PrecompileErrorOrRevert::Halt(PrecompileHalt::OutOfGas));
     }
     Ok(())
 }
@@ -169,7 +172,8 @@ pub(crate) fn check_gas_remaining(
 impl From<PrecompileErrorOrRevert> for Result<PrecompileOutput, PrecompileError> {
     fn from(val: PrecompileErrorOrRevert) -> Self {
         match val {
-            PrecompileErrorOrRevert::Revert(output) => Ok(output.reverted()),
+            PrecompileErrorOrRevert::Revert(output) => Ok(output),
+            PrecompileErrorOrRevert::Halt(halt) => Ok(PrecompileOutput::halt(halt, 0)),
             PrecompileErrorOrRevert::Error(error) => Err(error),
         }
     }
@@ -339,7 +343,7 @@ pub(crate) fn write(
     // EIP-2200 reentrancy sentry: refuse SSTORE when remaining gas does not
     // exceed the call stipend.
     if hardfork_flags.is_active(ArcHardfork::Zero6) && gas_counter.remaining() <= CALL_STIPEND {
-        return Err(PrecompileErrorOrRevert::Error(PrecompileError::OutOfGas));
+        return Err(PrecompileErrorOrRevert::Halt(PrecompileHalt::OutOfGas));
     }
 
     let value = U256::from_be_slice(input);
@@ -397,7 +401,7 @@ pub(crate) fn transfer(
     hardfork_flags: ArcHardforkFlags,
 ) -> Result<(), PrecompileErrorOrRevert> {
     let loaded_from_account = internals.load_account(from).map_err(|_| {
-        PrecompileErrorOrRevert::Error(PrecompileError::Other(ERR_EXECUTION_REVERTED.into()))
+        PrecompileErrorOrRevert::new_reverted(*gas_counter, ERR_EXECUTION_REVERTED)
     })?;
     record_cost_or_out_of_gas(
         gas_counter,
@@ -411,7 +415,7 @@ pub(crate) fn transfer(
     record_cost_or_out_of_gas(gas_counter, PRECOMPILE_SSTORE_GAS_COST)?;
 
     let to_load = internals.load_account(to).map_err(|_| {
-        PrecompileErrorOrRevert::Error(PrecompileError::Other(ERR_EXECUTION_REVERTED.into()))
+        PrecompileErrorOrRevert::new_reverted(*gas_counter, ERR_EXECUTION_REVERTED)
     })?;
     record_cost_or_out_of_gas(
         gas_counter,
@@ -463,7 +467,7 @@ pub(crate) fn balance_incr(
 ) -> Result<(), PrecompileErrorOrRevert> {
     // Balance check, but doesn't touch state
     let account = internals.load_account(to).map_err(|_| {
-        PrecompileErrorOrRevert::Error(PrecompileError::Other(ERR_EXECUTION_REVERTED.into()))
+        PrecompileErrorOrRevert::new_reverted(*gas_counter, ERR_EXECUTION_REVERTED)
     })?;
     record_cost_or_out_of_gas(
         gas_counter,
@@ -489,7 +493,7 @@ pub(crate) fn balance_incr(
     record_cost_or_out_of_gas(gas_counter, PRECOMPILE_SSTORE_GAS_COST)?;
     record_zero6_empty_account_creation_cost(gas_counter, &account.info, amount, hardfork_flags)?;
     internals.balance_incr(to, amount).map_err(|_| {
-        PrecompileErrorOrRevert::Error(PrecompileError::Other(ERR_EXECUTION_REVERTED.into()))
+        PrecompileErrorOrRevert::new_reverted(*gas_counter, ERR_EXECUTION_REVERTED)
     })?;
 
     Ok(())
@@ -504,7 +508,7 @@ pub(crate) fn balance_decr(
     hardfork_flags: ArcHardforkFlags,
 ) -> Result<(), PrecompileErrorOrRevert> {
     let loaded_from_account = internals.load_account(from).map_err(|_| {
-        PrecompileErrorOrRevert::Error(PrecompileError::Other(ERR_EXECUTION_REVERTED.into()))
+        PrecompileErrorOrRevert::new_reverted(*gas_counter, ERR_EXECUTION_REVERTED)
     })?;
     record_cost_or_out_of_gas(
         gas_counter,
@@ -517,7 +521,7 @@ pub(crate) fn balance_decr(
     // Perform the decrement
     record_cost_or_out_of_gas(gas_counter, PRECOMPILE_SSTORE_GAS_COST)?;
     let mut account = internals.load_account_mut(from).map_err(|_| {
-        PrecompileErrorOrRevert::Error(PrecompileError::Other(ERR_EXECUTION_REVERTED.into()))
+        PrecompileErrorOrRevert::new_reverted(*gas_counter, ERR_EXECUTION_REVERTED)
     })?;
 
     // False is only returned if insufficient funds, which should theoretically anyways never be reached due to the prior check
@@ -892,7 +896,7 @@ mod tests {
                 U256::from(1),
                 ArcHardforkFlags::with(&[ArcHardfork::Zero6]),
             ),
-            Err(PrecompileErrorOrRevert::Error(PrecompileError::OutOfGas))
+            Err(PrecompileErrorOrRevert::Halt(PrecompileHalt::OutOfGas))
         ));
     }
 
@@ -1049,26 +1053,31 @@ mod tests {
     #[test]
     fn from_precompile_error_or_revert_revert_sets_reverted_flag() {
         let revert_bytes = revert_message_to_bytes("test revert");
-        let err_or_revert =
-            PrecompileErrorOrRevert::Revert(PrecompileOutput::new(1_000, revert_bytes.clone()));
+        let err_or_revert = PrecompileErrorOrRevert::Revert(PrecompileOutput::revert(
+            1_000,
+            revert_bytes.clone(),
+            0,
+        ));
 
         let result: Result<PrecompileOutput, PrecompileError> = err_or_revert.into();
 
         let output = result.expect("Revert variant must convert to Ok(PrecompileOutput)");
         assert!(
-            output.reverted,
-            "canonical From impl must set reverted flag on Revert variant"
+            output.is_revert(),
+            "canonical From impl must set Revert status on Revert variant"
         );
         assert_eq!(output.gas_used, 1_000);
         assert_eq!(output.bytes, revert_bytes);
     }
 
     #[test]
-    fn from_precompile_error_or_revert_error_maps_to_err() {
-        let err_or_revert = PrecompileErrorOrRevert::Error(PrecompileError::OutOfGas);
+    fn from_precompile_error_or_revert_halt_maps_to_ok_halt() {
+        let err_or_revert = PrecompileErrorOrRevert::Halt(PrecompileHalt::OutOfGas);
 
         let result: Result<PrecompileOutput, PrecompileError> = err_or_revert.into();
 
-        assert!(matches!(result, Err(PrecompileError::OutOfGas)));
+        let output = result.expect("Halt variant must convert to Ok(PrecompileOutput)");
+        assert!(output.is_halt());
+        assert_eq!(output.halt_reason(), Some(&PrecompileHalt::OutOfGas));
     }
 }

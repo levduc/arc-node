@@ -125,13 +125,19 @@ fn decode_child_call(inputs: &CallInputs) -> Result<(CallInputs, u64), SubcallEr
         scheme: CallScheme::Call,
         target_address: target,
         bytecode_address: target,
-        known_bytecode: None,
+        // Placeholder; `ArcEvm::init_subcall` resolves the real (hash, code) from the
+        // target account (and EIP-7702 delegate) before dispatching the child frame.
+        // In revm-40 `known_bytecode` is an eager `(B256, Bytecode)` rather than the
+        // revm-36 `Option` "load-later" form.
+        known_bytecode: Default::default(),
         value: CallValue::Transfer(U256::ZERO),
         input: CallInput::Bytes(calldata),
         gas_limit: child_gas_limit,
         is_static: false,
         caller: sender,
         return_memory_offset: 0..0,
+        reservoir: 0,
+        charged_new_account_state_gas: false,
     };
 
     Ok((child_inputs, overhead))

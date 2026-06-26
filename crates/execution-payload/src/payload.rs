@@ -533,6 +533,8 @@ where
         attributes,
         // reth 2.0: payload_id moved out of the attributes into PayloadConfig.
         payload_id,
+        // reth 2.3 added parent_block_info (EIP-7928); Arc doesn't use it.
+        parent_block_info: _,
     } = config;
 
     let total_start = Instant::now();
@@ -560,6 +562,8 @@ where
                 parent_beacon_block_root: attributes.parent_beacon_block_root(),
                 withdrawals: attributes.withdrawals.clone().map(Into::into),
                 extra_data: builder_config.extra_data,
+                // reth 2.3 added slot_number (Option<u64>); Arc has no slot concept.
+                slot_number: None,
             },
         )
         .map_err(PayloadBuilderError::other)?;
@@ -614,7 +618,7 @@ where
             // continue
             best_txs.mark_invalid(
                 &pool_tx,
-                &InvalidPoolTransactionError::ExceedsGasLimit(pool_tx.gas_limit(), block_gas_limit),
+                InvalidPoolTransactionError::ExceedsGasLimit(pool_tx.gas_limit(), block_gas_limit),
             );
             continue;
         }
@@ -640,7 +644,7 @@ where
         if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
             best_txs.mark_invalid(
                 &pool_tx,
-                &InvalidPoolTransactionError::OversizedData {
+                InvalidPoolTransactionError::OversizedData {
                     size: estimated_block_size_with_tx,
                     limit: MAX_RLP_BLOCK_SIZE,
                 },
@@ -651,7 +655,7 @@ where
         let gas_used = match catch_unwind(AssertUnwindSafe(|| {
             builder.execute_transaction(tx.clone())
         })) {
-            Ok(Ok(gas_used)) => gas_used,
+            Ok(Ok(gas_used)) => gas_used.tx_gas_used(),
             Ok(Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                 error,
                 ..
@@ -665,7 +669,7 @@ where
                     trace!(target: "payload_builder", %error, ?tx, "(arc) skipping invalid transaction and its descendants");
                     best_txs.mark_invalid(
                         &pool_tx,
-                        &InvalidPoolTransactionError::Consensus(
+                        InvalidPoolTransactionError::Consensus(
                             InvalidTransactionError::TxTypeNotSupported,
                         ),
                     );
@@ -736,7 +740,7 @@ where
     }
 
     // reth 2.0: EthBuiltPayload::new no longer takes the payload id.
-    let payload = EthBuiltPayload::new(sealed_block, total_fees, requests)
+    let payload = EthBuiltPayload::new(Arc::new(block), total_fees, requests, None)
         // add blob sidecars from the executed txs; empty for now
         .with_sidecars(BlobSidecars::Empty);
     PayloadBuildMetrics::record_stage_assembly_and_sealing(stage_start.elapsed());

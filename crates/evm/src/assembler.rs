@@ -100,7 +100,10 @@ where
             }
         }
 
-        assembler.assemble_block(input)
+        // reth 2.3 added optional precomputed `transactions_root`/`receipts_root`/`logs_bloom`
+        // params to `assemble_block`. Passing `None` preserves the previous behavior of
+        // computing all three internally.
+        assembler.assemble_block(input, None, None, None)
     }
 }
 

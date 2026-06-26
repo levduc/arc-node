@@ -284,8 +284,8 @@ dependencies = [
  "c-kzg",
  "derive_more",
  "either",
- "ethereum_ssz 0.10.4",
- "ethereum_ssz_derive 0.10.4",
+ "ethereum_ssz",
+ "ethereum_ssz_derive",
  "serde",
  "serde_with",
  "sha2 0.10.9",
@@ -615,8 +615,8 @@ dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
  "derive_more",
- "ethereum_ssz 0.10.4",
- "ethereum_ssz_derive 0.10.4",
+ "ethereum_ssz",
+ "ethereum_ssz_derive",
  "serde",
  "serde_json",
  "serde_with",
@@ -651,8 +651,8 @@ dependencies = [
  "alloy-serde",
  "arbitrary",
  "derive_more",
- "ethereum_ssz 0.10.4",
- "ethereum_ssz_derive 0.10.4",
+ "ethereum_ssz",
+ "ethereum_ssz_derive",
  "jsonwebtoken 10.4.0",
  "rand 0.8.6",
  "serde",
@@ -1083,7 +1083,7 @@ dependencies = [
  "arc-malachitebft-proto",
  "bytes",
  "bytesize",
- "ethereum_ssz 0.9.1",
+ "ethereum_ssz",
  "mockall",
  "prost 0.13.5",
  "redb",
@@ -1117,8 +1117,8 @@ dependencies = [
  "bytes",
  "bytesize",
  "config",
- "ethereum_ssz 0.9.1",
- "ethereum_ssz_derive 0.9.1",
+ "ethereum_ssz",
+ "ethereum_ssz_derive",
  "eyre",
  "humantime-serde",
  "prost 0.13.5",
@@ -1821,7 +1821,7 @@ dependencies = [
  "bytes",
  "bytesize",
  "chrono",
- "ethereum_ssz 0.9.1",
+ "ethereum_ssz",
  "eyre",
  "futures",
  "hex",
@@ -4902,21 +4902,6 @@ dependencies = [
 
 [[package]]
 name = "ethereum_ssz"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0dcddb2554d19cde19b099fadddde576929d7a4d0c1cd3512d1fd95cf174375c"
-dependencies = [
- "alloy-primitives",
- "ethereum_serde_utils",
- "itertools 0.13.0",
- "serde",
- "serde_derive",
- "smallvec",
- "typenum",
-]
-
-[[package]]
-name = "ethereum_ssz"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e462875ad8693755ea8913d6e905715c76ea4836e2254e18c9cf0f7a8f8c2a13"
@@ -4928,18 +4913,6 @@ dependencies = [
  "serde_derive",
  "smallvec",
  "typenum",
-]
-
-[[package]]
-name = "ethereum_ssz_derive"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a657b6b3b7e153637dc6bdc6566ad9279d9ee11a15b12cfb24a2e04360637e9f"
-dependencies = [
- "darling 0.20.11",
- "proc-macro2",
- "quote",
- "syn 2.0.118",
 ]
 
 [[package]]
@@ -10875,8 +10848,8 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
- "ethereum_ssz 0.10.4",
- "ethereum_ssz_derive 0.10.4",
+ "ethereum_ssz",
+ "ethereum_ssz_derive",
  "sha2 0.10.9",
  "snap",
  "thiserror 2.0.18",
@@ -11725,7 +11698,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
- "ethereum_ssz 0.10.4",
+ "ethereum_ssz",
  "eyre",
  "http-body-util",
  "jsonrpsee",
@@ -15357,7 +15330,7 @@ checksum = "f7fd51aa83d2eb83b04570808430808b5d24fdbf479a4d5ac5dee4a2e2dd2be4"
 dependencies = [
  "alloy-primitives",
  "ethereum_hashing",
- "ethereum_ssz 0.10.4",
+ "ethereum_ssz",
  "smallvec",
  "typenum",
 ]

@@ -64,7 +64,13 @@ where
     type HaltReason = HaltReason;
 
     #[inline]
-    fn pre_execution(&self, evm: &mut Self::Evm) -> Result<u64, Self::Error> {
+    fn pre_execution(
+        &self,
+        evm: &mut Self::Evm,
+        // revm-40 added the `init_and_floor_gas` out-param to `Handler::pre_execution`;
+        // forward it unchanged to the mainnet handler (Arc only injects its blocklist check).
+        init_and_floor_gas: &mut InitialAndFloorGas,
+    ) -> Result<u64, Self::Error> {
         let ctx = evm.ctx();
         let tx = ctx.tx();
         let caller = tx.caller();
@@ -76,7 +82,7 @@ where
             .load_account(NATIVE_COIN_CONTROL_ADDRESS)?;
         self.check_blocklist(evm, caller, &tx_kind, tx_value)?;
 
-        self.mainnet.pre_execution(evm)
+        self.mainnet.pre_execution(evm, init_and_floor_gas)
     }
 
     #[inline]

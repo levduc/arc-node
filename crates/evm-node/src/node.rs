@@ -324,6 +324,9 @@ where
             ArcEngineValidatorBuilder::default(),
             BasicEngineApiBuilder::default(),
             BasicEngineValidatorBuilder::default(),
+            // rpc_middleware
+            Default::default(),
+            // reth 2.3 added auth_http_middleware as the 6th arg.
             Default::default(),
         );
         Self::new(addons, ArcRpcConfig::default())

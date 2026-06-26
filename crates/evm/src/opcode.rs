@@ -49,7 +49,8 @@ use reth_evm::revm::{
         instructions::utility::IntoAddress,
         interpreter_action::InterpreterAction,
         interpreter_types::{InputsTr, RuntimeFlag, StackTr},
-        popn, require_non_staticcall, InstructionContext, InstructionResult, InterpreterTypes,
+        popn, require_non_staticcall, InstructionContext, InstructionExecResult,
+        InstructionResult, InterpreterTypes,
     },
     primitives::hardfork::SpecId,
 };
@@ -63,12 +64,21 @@ use revm_interpreter::StateLoad;
 //  - Add event emissions for non-zero native value transfers
 //  - Add blocklist checks on host address and target
 //  - Disallow selfdestruct if target == addr, and amount is non-zero
+// revm-40 changed the instruction-return contract: instruction functions now return
+// `InstructionExecResult` (`Result<(), InstructionResult>`). Per revm's `Interpreter::run_plain`,
+// returning `Err(result)` is equivalent to the previous `interpreter.halt(result); return;` —
+// `run_plain` calls `self.halt(e)` for the `Err` value *only if* no `InterpreterAction` was
+// already set. Where this code already sets an action via `set_action(new_return(..))` (revert
+// with output) or the helper's internal `halt`/`set_action`, the returned `Err` value is ignored
+// and the pre-set action wins; we still return `Err(..)` to break the dispatch loop. The success
+// terminus that previously called `halt(SelfDestruct)` now returns `Err(SelfDestruct)`, mirroring
+// revm's own `selfdestruct` instruction. This preserves SELFDESTRUCT consensus behavior.
 fn arc_network_selfdestruct_impl<WIRE: InterpreterTypes, DB: Database>(
     mut context: InstructionContext<'_, EthEvmContext<DB>, WIRE>,
     check_target_destructed: bool,
     log_mode: Option<TransferLogMode>,
     blocklist_read_policy: BlocklistReadPolicy,
-) {
+) -> InstructionExecResult {
     require_non_staticcall!(context.interpreter);
     popn!([target], context.interpreter);
     let target = target.into_address();
@@ -93,7 +103,8 @@ fn arc_network_selfdestruct_impl<WIRE: InterpreterTypes, DB: Database>(
                         helpers::revert_message_to_bytes(ERR_ZERO_ADDRESS),
                         context.interpreter.gas,
                     ));
-                return;
+                // Action already set above; `Err` value is ignored by `run_plain`.
+                return Err(InstructionResult::Revert);
             }
 
             // Checks the source and target account is valid or not.
@@ -105,17 +116,15 @@ fn arc_network_selfdestruct_impl<WIRE: InterpreterTypes, DB: Database>(
                 check_target_destructed,
                 blocklist_read_policy,
             ) else {
-                // The next action is set in the check_selfdestruct_accounts.
-                return;
+                // The next action is already set inside check_selfdestruct_accounts;
+                // `Err` value is ignored by `run_plain`.
+                return Err(InstructionResult::Revert);
             };
 
             is_target_cold
         }
         None => {
-            context
-                .interpreter
-                .halt(InstructionResult::FatalExternalError);
-            return;
+            return Err(InstructionResult::FatalExternalError);
         }
         _ => None,
     };
@@ -132,8 +141,8 @@ fn arc_network_selfdestruct_impl<WIRE: InterpreterTypes, DB: Database>(
             is_cold: is_cold.unwrap_or(res.is_cold),
         }) {
         Ok(res) => res,
-        Err(LoadError::ColdLoadSkipped) => return context.interpreter.halt_oog(),
-        Err(LoadError::DBError) => return context.interpreter.halt_fatal(),
+        Err(LoadError::ColdLoadSkipped) => return Err(InstructionResult::OutOfGas),
+        Err(LoadError::DBError) => return Err(InstructionResult::FatalExternalError),
     };
 
     // Emit the transfer log after host.selfdestruct() succeeds, matching REVM's ordering
@@ -180,43 +189,45 @@ fn arc_network_selfdestruct_impl<WIRE: InterpreterTypes, DB: Database>(
             .record_refund(context.host.gas_params().selfdestruct_refund());
     }
 
-    context.interpreter.halt(InstructionResult::SelfDestruct);
+    // revm-40: the success terminus signals the SELFDESTRUCT halt via `Err(SelfDestruct)`
+    // (mirrors revm's own `selfdestruct` instruction), replacing `interpreter.halt(SelfDestruct)`.
+    Err(InstructionResult::SelfDestruct)
 }
 
 /// Pre-Zero5 variant: does not check target destructed status and emits NativeCoinTransferred logs.
 pub(crate) fn arc_network_selfdestruct_zero4<WIRE: InterpreterTypes, DB: Database>(
     context: InstructionContext<'_, EthEvmContext<DB>, WIRE>,
-) {
+) -> InstructionExecResult {
     arc_network_selfdestruct_impl(
         context,
         false,
         Some(TransferLogMode::NativeCoinTransferred),
         BlocklistReadPolicy::FailOpen,
-    );
+    )
 }
 
 /// Zero5 and Zero6: checks target destructed status and emits EIP-7708 Transfer logs.
 pub(crate) fn arc_network_selfdestruct_zero5<WIRE: InterpreterTypes, DB: Database>(
     context: InstructionContext<'_, EthEvmContext<DB>, WIRE>,
-) {
+) -> InstructionExecResult {
     arc_network_selfdestruct_impl(
         context,
         true,
         Some(TransferLogMode::Eip7708Transfer),
         BlocklistReadPolicy::FailOpen,
-    );
+    )
 }
 
 /// Zero7+: fail closed on blocklist read failures.
 pub(crate) fn arc_network_selfdestruct_zero7<WIRE: InterpreterTypes, DB: Database>(
     context: InstructionContext<'_, EthEvmContext<DB>, WIRE>,
-) {
+) -> InstructionExecResult {
     arc_network_selfdestruct_impl(
         context,
         true,
         Some(TransferLogMode::Eip7708Transfer),
         BlocklistReadPolicy::FailClosed,
-    );
+    )
 }
 
 /// Checks whether a given account is currently on the blocklist

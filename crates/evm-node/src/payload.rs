@@ -71,6 +71,8 @@ where
                 .chain_spec
                 .is_cancun_active_at_timestamp(timestamp)
                 .then(B256::random),
+            // reth 2.3 added slot_number (Option<u64>); Arc's mock CL has no slot.
+            slot_number: None,
         }
     }
 }

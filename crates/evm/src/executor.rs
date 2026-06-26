@@ -23,7 +23,7 @@ use reth_ethereum::{
     evm::{
         primitives::{
             execute::{BlockExecutionError, BlockExecutor},
-            Database, OnStateHook,
+            Database,
         },
         revm::db::State,
     },
@@ -38,8 +38,8 @@ use alloy_consensus::TxReceipt;
 use alloy_eips::eip2718::Encodable2718;
 use alloy_eips::eip7685::Requests;
 use alloy_evm::block::BlockValidationError;
+use alloy_evm::block::GasOutput;
 use alloy_evm::block::InternalBlockExecutionError;
-use alloy_evm::block::StateChangeSource;
 use alloy_evm::block::StateDB;
 use alloy_evm::block::SystemCaller;
 use alloy_evm::eth::receipt_builder::ReceiptBuilderCtx;
@@ -60,7 +60,6 @@ use arc_execution_config::native_coin_control::{
 use arc_execution_config::protocol_config;
 use arc_precompiles::helpers::ERR_BLOCKED_ADDRESS;
 use arc_precompiles::system_accounting;
-use reth_evm::block::StateChangePostBlockSource;
 use revm::DatabaseCommit;
 
 const ERR_BLOCKLIST_READ_FAILED: &str = "Failed to read beneficiary blocklist status";
@@ -78,7 +77,10 @@ pub struct ArcTxResult<H, T> {
     pub tx_type: T,
 }
 
-impl<H, T> TxResult for ArcTxResult<H, T> {
+// alloy-evm 0.36's `TxResult` requires `Self: Send + 'static` and
+// `HaltReason: Send + 'static`, so the generic halt reason `H` and tx-type `T`
+// must carry those bounds.
+impl<H: Send + 'static, T: Send + 'static> TxResult for ArcTxResult<H, T> {
     type HaltReason = H;
 
     fn result(&self) -> &ResultAndState<Self::HaltReason> {
@@ -357,6 +359,9 @@ where
     Spec:
         EthExecutorSpec + Hardforks + EthChainSpec + BlockGasLimitProvider + BaseFeeConfigProvider,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
+    // alloy-evm 0.36: `BlockExecutor::Result: TxResult` requires the halt reason and
+    // tx-type to be `Send + 'static` (mirrors reth's own `EthBlockExecutor` bound).
+    <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
 {
     type Transaction = R::Transaction;
     type Receipt = R::Receipt;
@@ -450,22 +455,24 @@ where
         })
     }
 
-    fn commit_transaction(&mut self, output: Self::Result) -> Result<u64, BlockExecutionError> {
+    fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
         let ArcTxResult {
             result: ResultAndState { result, state },
             blob_gas_used,
             tx_type,
         } = output;
 
-        self.system_caller
-            .on_state(StateChangeSource::Transaction(self.receipts.len()), &state);
-
-        let gas_used = result.gas_used();
+        // alloy-evm 0.36 / revm-40 split gas into tx/regular/state components (EIP-8037).
+        // Arc is not Amsterdam-active, so `state_gas_used` is 0 and `tx_gas_used` equals the
+        // pre-split `gas_used()` value; keep accumulating it into Arc's single `gas_used`
+        // counter to preserve the existing gas-fee (EMA / base-fee) accounting in `finish`.
+        let tx_gas_used = result.gas().tx_gas_used();
+        let state_gas_used = result.gas().block_state_gas_used();
 
         // append gas used
         self.gas_used = self
             .gas_used
-            .checked_add(gas_used)
+            .checked_add(tx_gas_used)
             .expect("cumulative gas overflow");
 
         // Cancun is always active for arc
@@ -481,10 +488,13 @@ where
                 cumulative_gas_used: self.gas_used,
             }));
 
-        // Commit the state changes.
+        // Commit the state changes. In alloy-evm 0.36 the `OnStateHook` is installed at the
+        // DB layer (`State::set_state_hook`) by reth's executor wrapper and fires inside
+        // `db.commit(..)`, so the old explicit `system_caller.on_state(..)` forwarding here is
+        // redundant and has been removed (the trait no longer exposes a state hook).
         self.evm.db_mut().commit(state);
 
-        Ok(gas_used)
+        GasOutput::with_state_gas(tx_gas_used, state_gas_used)
     }
 
     fn finish(
@@ -527,19 +537,17 @@ where
             self.validate_extra_data_base_fee(block_number, gas_values.nextBaseFee)?;
         }
 
-        let state = system_accounting::store_gas_values(block_number, gas_values, &mut self.evm)
-            .map_err(|e| {
+        // `store_gas_values` performs the post-block SystemAccounting storage write and commits
+        // it via `evm.db_mut().commit(..)` internally. As with `commit_transaction`, the
+        // DB-level `OnStateHook` (alloy-evm 0.36) captures these state changes on commit, so the
+        // previous explicit `system_caller.on_state(StateChangeSource::PostBlock(..), ..)`
+        // forwarding is redundant and has been removed along with the now-gone state-hook API.
+        system_accounting::store_gas_values(block_number, gas_values, &mut self.evm).map_err(
+            |e| {
                 tracing::error!(error = %e, "Failed to store gas values to SystemAccounting");
                 BlockExecutionError::Internal(InternalBlockExecutionError::Other(Box::new(e)))
-            })?;
-
-        // BalanceIncrements is semantically imprecise (this is a storage write, not a balance
-        // change), but it's the least-wrong variant available in the upstream enum, and functionally
-        // equivalent to others.
-        self.system_caller.on_state(
-            StateChangeSource::PostBlock(StateChangePostBlockSource::BalanceIncrements),
-            &state,
-        );
+            },
+        )?;
 
         Ok((
             self.evm,
@@ -556,9 +564,11 @@ where
         &self.receipts
     }
 
-    fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
-        self.system_caller.with_state_hook(hook);
-    }
+    // alloy-evm 0.36 removed `set_state_hook` from the `BlockExecutor` trait. The state hook
+    // is now installed at the DB layer by reth's executor wrapper
+    // (`State::set_state_hook`, fired inside `db.commit(..)`), so the executor no longer owns
+    // or forwards it. Arc's previous override only forwarded to the inner `SystemCaller`'s
+    // hook, which itself no longer exists — see the notes in `commit_transaction`/`finish`.
 
     fn evm_mut(&mut self) -> &mut Self::Evm {
         &mut self.evm

@@ -197,7 +197,7 @@ fn arc_validate_extra_data_format<H: BlockHeader, CS: Hardforks>(
 
     let len = header.extra_data().len();
     if len != 8 {
-        return Err(ConsensusError::Other(format!(
+        return Err(ConsensusError::msg(format!(
             "invalid extra_data length {len}: must be 8 bytes"
         )));
     }
@@ -269,7 +269,7 @@ fn arc_validate_gas_limit_bounds<H: BlockHeader, CS: Hardforks + BlockGasLimitPr
     let config = chain_spec.block_gas_limit_config(header.number());
 
     if gas_limit < config.min() || gas_limit > config.max() {
-        return Err(ConsensusError::Other(format!(
+        return Err(ConsensusError::msg(format!(
             "block gas limit {gas_limit} outside allowed bounds [{}, {}]",
             config.min(),
             config.max()
@@ -299,9 +299,7 @@ fn arc_validate_beneficiary_nonzero<H: BlockHeader, CS: Hardforks>(
     }
 
     if header.beneficiary().is_zero() {
-        return Err(ConsensusError::Other(
-            "block beneficiary must not be the zero address".into(),
-        ));
+        return Err(ConsensusError::msg("block beneficiary must not be the zero address"));
     }
 
     Ok(())
@@ -317,7 +315,7 @@ fn arc_validate_header_timestamp<H: BlockHeader>(header: &H) -> Result<(), Conse
     // Get the current local time in seconds since UNIX EPOCH
     let local_time = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| ConsensusError::Other("System time is before UNIX EPOCH".to_string()))?
+        .map_err(|_| ConsensusError::msg("System time is before UNIX EPOCH"))?
         .as_secs();
 
     arc_validate_header_timestamp_with_time(header, local_time)
@@ -380,13 +378,17 @@ where
         block: &RecoveredBlock<N::Block>,
         receipts: &BlockExecutionResult<N::Receipt>,
         receipt_root_bloom: Option<(B256, Bloom)>,
+        // reth 2.3 added EIP-7928 block access list hash as the 5th param.
+        block_access_list_hash: Option<B256>,
     ) -> Result<(), ConsensusError> {
+        // reth 2.3: the free fn now takes the whole `BlockExecutionResult` plus
+        // the block-access-list hash (requests are read from `result` internally).
         reth_ethereum::consensus::validate_block_post_execution(
             block,
             self.chain_spec.as_ref(),
-            &receipts.receipts,
-            &receipts.requests,
+            receipts,
             receipt_root_bloom,
+            block_access_list_hash,
         )
     }
 }

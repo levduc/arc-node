@@ -23,7 +23,7 @@ use crate::log::{create_eip7708_transfer_log, create_native_transfer_log};
 use alloc::sync::Arc;
 use alloy_evm::eth::EthEvmContext;
 use alloy_evm::{
-    block::{BlockExecutorFactory, BlockExecutorFor},
+    block::BlockExecutorFactory,
     eth::EthBlockExecutionCtx,
     precompiles::PrecompilesMap,
     Evm as AlloyEvmTrait, EvmFactory,
@@ -45,21 +45,23 @@ use reth_ethereum::{
     evm::{
         primitives::{Database, EvmEnv, NextBlockEnvAttributes},
         revm::{
-            context::{Context, ContextTr, JournalTr, TxEnv},
+            context::{CfgEnv, Context, ContextTr, DBErrorMarker, JournalTr, TxEnv},
             context_interface::result::{EVMError, HaltReason},
             db::State,
             inspector::{Inspector, NoOpInspector},
             interpreter::interpreter::EthInterpreter,
             primitives::hardfork::SpecId,
         },
-        EthEvmConfig,
+        EthEvmConfig, RethReceiptBuilder,
     },
     node::api::ConfigureEvm,
     primitives::{Header, SealedBlock, SealedHeader},
     Receipt, TransactionSigned,
 };
 use reth_evm::execute::BlockBuilder;
-use reth_evm::{ConfigureEngineEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor};
+use reth_evm::{
+    BlockExecutorForEvm, ConfigureEngineEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
+};
 use reth_primitives_traits::NodePrimitives;
 use revm::bytecode::opcode::SELFDESTRUCT;
 use revm::context_interface::result::ResultAndState;
@@ -119,6 +121,9 @@ fn init_subcall_revert(message: &str, call_inputs: &CallInputs) -> FrameResult {
         memory_offset: call_inputs.return_memory_offset.clone(),
         was_precompile_called: true,
         precompile_call_logs: Default::default(),
+        // EIP-8037 (revm-40): no new-account state gas was upfront-charged on the parent
+        // for these subcall revert/OOG outcomes.
+        charged_new_account_state_gas: false,
     })
 }
 
@@ -129,6 +134,9 @@ fn subcall_oog(gas: Gas, return_memory_offset: std::ops::Range<usize>) -> FrameR
         memory_offset: return_memory_offset,
         was_precompile_called: true,
         precompile_call_logs: Default::default(),
+        // EIP-8037 (revm-40): no new-account state gas was upfront-charged on the parent
+        // for these subcall revert/OOG outcomes.
+        charged_new_account_state_gas: false,
     })
 }
 
@@ -146,6 +154,9 @@ fn init_subcall_static_revert(call_inputs: &CallInputs) -> FrameResult {
         memory_offset: call_inputs.return_memory_offset.clone(),
         was_precompile_called: true,
         precompile_call_logs: Default::default(),
+        // EIP-8037 (revm-40): no new-account state gas was upfront-charged on the parent
+        // for these subcall revert/OOG outcomes.
+        charged_new_account_state_gas: false,
     })
 }
 
@@ -981,6 +992,12 @@ where
             )));
         };
 
+        // revm-40: `known_bytecode` is an eager `(B256, Bytecode)` and the child frame
+        // executes it directly (no fallback to loading from `target_address`). Resolve it
+        // from the freshly-loaded target account, matching revm's own `create_init_frame`
+        // (`(code_hash, code.unwrap_or_default())`). The EIP-7702 branch below overrides it.
+        child_inputs.known_bytecode = (target.code_hash, target.code.clone().unwrap_or_default());
+
         // Resolve EIP-7702 delegation: if the target has a delegation designator,
         // load the delegate's code so the child frame executes correct bytecode.
         // revm 36: `Bytecode` is an opaque struct; `eip7702_address()` returns the
@@ -1001,7 +1018,7 @@ where
             };
 
             if let Some(code) = delegate.code {
-                child_inputs.known_bytecode = Some((delegate.code_hash, code));
+                child_inputs.known_bytecode = (delegate.code_hash, code);
             }
         }
 
@@ -1166,6 +1183,9 @@ where
                     memory_offset: continuation.return_memory_offset,
                     was_precompile_called: true,
                     precompile_call_logs: Default::default(),
+                    // EIP-8037 (revm-40): no new-account state gas was upfront-charged on the parent
+                    // for these subcall revert/OOG outcomes.
+                    charged_new_account_state_gas: false,
                 }))
             }
             completion_failure => {
@@ -1188,6 +1208,9 @@ where
                     memory_offset: continuation.return_memory_offset,
                     was_precompile_called: true,
                     precompile_call_logs: Default::default(),
+                    // EIP-8037 (revm-40): no new-account state gas was upfront-charged on the parent
+                    // for these subcall revert/OOG outcomes.
+                    charged_new_account_state_gas: false,
                 }))
             }
         }
@@ -1512,6 +1535,13 @@ where
         &self.inner.ctx.block
     }
 
+    // alloy-evm 0.36 added `cfg_env` to the `Evm` trait (the block executor reads
+    // `enable_amsterdam_eip8037` / `tx_gas_limit_cap` from it). Mirror `block()` and
+    // expose the inner revm context's cfg.
+    fn cfg_env(&self) -> &CfgEnv<Self::Spec> {
+        &self.inner.ctx.cfg
+    }
+
     fn chain_id(&self) -> u64 {
         self.inner.ctx.cfg.chain_id
     }
@@ -1659,7 +1689,9 @@ impl EvmFactory for ArcEvmFactory {
         Self::Precompiles,
     >;
     type Tx = TxEnv;
-    type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError>;
+    // alloy-evm 0.36: `EvmFactory::Error`'s generic is now bounded by `DBErrorMarker`
+    // (matches the trait declaration and the canonical `EthEvmFactory` impl).
+    type Error<DBError: DBErrorMarker> = EVMError<DBError>;
     type HaltReason = HaltReason;
     type Context<DB: Database> = EthEvmContext<DB>;
     type Spec = SpecId;
@@ -1681,17 +1713,20 @@ impl EvmFactory for ArcEvmFactory {
         if hardfork_flags.is_active(ArcHardfork::Zero7) {
             instruction.insert_instruction(
                 SELFDESTRUCT,
-                Instruction::new(arc_network_selfdestruct_zero7, 5000),
+                Instruction::new(arc_network_selfdestruct_zero7),
+                5000,
             );
         } else if hardfork_flags.is_active(ArcHardfork::Zero5) {
             instruction.insert_instruction(
                 SELFDESTRUCT,
-                Instruction::new(arc_network_selfdestruct_zero5, 5000),
+                Instruction::new(arc_network_selfdestruct_zero5),
+                5000,
             );
         } else {
             instruction.insert_instruction(
                 SELFDESTRUCT,
-                Instruction::new(arc_network_selfdestruct_zero4, 5000),
+                Instruction::new(arc_network_selfdestruct_zero4),
+                5000,
             );
         }
 
@@ -1725,17 +1760,20 @@ impl EvmFactory for ArcEvmFactory {
         if hardfork_flags.is_active(ArcHardfork::Zero7) {
             instruction.insert_instruction(
                 SELFDESTRUCT,
-                Instruction::new(arc_network_selfdestruct_zero7, 5000),
+                Instruction::new(arc_network_selfdestruct_zero7),
+                5000,
             );
         } else if hardfork_flags.is_active(ArcHardfork::Zero5) {
             instruction.insert_instruction(
                 SELFDESTRUCT,
-                Instruction::new(arc_network_selfdestruct_zero5, 5000),
+                Instruction::new(arc_network_selfdestruct_zero5),
+                5000,
             );
         } else {
             instruction.insert_instruction(
                 SELFDESTRUCT,
-                Instruction::new(arc_network_selfdestruct_zero4, 5000),
+                Instruction::new(arc_network_selfdestruct_zero4),
+                5000,
             );
         }
 
@@ -1777,6 +1815,22 @@ impl BlockExecutorFactory for ArcEvmConfig {
     type ExecutionCtx<'a> = EthBlockExecutionCtx<'a>;
     type Transaction = TransactionSigned;
     type Receipt = Receipt;
+    // alloy-evm 0.36 added these two associated items to `BlockExecutorFactory`.
+    // `TxExecutionResult` is the per-tx result type produced by the executor (Arc's
+    // `ArcTxResult`), and `Executor` is the concrete executor type (previously an
+    // `impl BlockExecutorFor<..>` return). `create_executor` must now return this
+    // concrete `Executor<'a, DB, I>` type with the trait's exact lifetime/bounds.
+    type TxExecutionResult = crate::executor::ArcTxResult<
+        HaltReason,
+        <TransactionSigned as alloy_consensus::transaction::TransactionEnvelope>::TxType,
+    >;
+    type Executor<'a, DB: StateDB, I: Inspector<<Self::EvmFactory as EvmFactory>::Context<DB>>> =
+        ArcBlockExecutor<
+            'a,
+            <Self::EvmFactory as EvmFactory>::Evm<DB, I>,
+            &'a Arc<ArcChainSpec>,
+            &'a RethReceiptBuilder,
+        >;
 
     fn evm_factory(&self) -> &Self::EvmFactory {
         &self.evm_factory_instance
@@ -1784,14 +1838,14 @@ impl BlockExecutorFactory for ArcEvmConfig {
 
     fn create_executor<'a, DB, I>(
         &'a self,
-        // alloy-evm 0.30: the `DB` generic is now the state-DB itself
+        // alloy-evm 0.30+: the `DB` generic is the state-DB itself
         // (`StateDB: Database + DatabaseCommit`), not `&mut State<DB>`.
         evm: <Self::EvmFactory as EvmFactory>::Evm<DB, I>,
         ctx: EthBlockExecutionCtx<'a>,
-    ) -> impl BlockExecutorFor<'a, Self, DB, I>
+    ) -> Self::Executor<'a, DB, I>
     where
-        DB: StateDB + 'a,
-        I: Inspector<<Self::EvmFactory as EvmFactory>::Context<DB>> + 'a,
+        DB: StateDB,
+        I: Inspector<<Self::EvmFactory as EvmFactory>::Context<DB>>,
     {
         ArcBlockExecutor::new(
             evm,
@@ -1829,9 +1883,11 @@ impl ConfigureEvm for ArcEvmConfig {
     ) -> Result<
         impl BlockBuilder<
             Primitives = Self::Primitives,
-            // alloy-evm 0.30: the executor's DB is the state-wrapped db
-            // (`&mut State<DB>` implements `StateDB`), not the raw `DB`.
-            Executor: BlockExecutorFor<'a, Self::BlockExecutorFactory, &'a mut State<DB>>,
+            // alloy-evm 0.36: `BlockExecutorFor` is now a type alias (not a trait), so the
+            // `Executor` associated type must be matched by exact type *equality* via the
+            // `BlockExecutorForEvm` helper alias rather than a trait bound. This expands to
+            // `BlockExecutorFor<'a, Self::BlockExecutorFactory, &'a mut State<DB>>`.
+            Executor = BlockExecutorForEvm<'a, Self, DB>,
         >,
         Self::Error,
     > {
@@ -6918,6 +6974,9 @@ mod tests {
                     memory_offset: 0..0,
                     was_precompile_called: false,
                     precompile_call_logs: Default::default(),
+                    // EIP-8037 (revm-40): no new-account state gas was upfront-charged on the parent
+                    // for these subcall revert/OOG outcomes.
+                    charged_new_account_state_gas: false,
                 });
 
                 evm.complete_subcall(
@@ -7629,6 +7688,9 @@ mod tests {
                     memory_offset: 0..0,
                     was_precompile_called: false,
                     precompile_call_logs: Default::default(),
+                    // EIP-8037 (revm-40): no new-account state gas was upfront-charged on the parent
+                    // for these subcall revert/OOG outcomes.
+                    charged_new_account_state_gas: false,
                 })
             };
 

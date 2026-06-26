@@ -60,6 +60,8 @@ pub fn create_oog_frame_result(frame_init: &FrameInit) -> FrameResult {
                 memory_offset: call_input.return_memory_offset.clone(),
                 was_precompile_called: false,
                 precompile_call_logs: Default::default(),
+                // EIP-8037 (revm-40): OOG/revert frame, no new-account state gas was upfront-charged.
+                charged_new_account_state_gas: false,
             })
         }
         FrameInput::Create(create_input) => {
@@ -101,6 +103,8 @@ pub fn create_frame_result(
                 memory_offset: call_input.return_memory_offset.clone(),
                 was_precompile_called: false,
                 precompile_call_logs: Default::default(),
+                // EIP-8037 (revm-40): OOG/revert frame, no new-account state gas was upfront-charged.
+                charged_new_account_state_gas: false,
             })
         }
         FrameInput::Create(create_input) => {
