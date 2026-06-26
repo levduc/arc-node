@@ -43,7 +43,7 @@ use clap::{Args, CommandFactory, FromArgMatches, Parser};
 use directories::BaseDirs;
 use reth_chainspec::EthChainSpec;
 use reth_ethereum::cli::interface::{Cli as RethCli, Commands};
-use reth_node_core::version::default_extra_data;
+use reth_node_core::version::default_extra_data_bytes;
 use reth_rpc_builder::config::RethRpcServerConfig;
 use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection};
 use tracing::info;
@@ -83,7 +83,9 @@ impl ArcCli {
         if let Commands::Node(ref node_cmd) = self.inner.command {
             // Reject --builder.extradata if user explicitly set it.
             // Arc uses the extra_data field to store the next block's base fee.
-            if node_cmd.builder.extra_data != default_extra_data() {
+            // reth 2.0: builder.extra_data is now `Bytes`; compare against the
+            // Bytes-typed default (`default_extra_data_bytes`).
+            if node_cmd.builder.extra_data != default_extra_data_bytes() {
                 return Err("--builder.extradata is not supported");
             }
 
