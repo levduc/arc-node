@@ -42,6 +42,8 @@ fn init_download_urls() {
         ],
         default_base_url: Cow::Borrowed(DEFAULT_DOWNLOAD_URL),
         default_chain_aware_base_url: None,
+        // reth 2.0 added this required field (snapshot listing/download API base).
+        snapshot_api_url: Cow::Borrowed("https://snapshots.arc.network/api"),
         long_help: None,
     };
     let _ = download_defaults.try_init();
