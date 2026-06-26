@@ -388,6 +388,9 @@ impl Inner {
             // Cannot be None in V3. Arc has no beacon chain, so we use the
             // execution block hash as parent_beacon_block_root.
             parent_beacon_block_root: Some(block_hash),
+
+            // reth 2.3 added slot_number (Option<u64>); Arc has no slots.
+            slot_number: None,
         };
         // Build a new block on top of parent_hash
         //
