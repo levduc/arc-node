@@ -212,3 +212,22 @@ auto-gen `<datadir>/jwt.hex`. **STEP 1 NOT done** (CL driving EL2): coupled to s
 the consensus Docker image rebuild (Cargo.toml reth `file://` fork unreachable in Docker build) —
 do steps 1+3+4 together next. The base testnet here was started with `-e 50000 --monitoring false`
 (blockscout fails otherwise); validator1 sometimes doesn't boot (3/4 is enough for BFT).
+
+**STEPS 3+4 DONE — consensus code for two-root blocks compiles + tested (2026-06-28, branch `dual-el-payment-lane`).**
+- STEP 3 (commit ad95465): `ConsensusBlock.payment_payload: Option<ExecutionPayloadV3>`; `SszBlock`
+  7→8 tuple (ethereum_ssz supports Tuple9, verified); proposal streaming length-frames the two lanes
+  (`[u64 len(evm)][evm ssz][payment ssz?]`); store encode/decode carry it. Round-trip test +82 db tests pass.
+- STEP 4 (commit 0ef9046): CL builds+validates+finalizes BOTH ELs. config/CLI gained `payment_*`
+  endpoint flags + `payment_engine_config()`; node.rs connects an optional 2nd `Engine`; threaded
+  `payment_engine: Option<&Engine>` through run→go→handlers (started_round/get_value/
+  received_proposal_part/process_synced_value/decided). `build_block` builds the payment payload on
+  EL2's own head (`get_block_by_number("latest")`) aligned to the EVM timestamp; `validate_consensus_block`
+  re-executes it (newPayload) — block valid only if BOTH lanes validate; `decide` forkchoices EL2 to the
+  decided payment block. Single-EL path unchanged (None default). lib+bin+tests compile; 261 lib tests pass.
+- **v0 limit:** value-sync carries only the EVM payload (synced blocks have no payment lane); the live
+  proposal-streaming path carries both. NOT yet differential-validated on a live testnet.
+- **TO RUN (remaining):** (a) payment genesis with blockGasLimit=100M; (b) revert the 41 reth `file://`
+  deps in Cargo.toml → upstream `tag=v2.3.0` so the CL Docker image rebuilds (backup
+  /tmp/Cargo.toml.preforkpatch); rebuild CL+EL images; (c) quake passes `--payment-execution-endpoint`
+  (+ws/jwt) to each CL pointing at its payment EL; (d) boot, drive both lanes (dual spammer), confirm
+  all validators compute identical paymentRoot. The Docker rebuild is the long pole.
