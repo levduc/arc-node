@@ -124,3 +124,4 @@ deployments/certs/*
 
 # local benchmarking working dirs (node datadirs, logs, metrics)
 /.bench/
+2026.arc.payment.highway.claude/

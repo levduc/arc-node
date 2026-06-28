@@ -40,6 +40,8 @@ pub struct ConsensusBlock {
     pub validity: Validity,
     pub execution_payload: ExecutionPayloadV3,
     pub signature: Option<Signature>,
+    /// Payment-lane execution payload (second EL). `None` for single-EL blocks.
+    pub payment_payload: Option<ExecutionPayloadV3>,
 }
 
 impl ConsensusBlock {
@@ -96,6 +98,7 @@ pub fn block_as_ssz_data(block: &ConsensusBlock) -> SszBlock<&'_ ExecutionPayloa
         block.validity.is_valid(),
         &block.execution_payload,
         block.signature.map(SszSignature),
+        block.payment_payload.as_ref(),
     )
 }
 

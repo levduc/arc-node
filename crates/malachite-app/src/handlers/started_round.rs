@@ -357,6 +357,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: ExecutionPayloadV3::arbitrary(&mut u).unwrap(),
             signature: None,
+            payment_payload: None,
         }
     }
 

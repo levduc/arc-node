@@ -288,6 +288,7 @@ pub async fn build_block(
         validity: Validity::Valid,
         execution_payload,
         signature: None,
+    payment_payload: None,
     })
 }
 

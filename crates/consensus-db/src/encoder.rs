@@ -288,6 +288,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: create_test_execution_payload(),
             signature: Some(signature),
+            payment_payload: None,
         }
     }
 

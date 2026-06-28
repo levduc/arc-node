@@ -44,9 +44,12 @@ pub const ENGINE_GET_CLIENT_VERSION_V1: &str = "engine_getClientVersionV1";
 pub const ENGINE_GET_BLOBS_V1: &str = "engine_getBlobsV1";
 
 // Engine API timeouts
-pub const ENGINE_NEW_PAYLOAD_TIMEOUT: Duration = Duration::from_secs(8);
+// Bumped 8s->120s: during cold-snapshot catch-up a rate-limited relay can starve the
+// CL runtime so the engine round-trip exceeds the old 8s budget even though the EL
+// responds in <1s. A larger budget prevents the CL aborting on that transient.
+pub const ENGINE_NEW_PAYLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 pub const ENGINE_GET_PAYLOAD_TIMEOUT: Duration = Duration::from_secs(2);
-pub const ENGINE_FORKCHOICE_UPDATED_TIMEOUT: Duration = Duration::from_secs(8);
+pub const ENGINE_FORKCHOICE_UPDATED_TIMEOUT: Duration = Duration::from_secs(120);
 // pub const ENGINE_GET_PAYLOAD_BODIES_TIMEOUT: Duration = Duration::from_secs(10);
 pub const ENGINE_EXCHANGE_CAPABILITIES_TIMEOUT: Duration = Duration::from_secs(1);
 // pub const ENGINE_GET_CLIENT_VERSION_TIMEOUT: Duration = Duration::from_secs(1);

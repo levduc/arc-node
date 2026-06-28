@@ -24,6 +24,7 @@ pub type SszBlock<Payload> = (
     Option<u32>,          // valid_round
     AlloyAddress,         // proposer
     bool,                 // is_valid
-    Payload,              // execution_payload
+    Payload,              // execution_payload (EVM lane)
     Option<SszSignature>, // signature
+    Option<Payload>,      // payment_payload (payment lane); None for single-EL blocks
 );

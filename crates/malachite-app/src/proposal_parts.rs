@@ -134,7 +134,18 @@ pub async fn make_proposal_parts(
     let mut hasher = sha3::Keccak256::new();
     let mut parts = Vec::new();
 
-    let data = block.execution_payload.as_ssz_bytes();
+    // Framed payload bytes: [u64-LE len(evm)] [evm SSZ] [payment SSZ (optional)].
+    // The length prefix lets the decoder split the two lanes; absent payment lane => no trailer.
+    let data = {
+        let evm = block.execution_payload.as_ssz_bytes();
+        let mut buf = Vec::with_capacity(8 + evm.len());
+        buf.extend_from_slice(&(evm.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&evm);
+        if let Some(pay) = &block.payment_payload {
+            buf.extend_from_slice(&pay.as_ssz_bytes());
+        }
+        buf
+    };
 
     // Init
     {
@@ -275,9 +286,25 @@ pub fn assemble_block_from_parts(parts: &ProposalParts) -> eyre::Result<Consensu
         block_bytes.extend_from_slice(&part.bytes);
     }
 
-    // Convert the concatenated data vector into an execution payload
-    let execution_payload = ExecutionPayloadV3::from_ssz_bytes(&block_bytes)
+    // Framed: [u64-LE len(evm)] [evm SSZ] [payment SSZ (optional)].
+    if block_bytes.len() < 8 {
+        return Err(eyre!("block bytes too short to contain length prefix"));
+    }
+    let len_evm = u64::from_le_bytes(block_bytes[..8].try_into().unwrap()) as usize;
+    let evm_end = 8usize
+        .checked_add(len_evm)
+        .filter(|&e| e <= block_bytes.len())
+        .ok_or_else(|| eyre!("invalid evm payload length prefix"))?;
+    let execution_payload = ExecutionPayloadV3::from_ssz_bytes(&block_bytes[8..evm_end])
         .map_err(|e| eyre!("Failed to decode execution payload: {e:?}"))?;
+    let payment_payload = if block_bytes.len() > evm_end {
+        Some(
+            ExecutionPayloadV3::from_ssz_bytes(&block_bytes[evm_end..])
+                .map_err(|e| eyre!("Failed to decode payment payload: {e:?}"))?,
+        )
+    } else {
+        None
+    };
 
     let consensus_block = ConsensusBlock {
         height: parts.height(),
@@ -287,6 +314,7 @@ pub fn assemble_block_from_parts(parts: &ProposalParts) -> eyre::Result<Consensu
         validity: Validity::Valid,
         execution_payload,
         signature: Some(parts.fin().signature),
+        payment_payload,
     };
 
     Ok(consensus_block)
@@ -487,6 +515,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: payload,
             signature: None,
+        payment_payload: None,
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());
@@ -523,6 +552,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: payload,
             signature: None,
+        payment_payload: None,
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());
@@ -533,5 +563,54 @@ mod tests {
 
         let assembled = assemble_block_from_parts(&parts).unwrap();
         assert_eq!(assembled.valid_round, Round::Nil);
+    }
+
+    /// Dual-EL: a block carrying BOTH an EVM and a payment payload must round-trip
+    /// through make_proposal_parts -> assemble_block_from_parts with both lanes intact.
+    #[tokio::test]
+    async fn assemble_block_round_trips_payment_payload() {
+        use alloy_rpc_types_engine::ExecutionPayloadV3;
+        use arbitrary::{Arbitrary, Unstructured};
+
+        // Two DISTINCT payloads for the EVM lane and the payment lane.
+        let mut u_evm = Unstructured::new(&[0x11u8; 1024]);
+        let evm_payload = ExecutionPayloadV3::arbitrary(&mut u_evm).unwrap();
+        let mut u_pay = Unstructured::new(&[0x22u8; 1024]);
+        let pay_payload = ExecutionPayloadV3::arbitrary(&mut u_pay).unwrap();
+        assert_ne!(
+            evm_payload.payload_inner.payload_inner.state_root,
+            pay_payload.payload_inner.payload_inner.state_root,
+            "test setup: the two lanes must differ"
+        );
+
+        let (keys, _) = make_validator_set(1);
+        let signing_key = &keys[0];
+        let proposer = Address::from_public_key(&signing_key.public_key());
+
+        let block = ConsensusBlock {
+            height: Height::new(7),
+            round: Round::new(0),
+            valid_round: Round::Nil,
+            proposer,
+            validity: Validity::Valid,
+            execution_payload: evm_payload.clone(),
+            signature: None,
+            payment_payload: Some(pay_payload.clone()),
+        };
+
+        let provider = LocalSigningProvider::new(signing_key.clone());
+        let (raw_parts, _sig) = make_proposal_parts(&provider, &block).await.unwrap();
+        let parts = ProposalParts::new(raw_parts).unwrap();
+
+        let assembled = assemble_block_from_parts(&parts).unwrap();
+        assert_eq!(
+            assembled.execution_payload, evm_payload,
+            "EVM lane must survive streaming"
+        );
+        assert_eq!(
+            assembled.payment_payload,
+            Some(pay_payload),
+            "payment lane must survive streaming (both roots carried)"
+        );
     }
 }

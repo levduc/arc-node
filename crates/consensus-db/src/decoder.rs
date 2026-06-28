@@ -121,8 +121,16 @@ pub fn decode_block(bytes: &[u8]) -> Result<ConsensusBlock, DecodeError> {
 
     match ConsensusBlockVersion::try_from(*version) {
         Ok(ConsensusBlockVersion::V1) => {
-            let (height, round, valid_round, proposer, is_valid, execution_payload, signature) =
-                SszBlock::<ExecutionPayloadV3>::from_ssz_bytes(&bytes[1..])?;
+            let (
+                height,
+                round,
+                valid_round,
+                proposer,
+                is_valid,
+                execution_payload,
+                signature,
+                payment_payload,
+            ) = SszBlock::<ExecutionPayloadV3>::from_ssz_bytes(&bytes[1..])?;
             Ok(ConsensusBlock {
                 height: Height::new(height),
                 round: Round::from(round),
@@ -131,6 +139,7 @@ pub fn decode_block(bytes: &[u8]) -> Result<ConsensusBlock, DecodeError> {
                 validity: Validity::from_bool(is_valid),
                 execution_payload,
                 signature: signature.map(|s| s.0),
+                payment_payload,
             })
         }
         Err(version) => Err(DecodeError::UnsupportedVersion(version)),
@@ -406,6 +415,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: create_test_execution_payload(),
             signature: Some(signature),
+            payment_payload: None,
         }
     }
 

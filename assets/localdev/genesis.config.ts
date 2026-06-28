@@ -120,7 +120,7 @@ const build = async (options: z.infer<typeof localBuilderOptionsSchema>) => {
         inverseElasticityMultiplier: 5000n, // 50%
         minBaseFee: 1n,
         maxBaseFee: parseGwei('1000'),
-        blockGasLimit: blockGasLimit ?? 30_000_000n,
+        blockGasLimit: blockGasLimit ?? 500_000_000n,
       },
       consensusParams: {
         timeoutProposeMs: 3000n,
@@ -130,7 +130,7 @@ const build = async (options: z.infer<typeof localBuilderOptionsSchema>) => {
         timeoutPrecommitMs: 1000n,
         timeoutPrecommitDeltaMs: 500n,
         timeoutRebroadcastMs: 1000n,
-        targetBlockTimeMs: 500n,
+        targetBlockTimeMs: 10n,
       },
     },
 

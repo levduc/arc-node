@@ -536,6 +536,7 @@ mod tests {
             execution_payload: test_payload(0),
             validity: Validity::Valid,
             signature: None,
+            payment_payload: None,
         }
     }
 

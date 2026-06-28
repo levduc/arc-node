@@ -152,6 +152,7 @@ async fn on_process_synced_value(
         execution_payload: payload,
         validity: Validity::Valid,
         signature: None,
+    payment_payload: None,
     };
 
     let validity = validate_consensus_block(
@@ -665,6 +666,7 @@ mod tests {
             execution_payload: payload,
             validity: Validity::Valid,
             signature: None,
+        payment_payload: None,
         };
 
         // Engine validation still runs once (defense in depth on the synced
