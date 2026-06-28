@@ -157,3 +157,28 @@ cached: alloy-primitives, alloy-trie, k256/ecdsa, curve25519-dalek-ng, rayon). B
   block time = max(T_evm, T_pay), payment lane ~free while T_pay < T_evm.
 
 DO NOT fabricate numbers. k256 (pure Rust) is ~2× slower than libsecp256k1.
+
+### PAPER WRITING STATE (paper repo: `2026.arc.payment.highway.claude/main.tex`, Overleaf-connected)
+The paper is being rewritten to a HONEST, NON-UTXO-LEANING framing the user approved:
+**(1) the bottleneck is the shared general-purpose disk-bound MPT; (2) first-order fix = ISOLATE
+payments into a lean lane (grows with users, fits in RAM); (3) pragmatic implementation = REUSE
+RETH (account + Block-STM, Approach 2); (4) UTXO is an HONEST ALTERNATIVE (deterministic
+conflict-free parallelism + statelessness), NOT faster/smaller; (5) the RESEARCH FRONT = the
+COMMITMENT for the lean EVM state (unify store+commitment, locality-key it, cheap as it scales
+past RAM, cheap proofs).** Push to Overleaf after each compile-clean change.
+
+Done so far (all pushed, compiles clean ~25 pp): App C (reth-2.3 measurements), App D (reality
+check), **App E "A payment lane in RAM"** (the experiments/utxo-state results — measured, honest
+ranges, variance noted, reproducible via the crate README); **§4 pivot** (recommend Approach 2 /
+reuse-reth, UTXO as honest alternative, tied to App E); **Research Questions** now lead with
+"the commitment for the lean EVM state" (\S sec:rq-commitment) as the central front.
+
+VERIFICATION (user demanded no fake numbers / reproducible): re-ran all experiments; logical
+results are deterministic and reproduce exactly (utxo-bench 25M = **3.42 GB**, merkle_acc 25M =
+**5.52 GB** both reconfirmed to the decimal). Timings vary ±~15% run-to-run; parallel throughput
+is load-sensitive (92k contended vs 105k idle) — paper now states ranges, not point values.
+
+PENDING (next task): read the WHOLE paper end-to-end and make it consistent with the above —
+**abstract + intro (§1) have NOT yet been re-read** and may still lean UTXO-first; align them and
+any other spot to "isolation + reuse-reth; UTXO is an alternative; commitment is the research
+front." Avoid leaning to UTXO anywhere. Do not introduce unmeasured numbers.
