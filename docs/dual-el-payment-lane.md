@@ -55,3 +55,31 @@ Below is the concrete file-by-file plan and the order to do it in, lowest-risk f
 Branch created. Scoping done (this doc). Step 1 is the safe start. Steps 3–5 are consensus-critical
 and must be validated by differential replay (all validators compute identical paymentRoot) before
 this is trustworthy — that gate is the real cost, not the typing.
+
+## Steps 3–4: precise ripple (verified 2026-06-28) — ready to implement
+Confirmed exact change set for "CL combines two payloads → consensus":
+1. `crates/types/src/block.rs`: add `payment_payload: Option<ExecutionPayloadV3>` to `ConsensusBlock`
+   (and `DecidedBlock`); `Option`/`None` keeps the single-EL path working so it can land safely first.
+2. `crates/types/src/ssz/v1/block.rs:21`: `SszBlock` is a **7-tuple**; add an 8th element
+   `Option<Payload>` (payment payload). **UNKNOWN to check first:** does `ethereum_ssz` impl
+   Encode/Decode for 8-tuples? If not, convert `SszBlock` to a named struct. (Compile-time fork.)
+3. `crates/types/src/block.rs:block_as_ssz_data` (encode the payment payload) +
+   `crates/malachite-app/src/proposal_parts.rs:assemble_block_from_parts` (~l.268/279, decode it).
+   The streaming itself (`make_proposal_parts` chunks raw SSZ bytes) needs NO change.
+4. Dual `Engine`: `malachite-app/src/config.rs` (2nd `EngineConfig`) + `malachite-cli/.../start.rs`
+   (2nd endpoint flags) + app constructs/holds a 2nd `Engine`.
+5. Proposer builds both: `malachite-app/src/handlers/get_value.rs:build_block` — drive engine2
+   (forkchoice_updated + get_payload) for the payment payload; attach to the block.
+6. Validators re-execute both: `malachite-app/src/payload.rs:validate_consensus_block` — also
+   `engine2.notify_new_block(payment_payload)`; block invalid if either lane fails.
+7. **Payment EL genesis = 100M block gas limit**: gas limit comes from the genesis ProtocolConfig
+   (see crates/execution-config/src/gas_fee.rs), so make a payment-specific genesis with
+   `blockGasLimit = 100_000_000` (separate from the EVM genesis). Update launch-payment-els.sh to use it.
+8. **Docker rebuild prerequisite:** revert the 41 reth `file:///home/papaduck/reth-2.3-ref` deps in
+   `Cargo.toml` back to `git=paradigmxyz/reth, tag=v2.3.0` (localdev does NOT need the genesis-fix
+   fork); backup at /tmp/Cargo.toml.preforkpatch. Then `make build-docker` works for the CL image.
+9. Validate: differential replay — all validators must compute identical paymentRoot. Until that
+   passes, do NOT trust it. Then dual-lane spammer (EVM txs → EL1 RPC, payment txs → EL2 RPC).
+
+Consensus value stays the EVM block hash for v0 (payment payload co-streamed + co-validated);
+folding paymentRoot into the value is a v1 hardening.
