@@ -132,4 +132,28 @@ cached: alloy-primitives, alloy-trie, k256/ecdsa, curve25519-dalek-ng, rayon). B
 - **How Bitcoin scales sig verify (no batching):** libsecp256k1 + parallel `CCheckQueue` + **signature
   cache** (verify-once at mempool, skip at block connect). reth caches recovered senders similarly.
 
+- `locality` — locality-keyed vs hash-keyed state+commitment (same Merkle shape, only the node
+  store differs: contiguous Vec vs HashMap by node index = MPT-style). **Dense beats sparse
+  1.1×→1.4× and the gap WIDENS with size** (dense −12% vs sparse −30% as it spills cache, to 12M
+  entries). Honest scope: 1.4× is RAM-only (cache effect) and understates it — a real MPT keys by
+  `keccak(addr)` (fully random) and pays on DISK (the 27.8 ms cold). So the data-structure win is
+  modest in RAM (~1.4×), large on disk.
+
+### REFINED THESIS (after the account-vs-UTXO + locality work — supersedes "UTXO is better")
+- The 169 GB / 27.8 ms problem is the **shared general-purpose hash-keyed MPT**, not payment data.
+- **First-order fix = ISOLATION:** a dedicated payment lane whose state grows with USERS (not tx
+  volume or contract activity) → small → fits in RAM → no disk-bound merklization. Works for an
+  account lane too; it is NOT a UTXO-specific win.
+- **Pragmatic implementation = reuse reth** (EVM account + Block-STM + mempool + sender cache):
+  payment-only account state is compact (≤ UTXO, ~1 entry/user), throughput = UTXO (~105k tx/s,
+  signature-bound), and reth's MPT on a SMALL RAM state costs only ~1.4× vs an ideal structure —
+  acceptable. This is the low-risk, high-reuse design.
+- **Secondary refinement = a locality-keyed, unified state+commitment structure** (dense Merkle /
+  Jellyfish-MT / Verkle): ~1.4× in RAM, more on disk; worth it at scale, not required.
+- **UTXO is an ALTERNATIVE lane**, justified only by deterministic conflict-free parallelism (no
+  Block-STM machinery/aborts) + statelessness — NOT speed or state size (both ≈ or worse than a
+  minimal account lane). Do not pitch UTXO as faster/smaller.
+- Architecture unchanged: second minimal EL + one extra header root; CL fans out + combines;
+  block time = max(T_evm, T_pay), payment lane ~free while T_pay < T_evm.
+
 DO NOT fabricate numbers. k256 (pure Rust) is ~2× slower than libsecp256k1.
