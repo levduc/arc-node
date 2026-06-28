@@ -307,38 +307,63 @@ async fn validate_payload(
 ///   `SYNCING`/`ACCEPTED` status, etc.).
 pub async fn validate_consensus_block(
     payload_validator: &impl PayloadValidator,
+    payment_engine: Option<&Engine>,
     block: &ConsensusBlock,
     store: &impl InvalidPayloadsRepository,
     metrics: &AppMetrics,
 ) -> eyre::Result<Validity> {
+    // EVM lane (validated via the mockable validator).
     let result = payload_validator
         .validate_payload(&block.execution_payload)
         .await?;
 
-    match result {
-        PayloadValidationResult::Valid => Ok(Validity::Valid),
-        PayloadValidationResult::Invalid { reason } => {
-            warn!(
-                height = %block.height,
-                round = %block.round,
-                block_hash = %block.block_hash(),
-                proposer = %block.proposer,
-                reason = %reason,
-                "Engine rejected payload, storing for forensics",
-            );
-            metrics.inc_invalid_payloads_count(InvalidPayloadSource::EngineReject);
-            let invalid = InvalidPayload::new_from_block(block, &reason);
-            if let Err(e) = store.append(invalid).await {
-                error!(
-                    height = %block.height,
-                    round = %block.round,
-                    block_hash = %block.block_hash(),
-                    proposer = %block.proposer,
-                    "Failed to persist invalid-payload forensic record: {e}",
-                );
-            }
-            Ok(Validity::Invalid)
+    if let PayloadValidationResult::Invalid { reason } = result {
+        record_invalid_payload(block, &reason, store, metrics).await;
+        return Ok(Validity::Invalid);
+    }
+
+    // Payment lane (second EL): re-execute the payment payload when both the
+    // payload and a payment engine are present. A block is valid only if BOTH
+    // lanes validate, so every validator computes identical roots for each lane.
+    if let (Some(engine), Some(payment_payload)) = (payment_engine, block.payment_payload.as_ref()) {
+        let payment_validator = EnginePayloadValidator::new(engine, metrics);
+        let payment_result = payment_validator.validate_payload(payment_payload).await?;
+        if let PayloadValidationResult::Invalid { reason } = payment_result {
+            let reason = format!("payment lane: {reason}");
+            record_invalid_payload(block, &reason, store, metrics).await;
+            return Ok(Validity::Invalid);
         }
+    }
+
+    Ok(Validity::Valid)
+}
+
+/// Best-effort persistence of an invalid-payload forensic record. Logs on failure
+/// but never changes the verdict (the engine's verdict is authoritative).
+async fn record_invalid_payload(
+    block: &ConsensusBlock,
+    reason: &str,
+    store: &impl InvalidPayloadsRepository,
+    metrics: &AppMetrics,
+) {
+    warn!(
+        height = %block.height,
+        round = %block.round,
+        block_hash = %block.block_hash(),
+        proposer = %block.proposer,
+        reason = %reason,
+        "Engine rejected payload, storing for forensics",
+    );
+    metrics.inc_invalid_payloads_count(InvalidPayloadSource::EngineReject);
+    let invalid = InvalidPayload::new_from_block(block, reason);
+    if let Err(e) = store.append(invalid).await {
+        error!(
+            height = %block.height,
+            round = %block.round,
+            block_hash = %block.block_hash(),
+            proposer = %block.proposer,
+            "Failed to persist invalid-payload forensic record: {e}",
+        );
     }
 }
 
@@ -552,7 +577,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let result = validate_consensus_block(&validator, &block, &store, &metrics)
+        let result = validate_consensus_block(&validator, None, &block, &store, &metrics)
             .await
             .expect("should succeed");
 
@@ -584,7 +609,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let result = validate_consensus_block(&validator, &block, &store, &metrics)
+        let result = validate_consensus_block(&validator, None, &block, &store, &metrics)
             .await
             .expect("should succeed");
 
@@ -604,7 +629,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let err = validate_consensus_block(&validator, &block, &store, &metrics)
+        let err = validate_consensus_block(&validator, None, &block, &store, &metrics)
             .await
             .expect_err("should propagate error");
 
@@ -639,7 +664,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let validity = validate_consensus_block(&validator, &block, &store, &metrics)
+        let validity = validate_consensus_block(&validator, None, &block, &store, &metrics)
             .await
             .expect("verdict should be returned even when forensics persist fails");
 

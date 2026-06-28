@@ -58,6 +58,7 @@ pub async fn handle(
     state: &mut State,
     network: NetworkHandle,
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     height: Height,
     round: Round,
     timeout: Duration,
@@ -75,6 +76,7 @@ pub async fn handle(
     let proposed_value = on_get_value(
         network,
         engine,
+        payment_engine,
         metrics,
         store,
         height,
@@ -110,6 +112,7 @@ pub async fn handle(
 async fn on_get_value(
     network: NetworkHandle,
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     metrics: AppMetrics,
     store: Store,
     height: Height,
@@ -144,6 +147,7 @@ async fn on_get_value(
 
             let task = build_and_validate_block(
                 engine,
+                payment_engine,
                 &metrics,
                 &store,
                 height,
@@ -213,6 +217,7 @@ async fn on_get_value(
 #[allow(clippy::too_many_arguments)]
 async fn build_and_validate_block(
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     metrics: &AppMetrics,
     store: &Store,
     height: Height,
@@ -225,6 +230,7 @@ async fn build_and_validate_block(
 
     let block = build_block(
         engine,
+        payment_engine,
         metrics,
         height,
         round,
@@ -235,7 +241,7 @@ async fn build_and_validate_block(
     .await?;
 
     let validator = EnginePayloadValidator::new(engine, metrics);
-    let validity = validate_consensus_block(&validator, &block, store, metrics)
+    let validity = validate_consensus_block(&validator, payment_engine, &block, store, metrics)
         .await
         .wrap_err_with(|| {
             format!(
@@ -263,6 +269,7 @@ async fn build_and_validate_block(
 /// Includes timing delay enforcement to ensure proper block intervals
 pub async fn build_block(
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     metrics: &AppMetrics,
     height: Height,
     round: Round,
@@ -280,6 +287,30 @@ pub async fn build_block(
         PrettyPayload(&execution_payload)
     );
 
+    // Payment lane (second EL): build a payment payload on top of EL2's own head,
+    // aligned to the EVM lane's timestamp so the two lanes advance in lockstep.
+    let payment_payload = match payment_engine {
+        Some(pe) => {
+            let payment_parent = pe
+                .eth
+                .get_block_by_number("latest")
+                .await
+                .wrap_err("payment lane: failed to fetch EL2 head")?
+                .ok_or_else(|| eyre!("payment lane: EL2 has no latest block"))?;
+            let timestamp = execution_payload.timestamp();
+            let payment_payload = pe
+                .generate_block(&payment_parent, timestamp, fee_recipient)
+                .await
+                .wrap_err("payment lane: failed to build payment payload")?;
+            debug!(
+                "🪙 Got payment payload: {:?}",
+                PrettyPayload(&payment_payload)
+            );
+            Some(payment_payload)
+        }
+        None => None,
+    };
+
     Ok(ConsensusBlock {
         height,
         round,
@@ -288,7 +319,7 @@ pub async fn build_block(
         validity: Validity::Valid,
         execution_payload,
         signature: None,
-    payment_payload: None,
+        payment_payload,
     })
 }
 

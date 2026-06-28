@@ -120,6 +120,20 @@ pub struct StartConfig {
     pub execution_ws_endpoint: Option<Url>,
     /// The execution JWT
     pub execution_jwt: Option<String>,
+
+    /// Payment-lane (second EL) Ethereum IPC socket
+    pub payment_eth_socket: Option<String>,
+    /// Payment-lane execution socket
+    pub payment_execution_socket: Option<String>,
+    /// Payment-lane Ethereum RPC endpoint
+    pub payment_eth_rpc_endpoint: Option<Url>,
+    /// Payment-lane execution endpoint
+    pub payment_execution_endpoint: Option<Url>,
+    /// Payment-lane execution WebSocket endpoint
+    pub payment_execution_ws_endpoint: Option<Url>,
+    /// Payment-lane execution JWT
+    pub payment_execution_jwt: Option<String>,
+
     /// The bind address for the pprof server
     pub pprof_bind_address: Option<SocketAddr>,
     /// Whether to activate jemalloc heap profiling
@@ -171,6 +185,38 @@ impl StartConfig {
         ) {
             let ws_endpoint = self
                 .execution_ws_endpoint
+                .clone()
+                .or_else(|| derive_ws_url(eth_rpc_endpoint));
+
+            Some(EngineConfig::Rpc(EthRpcConfig {
+                eth_rpc_endpoint,
+                execution_endpoint,
+                execution_ws_endpoint: ws_endpoint,
+                execution_jwt,
+            }))
+        } else {
+            None
+        }
+    }
+
+    /// Engine config for the payment lane (second EL). `None` when no payment-lane
+    /// endpoints are configured (single-EL operation).
+    pub fn payment_engine_config(&'_ self) -> Option<EngineConfig<'_>> {
+        if let (Some(eth_socket), Some(execution_socket)) = (
+            self.payment_eth_socket.as_ref(),
+            self.payment_execution_socket.as_ref(),
+        ) {
+            Some(EngineConfig::Ipc(EthIpcConfig {
+                eth_socket,
+                execution_socket,
+            }))
+        } else if let (Some(eth_rpc_endpoint), Some(execution_endpoint), Some(execution_jwt)) = (
+            self.payment_eth_rpc_endpoint.as_ref(),
+            self.payment_execution_endpoint.as_ref(),
+            self.payment_execution_jwt.as_ref(),
+        ) {
+            let ws_endpoint = self
+                .payment_execution_ws_endpoint
                 .clone()
                 .or_else(|| derive_ws_url(eth_rpc_endpoint));
 
@@ -302,6 +348,12 @@ mod tests {
             execution_endpoint: None,
             execution_ws_endpoint: None,
             execution_jwt: None,
+            payment_eth_socket: None,
+            payment_execution_socket: None,
+            payment_eth_rpc_endpoint: None,
+            payment_execution_endpoint: None,
+            payment_execution_ws_endpoint: None,
+            payment_execution_jwt: None,
             pprof_bind_address: None,
             pprof_heap_prof: false,
             suggested_fee_recipient: None,
@@ -334,6 +386,12 @@ mod tests {
             execution_endpoint: None,
             execution_ws_endpoint: None,
             execution_jwt: None,
+            payment_eth_socket: None,
+            payment_execution_socket: None,
+            payment_eth_rpc_endpoint: None,
+            payment_execution_endpoint: None,
+            payment_execution_ws_endpoint: None,
+            payment_execution_jwt: None,
             pprof_bind_address: None,
             pprof_heap_prof: false,
             suggested_fee_recipient: None,
@@ -362,6 +420,12 @@ mod tests {
             execution_endpoint: None,
             execution_ws_endpoint: None,
             execution_jwt: None,
+            payment_eth_socket: None,
+            payment_execution_socket: None,
+            payment_eth_rpc_endpoint: None,
+            payment_execution_endpoint: None,
+            payment_execution_ws_endpoint: None,
+            payment_execution_jwt: None,
             pprof_bind_address: None,
             pprof_heap_prof: false,
             suggested_fee_recipient: None,
@@ -389,6 +453,12 @@ mod tests {
             execution_endpoint: None,
             execution_ws_endpoint: None,
             execution_jwt: None,
+            payment_eth_socket: None,
+            payment_execution_socket: None,
+            payment_eth_rpc_endpoint: None,
+            payment_execution_endpoint: None,
+            payment_execution_ws_endpoint: None,
+            payment_execution_jwt: None,
             pprof_bind_address: None,
             pprof_heap_prof: false,
             suggested_fee_recipient: None,

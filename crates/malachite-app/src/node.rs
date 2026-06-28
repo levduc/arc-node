@@ -605,6 +605,22 @@ impl App {
         }
     }
 
+    /// Connect to the payment-lane execution engine (second EL), if configured.
+    /// Returns `None` for single-EL operation.
+    async fn connect_to_payment_engine(&self) -> eyre::Result<Option<Engine>> {
+        match self.start_config.payment_engine_config() {
+            Some(engine_config) => {
+                let engine = engine_config
+                    .connect()
+                    .await
+                    .wrap_err("Failed to connect to payment-lane execution engine")?;
+                tracing::info!("🪙 Connected to payment-lane execution engine (second EL)");
+                Ok(Some(engine))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Query the execution engine to retrieve the chain ID and genesis block.
     ///
     /// These are used during node startup to compute the initial network ID
@@ -655,6 +671,9 @@ impl App {
 
         // Connect to the execution engine early so we can resolve consensus spec and genesis hash
         let engine = self.connect_to_execution_engine().await?;
+
+        // Connect to the optional payment-lane execution engine (second EL).
+        let payment_engine = self.connect_to_payment_engine().await?;
 
         let (chain_id, genesis_block) = self
             .resolve_chain_identity(&engine)
@@ -739,7 +758,14 @@ impl App {
         // Start the application task
         let app_handle = tokio::spawn({
             let cancel_token = cancel_token.clone();
-            crate::app::run(state, channels, engine, rx_app_req, cancel_token)
+            crate::app::run(
+                state,
+                channels,
+                engine,
+                payment_engine,
+                rx_app_req,
+                cancel_token,
+            )
         });
 
         // Start the pprof server if enabled

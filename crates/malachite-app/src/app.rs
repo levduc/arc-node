@@ -34,6 +34,7 @@ pub async fn run(
     mut state: State,
     channels: Channels<ArcContext>,
     engine: Engine,
+    payment_engine: Option<Engine>,
     rx_app_req: Receiver<AppRequest>,
     cancel_token: CancellationToken,
 ) -> eyre::Result<()> {
@@ -42,7 +43,13 @@ pub async fn run(
     }
 
     let result = cancel_token
-        .run_until_cancelled_owned(go(&mut state, channels, &engine, rx_app_req))
+        .run_until_cancelled_owned(go(
+            &mut state,
+            channels,
+            &engine,
+            payment_engine.as_ref(),
+            rx_app_req,
+        ))
         .await;
 
     let result = match result {
@@ -81,6 +88,7 @@ async fn go(
     state: &mut State,
     mut channels: Channels<ArcContext>,
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     mut rx_app_req: Receiver<AppRequest>,
 ) -> eyre::Result<Never> {
     loop {
@@ -90,7 +98,7 @@ async fn go(
             msg = channels.consensus.recv() => match msg {
                 Some(msg) => {
                     // Abort on error to shut down the application.
-                    handle_consensus(msg, state, &mut channels, engine).await
+                    handle_consensus(msg, state, &mut channels, engine, payment_engine).await
                         .wrap_err("Error handling consensus message")?;
                 },
                 None => {
@@ -120,6 +128,7 @@ async fn handle_consensus(
     state: &mut State,
     channels: &mut Channels<ArcContext>,
     engine: &Engine,
+    payment_engine: Option<&Engine>,
 ) -> eyre::Result<()> {
     match msg {
         // Consensus is ready.
@@ -144,7 +153,17 @@ async fn handle_consensus(
         } => {
             let _guard = state.metrics.start_msg_process_timer("StartedRound");
 
-            started_round::handle(state, engine, height, round, proposer, role, reply_value).await;
+            started_round::handle(
+                state,
+                engine,
+                payment_engine,
+                height,
+                round,
+                proposer,
+                role,
+                reply_value,
+            )
+            .await;
         }
 
         // Request to build a local value to propose.
@@ -163,6 +182,7 @@ async fn handle_consensus(
                 state,
                 channels.network.clone(),
                 engine,
+                payment_engine,
                 height,
                 round,
                 timeout,
@@ -179,7 +199,7 @@ async fn handle_consensus(
                 .metrics
                 .start_msg_process_timer("ReceivedProposalPart");
 
-            received_proposal_part::handle(state, engine, from, part, reply).await;
+            received_proposal_part::handle(state, engine, payment_engine, from, part, reply).await;
         }
 
         // Notification that consensus has decided a value.
@@ -202,7 +222,7 @@ async fn handle_consensus(
 
             info!(%height, %round, %value_id, %signatures, "🎉 Consensus has decided on value");
 
-            decided::handle(state, engine, certificate, reply).await?;
+            decided::handle(state, engine, payment_engine, certificate, reply).await?;
         }
 
         // Notification that a height has been finalized.
@@ -243,6 +263,7 @@ async fn handle_consensus(
             process_synced_value::handle(
                 state,
                 engine,
+                payment_engine,
                 height,
                 round,
                 proposer,

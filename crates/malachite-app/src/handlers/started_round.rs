@@ -53,13 +53,15 @@ use arc_consensus_db::invalid_payloads::InvalidPayload;
 pub async fn handle(
     state: &mut State,
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     height: Height,
     round: Round,
     proposer: Address,
     role: Role,
     reply: Reply<Vec<ProposedValue<ArcContext>>>,
 ) {
-    let proposals = match on_started_round(state, engine, height, round, proposer, role).await {
+    let proposals =
+        match on_started_round(state, engine, payment_engine, height, round, proposer, role).await {
         Ok(proposals) => {
             info!(%height, %round, "StartedRound: sending {} undecided proposals to consensus", proposals.len());
             proposals
@@ -80,6 +82,7 @@ pub async fn handle(
 async fn on_started_round(
     state: &mut State,
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     height: Height,
     round: Round,
     proposer: Address,
@@ -107,12 +110,14 @@ async fn on_started_round(
         &state.ctx.proposer_selector,
         state.store(),
         engine,
+        payment_engine,
         state.signing_provider(),
         state.metrics(),
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 async fn fetch_and_process_pending_proposals(
     height: Height,
@@ -121,6 +126,7 @@ async fn fetch_and_process_pending_proposals(
     proposer_selector: &dyn ProposerSelector,
     store: &Store,
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     signing_provider: &ArcSigningProvider,
     metrics: &AppMetrics,
 ) -> eyre::Result<Vec<ProposedValue<ArcContext>>> {
@@ -151,6 +157,7 @@ async fn fetch_and_process_pending_proposals(
         round,
         store,
         &EnginePayloadValidator::new(engine, metrics),
+        payment_engine,
         store,
         metrics,
     )
@@ -239,6 +246,7 @@ async fn validate_undecided_blocks(
     round: Round,
     undecided_blocks: &impl UndecidedBlocksRepository,
     payload_validator: &impl PayloadValidator,
+    payment_engine: Option<&Engine>,
     invalid_payloads: &impl InvalidPayloadsRepository,
     metrics: &AppMetrics,
 ) -> eyre::Result<Vec<ConsensusBlock>> {
@@ -262,6 +270,7 @@ async fn validate_undecided_blocks(
 
         let validity = match validate_consensus_block(
             payload_validator,
+            payment_engine,
             &block,
             invalid_payloads,
             metrics,
@@ -404,7 +413,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let result =
-            validate_undecided_blocks(height, round, &undecided, &validator, &invalid, &metrics)
+            validate_undecided_blocks(height, round, &undecided, &validator, None, &invalid, &metrics)
                 .await
                 .expect("should succeed");
 
@@ -459,7 +468,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let result =
-            validate_undecided_blocks(height, round, &undecided, &validator, &invalid, &metrics)
+            validate_undecided_blocks(height, round, &undecided, &validator, None, &invalid, &metrics)
                 .await
                 .expect("should succeed");
 
@@ -487,7 +496,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let result =
-            validate_undecided_blocks(height, round, &undecided, &validator, &invalid, &metrics)
+            validate_undecided_blocks(height, round, &undecided, &validator, None, &invalid, &metrics)
                 .await
                 .expect("should succeed");
 
@@ -510,7 +519,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let err =
-            validate_undecided_blocks(height, round, &undecided, &validator, &invalid, &metrics)
+            validate_undecided_blocks(height, round, &undecided, &validator, None, &invalid, &metrics)
                 .await
                 .expect_err("should propagate repository error");
 
@@ -572,7 +581,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let result =
-            validate_undecided_blocks(height, round, &undecided, &validator, &invalid, &metrics)
+            validate_undecided_blocks(height, round, &undecided, &validator, None, &invalid, &metrics)
                 .await
                 .expect("should succeed despite one block erroring");
 
@@ -648,7 +657,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let err =
-            validate_undecided_blocks(height, round, &undecided, &validator, &invalid, &metrics)
+            validate_undecided_blocks(height, round, &undecided, &validator, None, &invalid, &metrics)
                 .await
                 .expect_err("persist error should propagate");
 

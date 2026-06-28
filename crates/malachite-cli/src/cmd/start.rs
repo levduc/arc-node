@@ -259,6 +259,39 @@ pub struct StartCmd {
     #[serde(skip)]
     pub execution_jwt: Option<String>,
 
+    // --- Payment lane (second EL) endpoints. When set, the node runs a dual-EL
+    //     setup: the CL builds/validates a payment payload on this second EL and
+    //     every block carries two roots. Omit for single-EL operation. ---
+    /// Payment-lane (second EL) Ethereum IPC socket path.
+    #[clap(long, value_name = "PATH")]
+    #[serde(skip)]
+    pub payment_eth_socket: Option<String>,
+
+    /// Payment-lane (second EL) execution engine IPC socket path.
+    #[clap(long, value_name = "PATH")]
+    #[serde(skip)]
+    pub payment_execution_socket: Option<String>,
+
+    /// Payment-lane (second EL) Ethereum JSON-RPC endpoint URL.
+    #[clap(long, value_name = "URL")]
+    #[serde(skip)]
+    pub payment_eth_rpc_endpoint: Option<Url>,
+
+    /// Payment-lane (second EL) execution engine API endpoint URL.
+    #[clap(long, value_name = "URL")]
+    #[serde(skip)]
+    pub payment_execution_endpoint: Option<Url>,
+
+    /// Payment-lane (second EL) execution engine WebSocket URL.
+    #[clap(long, value_name = "URL")]
+    #[serde(skip)]
+    pub payment_execution_ws_endpoint: Option<Url>,
+
+    /// Payment-lane (second EL) JWT secret file path.
+    #[clap(long, value_name = "PATH")]
+    #[serde(skip)]
+    pub payment_execution_jwt: Option<String>,
+
     // ===== Metrics =====
     /// Enable Prometheus metrics and set listen address.
     ///
@@ -509,6 +542,12 @@ impl Default for StartCmd {
             execution_persistence_backpressure: false,
             execution_persistence_backpressure_threshold: 16,
             execution_jwt: None,
+            payment_eth_socket: None,
+            payment_execution_socket: None,
+            payment_eth_rpc_endpoint: None,
+            payment_execution_endpoint: None,
+            payment_execution_ws_endpoint: None,
+            payment_execution_jwt: None,
             metrics: None,
             rpc_addr: None,
             runtime_flavor: RUNTIME_MULTI_THREADED.to_string(),
@@ -624,6 +663,12 @@ impl StartCmd {
         push_if_some!("execution-endpoint", self.execution_endpoint);
         push_if_some!("execution-ws-endpoint", self.execution_ws_endpoint);
         push_if_some!("execution-jwt", self.execution_jwt);
+        push_if_some!("payment-eth-socket", self.payment_eth_socket);
+        push_if_some!("payment-execution-socket", self.payment_execution_socket);
+        push_if_some!("payment-eth-rpc-endpoint", self.payment_eth_rpc_endpoint);
+        push_if_some!("payment-execution-endpoint", self.payment_execution_endpoint);
+        push_if_some!("payment-execution-ws-endpoint", self.payment_execution_ws_endpoint);
+        push_if_some!("payment-execution-jwt", self.payment_execution_jwt);
         push_if_some!("metrics", self.metrics);
         push_if_some!("rpc.addr", self.rpc_addr);
         push_if!("full", self.full);

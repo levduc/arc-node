@@ -51,6 +51,7 @@ use arc_consensus_db::invalid_payloads::InvalidPayload;
 pub async fn handle(
     state: &mut State,
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     from: PeerId,
     part: StreamMessage<ProposalPart>,
     reply: Reply<Option<ProposedValue<ArcContext>>>,
@@ -63,6 +64,7 @@ pub async fn handle(
 
     let context = HandlerContext {
         engine,
+        payment_engine,
         store: state.store().clone(),
         metrics: state.metrics().clone(),
         signing_provider: state.signing_provider().clone(),
@@ -133,6 +135,7 @@ fn record_proposal_in_monitor(state: &mut State, proposed_value: &ProposedValue<
 
 struct HandlerContext<'a, 'b> {
     engine: &'a Engine,
+    payment_engine: Option<&'a Engine>,
     store: Store,
     metrics: AppMetrics,
     signing_provider: ArcSigningProvider,
@@ -182,6 +185,7 @@ async fn on_received_proposal_part(
     // Validate the block
     validate_block(
         context.engine,
+        context.payment_engine,
         &context.metrics,
         &context.store,
         &mut block,
@@ -217,13 +221,14 @@ async fn on_received_proposal_part(
 /// so that consensus can proceed with the correct validity information.
 async fn validate_block(
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     metrics: &AppMetrics,
     store: &Store,
     block: &mut ConsensusBlock,
     from: PeerId,
 ) -> eyre::Result<()> {
     let validator = EnginePayloadValidator::new(engine, metrics);
-    let validity = validate_consensus_block(&validator, block, store, metrics)
+    let validity = validate_consensus_block(&validator, payment_engine, block, store, metrics)
         .await
         .wrap_err_with(|| {
             format!(

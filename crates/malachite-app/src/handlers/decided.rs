@@ -56,6 +56,7 @@ use crate::utils::sync_state::{sync_state, SyncState};
 pub async fn handle(
     state: &mut State,
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     certificate: CommitCertificate<ArcContext>,
     commit_ack: Reply<()>,
 ) -> eyre::Result<()> {
@@ -71,6 +72,7 @@ pub async fn handle(
 
     let block = decide(
         block_finalizer,
+        payment_engine,
         store, // undecided blocks repository
         store, // decided blocks repository
         pruning_service,
@@ -139,8 +141,10 @@ async fn store_proposal_monitor_on_decision(
 /// stored. If we error out before reaching the store (block lookup), the channel is dropped here
 /// without firing.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn decide(
     block_finalizer: impl BlockFinalizer,
+    payment_engine: Option<&Engine>,
     undecided_blocks: impl UndecidedBlocksRepository,
     decided_blocks: impl DecidedBlocksRepository,
     pruning_service: impl PruningService,
@@ -192,6 +196,19 @@ async fn decide(
     .wrap_err_with(|| {
         format!("Failed to commit block at height={height}, round={round}, value_id={value_id}")
     })?;
+
+    // Payment lane (second EL): make the decided payment block canonical on EL2,
+    // mirroring the EVM finalize above. The payment payload was already validated
+    // (newPayload) by every validator, so forkchoice to its hash advances EL2's head.
+    if let (Some(pe), Some(payment_payload)) = (payment_engine, block.payment_payload.as_ref()) {
+        let payment_hash = payment_payload.payload_inner.payload_inner.block_hash;
+        pe.set_latest_forkchoice_state(payment_hash)
+            .await
+            .wrap_err_with(|| {
+                format!("payment lane: failed to advance EL2 head to {payment_hash} at height={height}")
+            })?;
+        debug!("🪙 Payment lane forkchoice updated to {payment_hash} at height {height}");
+    }
 
     // Update the latest block
     info!(
@@ -490,6 +507,7 @@ mod tests {
 
         let result = decide(
             block_finalizer,
+            None,
             undecided_blocks,
             decided_blocks,
             pruning_service,
@@ -527,6 +545,7 @@ mod tests {
 
         let result = decide(
             block_finalizer,
+            None,
             undecided_blocks,
             decided_blocks,
             pruning_service,
@@ -563,6 +582,7 @@ mod tests {
 
         let result = decide(
             block_finalizer,
+            None,
             undecided_blocks,
             decided_blocks,
             pruning_service,
@@ -605,6 +625,7 @@ mod tests {
 
         let result = decide(
             block_finalizer,
+            None,
             undecided_blocks,
             decided_blocks,
             pruning_service,

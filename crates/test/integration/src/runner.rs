@@ -654,6 +654,12 @@ async fn spawn_consensus_layer(
         rpc_sync_endpoints: Vec::new(),
         gossipsub_overrides: GossipSubOverrides::default(),
         execution_ws_endpoint: None,
+        payment_eth_socket: None,
+        payment_execution_socket: None,
+        payment_eth_rpc_endpoint: None,
+        payment_execution_endpoint: None,
+        payment_execution_ws_endpoint: None,
+        payment_execution_jwt: None,
     };
 
     let home_dir: PathBuf = base_dir.to_path_buf();

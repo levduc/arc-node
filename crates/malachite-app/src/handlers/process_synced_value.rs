@@ -53,6 +53,7 @@ const SYNC_PERSISTENCE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 pub async fn handle(
     state: &mut State,
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     height: Height,
     round: Round,
     proposer: Address,
@@ -61,6 +62,7 @@ pub async fn handle(
 ) -> Result<(), eyre::Error> {
     let proposal = match on_process_synced_value(
         EnginePayloadValidator::new(engine, state.metrics()),
+        payment_engine,
         state.store(),
         state.store(),
         state.persistence_meter(),
@@ -110,6 +112,10 @@ pub async fn handle(
 #[allow(clippy::too_many_arguments)]
 async fn on_process_synced_value(
     engine: impl PayloadValidator,
+    // NOTE (dual-EL v0): the synced value carries only the EVM payload, so synced
+    // blocks have no payment lane to re-validate. The live proposal-streaming path
+    // carries both lanes; value-sync of the payment lane is a follow-up.
+    payment_engine: Option<&Engine>,
     undecided_blocks_repo: impl UndecidedBlocksRepository,
     invalid_payloads_repo: impl InvalidPayloadsRepository,
     persistence_meter: impl PersistenceMeter,
@@ -156,7 +162,7 @@ async fn on_process_synced_value(
     };
 
     let validity = validate_consensus_block(
-        &engine, &block, &invalid_payloads_repo, metrics,
+        &engine, payment_engine, &block, &invalid_payloads_repo, metrics,
     )
     .await
     .wrap_err_with(|| {
@@ -286,6 +292,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let Some(proposal) = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -342,6 +349,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -386,6 +394,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let result = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -423,6 +432,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let result = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -466,6 +476,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let result = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -517,6 +528,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             persistence_meter,
@@ -567,6 +579,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             persistence_meter,
@@ -619,6 +632,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             persistence_meter,
@@ -696,6 +710,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             persistence_meter,
