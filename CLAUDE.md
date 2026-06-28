@@ -189,3 +189,15 @@ memory/storage **schematic into the body §3** (replaces the stage-bar as `fig:e
 Paper now consistent end-to-end: isolation + reuse-reth thesis; UTXO an alternative; the commitment
 for the lean EVM state is the central research front. Avoid re-introducing UTXO-leaning or unmeasured
 numbers in future edits.
+
+### Dual-EL payment-lane implementation (branch `dual-el-payment-lane`)
+Goal: each node = 1 CL (Malachite) + 2 ELs (EVM-EL + lean payment-EL, both reth); every block carries
+TWO roots (evmStateRoot + paymentRoot), both built by the proposer and re-executed by every validator;
+a dual-lane spammer stress-tests both. This is the paper's full design — **multi-day, consensus-critical**
+(NOT one-night). Full file-by-file plan in **`docs/dual-el-payment-lane.md`** (commit e32d77c). Status:
+branch + blueprint done; **no consensus code written yet** (deliberately — the riskiest piece, step 3, is
+an SSZ + proposal-streaming change to `ConsensusBlock` that breaks consensus if rushed). Step order
+(low-risk first): (1) 2nd Engine additive in eth-engine/config; (2) CLI+quake 2nd EL endpoint + 2nd
+genesis; (3) `ConsensusBlock.payment_payload` field [HIGH risk]; (4) proposer builds both; (5) validators
+re-execute both; (6) dual-lane spammer. Each consensus change must pass differential replay (all
+validators compute identical paymentRoot) before trusting it.
