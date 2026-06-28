@@ -178,7 +178,14 @@ results are deterministic and reproduce exactly (utxo-bench 25M = **3.42 GB**, m
 **5.52 GB** both reconfirmed to the decimal). Timings vary ±~15% run-to-run; parallel throughput
 is load-sensitive (92k contended vs 105k idle) — paper now states ranges, not point values.
 
-PENDING (next task): read the WHOLE paper end-to-end and make it consistent with the above —
-**abstract + intro (§1) have NOT yet been re-read** and may still lean UTXO-first; align them and
-any other spot to "isolation + reuse-reth; UTXO is an alternative; commitment is the research
-front." Avoid leaning to UTXO anywhere. Do not introduce unmeasured numbers.
+DONE (end-to-end consistency pass, all pushed, compiles clean 25 pp): read the whole paper;
+removed every UTXO-lean spot (abstract, §2 RQ list, §3 forward-ref, §4.3 "State and commitment"
+now account-first, §4 takeaway now RECOMMENDS Approach 2, open-questions list). Moved the
+memory/storage **schematic into the body §3** (replaces the stage-bar as `fig:exec-anatomy`,
+"why I/O is bad"); App C keeps the cold/warm/V2 **bar chart**. Consolidated **§4.4** into a
+"three measurements, one conclusion" synthesis table (reth shallow/big + Block-STM + UTXO-vs-account
+→ isolate + reuse-reth + commitment-is-the-lever); moved the detailed Block-STM per-thread table to
+**App E item 7**. Verified numbers reproduce (3.42 / 5.52 GB exact; timings stated as ranges).
+Paper now consistent end-to-end: isolation + reuse-reth thesis; UTXO an alternative; the commitment
+for the lean EVM state is the central research front. Avoid re-introducing UTXO-leaning or unmeasured
+numbers in future edits.
