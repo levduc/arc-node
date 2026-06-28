@@ -83,3 +83,38 @@ Confirmed exact change set for "CL combines two payloads → consensus":
 
 Consensus value stays the EVM block hash for v0 (payment payload co-streamed + co-validated);
 folding paymentRoot into the value is a v1 hardening.
+
+## STEP 3 DONE + VALIDATED (2026-06-28, commit on branch dual-el-payment-lane)
+The consensus block carries two roots. `ConsensusBlock.payment_payload: Option<ExecutionPayloadV3>`;
+`SszBlock` is now an 8-tuple (ethereum_ssz supports Tuple9 — verified, no struct needed);
+`block_as_ssz_data` encodes it; proposal streaming length-frames the two lanes
+(`[u64 len(evm)][evm ssz][payment ssz?]` in make_proposal_parts / assemble_block_from_parts);
+store encode/decode carry it; all 18 construction sites default to `None` so the single-EL path is
+unchanged. VALIDATED: new round-trip test `assemble_block_round_trips_payment_payload` (both lanes
+survive streaming) + 82 consensus-db tests + existing assemble round-trips pass; full
+`arc-node-consensus` crate compiles. Consensus value still = EVM block hash (payment co-validated).
+
+## STEP 4 — precise plan (engine plumbing + build/validate both)
+Construction + threading (verified sites):
+- `crates/malachite-app/src/config.rs`: add a 2nd endpoint set to `Config` (e.g. `execution2_*`)
+  + a `payment_engine_config()` mirroring `engine_config()` (l.159). CLI flags in
+  `crates/malachite-cli/.../start.rs` (mirror eth_socket/execution_socket or *_endpoint).
+- `crates/malachite-app/src/node.rs` (~l.742): where `engine` is built + `crate::app::run(state,
+  channels, engine, rx_app_req, cancel_token)` is called — also build
+  `let payment_engine: Option<Engine> = match config.payment_engine_config() { Some(c)=>Some(c.connect().await?), None=>None }`
+  and pass it to `run`.
+- `app::run` (app.rs:33) takes `payment_engine: Option<Engine>` → `go(&mut state, channels, &engine,
+  payment_engine.as_ref(), rx_app_req)`. Thread `payment_engine: Option<&Engine>` through `go`
+  (app.rs:122) to the build path (started_round/consensus_ready → get_value::build_and_validate_block
+  → build_block, get_value.rs:214/265) and the validate path (received_proposal_part /
+  process_synced_value / started_round → validate_consensus_block → validate_payload, payload.rs:213).
+  ~10 signatures (mechanical). Engine is NOT in State and build/validate don't take State, so a
+  sibling `Option<&Engine>` param is the path (not a State field).
+- **build both** (get_value.rs build_block): if `payment_engine` is Some, build the payment payload
+  with a 2nd `EnginePayloadGenerator { engine: payment_engine }` (forkchoice_updated + get_payload
+  on EL2) and set `block.payment_payload = Some(...)`.
+- **validate both** (payload.rs validate_payload / validate_consensus_block): if
+  `block.payment_payload` is Some and `payment_engine` is Some, also `notify_new_block` it on EL2;
+  block invalid if either lane fails.
+- Then: 100M payment genesis; revert reth fork for Docker; rebuild CL image; run; differential-replay
+  (all validators identical paymentRoot); dual-lane spammer.
