@@ -201,3 +201,14 @@ an SSZ + proposal-streaming change to `ConsensusBlock` that breaks consensus if 
 genesis; (3) `ConsensusBlock.payment_payload` field [HIGH risk]; (4) proposer builds both; (5) validators
 re-execute both; (6) dual-lane spammer. Each consensus change must pass differential replay (all
 validators compute identical paymentRoot) before trusting it.
+
+**STEP 2 DONE + VERIFIED (2026-06-28):** `experiments/dual-el/launch-payment-els.sh` launches a 2nd
+reth EL ("payment lane") per validator on the running localdev4 testnet (real `arc_execution` image,
+own datadir `reth-pay`, genesis, ports http 19545/19645/19745/19845, discovery off, on
+`arc_testnet_host-access` — NOT the `internal:true` `arc_testnet_default`, or published ports don't
+route). Verified: 4 payment ELs up, RPC chainId=1337 block=0 (idle), while EVM ELs advance (blk 213+).
+Gotcha: localdev EL uses IPC auth (no `jwtsecret` file) → don't pass `--authrpc.jwtsecret`; let reth
+auto-gen `<datadir>/jwt.hex`. **STEP 1 NOT done** (CL driving EL2): coupled to step 4 and blocked by
+the consensus Docker image rebuild (Cargo.toml reth `file://` fork unreachable in Docker build) —
+do steps 1+3+4 together next. The base testnet here was started with `-e 50000 --monitoring false`
+(blockscout fails otherwise); validator1 sometimes doesn't boot (3/4 is enough for BFT).
