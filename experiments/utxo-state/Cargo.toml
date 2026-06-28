@@ -12,6 +12,8 @@ alloy-primitives = "1.6"
 alloy-trie = "0.9.5"
 curve25519-dalek-ng = { version = "4.1", features = ["u64_backend"] }
 sha2 = "0.9"
+k256 = { version = "0.13", features = ["ecdsa"] }
+rayon = "1"
 
 [profile.release]
 opt-level = 3
