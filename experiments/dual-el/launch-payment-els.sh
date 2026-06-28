@@ -13,8 +13,9 @@ set -u
 NET=arc_testnet_default
 HOSTNET=arc_testnet_host-access
 IMG=arc_execution:latest
-ASSETS="$(pwd)/.quake/localdev4/assets"
-BASE="$(pwd)/.quake/localdev4"
+TESTNET="${TESTNET:-localdev4}"
+ASSETS="$(pwd)/.quake/$TESTNET/assets"
+BASE="$(pwd)/.quake/$TESTNET"
 [ -d "$ASSETS" ] || { echo "no testnet assets at $ASSETS (start the testnet first)"; exit 1; }
 [ -f "$ASSETS/payment-jwt.hex" ] || { echo "missing $ASSETS/payment-jwt.hex"; exit 1; }
 

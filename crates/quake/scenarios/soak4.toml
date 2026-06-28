@@ -1,0 +1,22 @@
+# 4-validator localdev scenario (reth-2.3 + Malachite consensus demo).
+# Malachite BFT tolerates f=1 fault with 3f+1=4 validators.
+cl.config.execution_persistence_backpressure = true
+
+# Consensus-ceiling sweep: let the proposer build big blocks (default 100ms caps
+# gas/block at ~140M). 400ms + wait-for-payload fills toward the 500M gas limit.
+el.config.arc.builder.deadline = 2000
+el.config.arc.builder.wait-for-payload = true
+
+# Each validator uses a distinct fee recipient so we can tell which validator
+# proposed a given block.
+[nodes.validator1]
+cl_suggested_fee_recipient = "0x1111111111111111111111111111111111111111"
+
+[nodes.validator2]
+cl_suggested_fee_recipient = "0x2222222222222222222222222222222222222222"
+
+[nodes.validator3]
+cl_suggested_fee_recipient = "0x3333333333333333333333333333333333333333"
+
+[nodes.validator4]
+cl_suggested_fee_recipient = "0x4444444444444444444444444444444444444444"
