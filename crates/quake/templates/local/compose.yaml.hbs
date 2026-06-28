@@ -149,6 +149,11 @@ services:
       {{#each consensus.cli_flags}}
       - "{{{this}}}"
       {{/each}}
+      {{! Dual-EL payment lane: CL drives a 2nd payment EL named NODE_el_pay }}
+      - "--payment-eth-rpc-endpoint=http://{{name}}_el_pay:8545"
+      - "--payment-execution-endpoint=http://{{name}}_el_pay:8551"
+      - "--payment-execution-ws-endpoint=ws://{{name}}_el_pay:8546"
+      - "--payment-execution-jwt=/app/assets/payment-jwt.hex"
       {{#if ../rpc}}
       - "--eth-rpc-endpoint=http://{{execution.inner.name}}:8545"
       - "--execution-endpoint=http://{{execution.inner.name}}:8551"

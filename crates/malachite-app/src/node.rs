@@ -701,6 +701,18 @@ impl App {
             engine.set_osaka_from_chain_id(chain_id.as_u64());
         }
 
+        // Configure the payment-lane engine's Engine API V4/V5 selection the same way
+        // (its EL uses the same genesis/forks), so get_payload uses the correct version.
+        if let Some(ref payment_engine) = payment_engine {
+            if let Some(ref genesis_path) = env_config.genesis_file_path {
+                payment_engine
+                    .set_osaka_from_genesis_file(genesis_path)
+                    .wrap_err("Failed to configure Osaka activation for payment engine")?;
+            } else {
+                payment_engine.set_osaka_from_chain_id(chain_id.as_u64());
+            }
+        }
+
         info!(
             %chain_id,
             genesis_hash = %genesis_block.block_hash,
