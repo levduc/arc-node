@@ -82,3 +82,54 @@ Reference clone at `/home/papaduck/reth-2.0-ref` (git tag v2.0.0). Crate name li
 - After arc-evm: expect similar in `crates/evm-node`, `crates/execution-*`, then layer 3 (reth SDK node-builder/payload/Storage-V2), then datadir migration.
 
 HONEST STATUS: dependency + reconciliation layers are DONE (big milestone — from "won't resolve" to "10 specific core-EVM API errors"). Remaining = deep semantic port of Arc's EVM executor to revm 36 + reth-2.0 SDK; multi-day, human-reviewed (consensus-critical). No working build yet, so **no real "reth 2.0 on Arc delivery number" exists** — do not fabricate one. Closest real proxies: warm-cache 235 Mgas/s (Arc reth 1.11) and reth 2.0's published ~2 ms state-root / 1.7 Ggas/s on large blocks.
+
+## Payment-lane / UTXO experiment (branch `utxo-state-experiment`)
+
+Goal: test the paper's payment-sector thesis empirically — can a UTXO payment state (a) stay in RAM
+as tx volume grows, (b) be committed cheaply, and (c) beat reth + simple native (account) transfers?
+Standalone crate **`experiments/utxo-state/`** (own `[workspace]`, detached from the reth fork; deps
+cached: alloy-primitives, alloy-trie, k256/ecdsa, curve25519-dalek-ng, rayon). Bins
+(`cargo run --release --bin <name>`):
+
+- `utxo-bench` — RAM UTXO set + 3 commitment schemes. **25M UTXOs = 3.4 GB RAM; ECMH commit flat
+  ~259 ms/block across a 250× state increase; MPT/Merkle full roots are O(n).**
+- `merkle_acc` — hash-only incremental Merkle accumulator (no DLog). **Flat ~325 ms/block to 25M,
+  5.5 GB RAM, ~11 µs/update** (constant depth). Hash-only commitment is forced if you drop DLog (the
+  additive multiset hash is broken by Wagner's k-sum; ECMH needs a group).
+- `two_el` — two-EL/two-root prototype: a mock CL fans out to an MPT-rooted EVM-EL and an ECMH-rooted
+  UTXO Payment-EL **in parallel** and merges both roots into one header. Shows **block time =
+  max(T_evm, T_pay)**; lane ~free while T_pay < T_evm (crossover ~10k payments/block at T_evm≈140 ms).
+- `utxo_tx` — real secp256k1-signed UTXO payments end-to-end. **~8.5k tx/s single-thread, verify =
+  75% of cost (~82 µs k256 ECDSA); state+Merkle ~3× cheaper.**
+- `compare` — UTXO vs account-native, single-thread, same secp256k1+Merkle. **~equal (account
+  marginally faster: fewer state writes).**
+- `parallel_cmp` — parallel throughput. ~104k tx/s both, ~9× scaling. **(Had a bug — see below.)**
+- `contention` — the corrected contention test (real balance RMW).
+
+### KEY FINDINGS (honest — all measured on i7-11700F 8C/16T, 62 GB, testnet stopped for parallel runs)
+- **For SIMPLE payments, UTXO is NOT faster than reth-style native transfers.** Single-thread and
+  parallel they are ~equal (~105k tx/s on 16 threads), both **signature-verification-bound** (~9 µs/tx
+  parallel k256 ECDSA; libsecp256k1 ~2× faster). Verification is contention-free and parallelizes
+  identically for both models.
+- **Account contention is real but invisible for simple transfers.** `contention` models REAL balance
+  read-modify-write: hot recipients give 97% conflict and a hot account touched 1309× (non-commutative).
+  Throughput is unchanged because the contended work (a balance add) is ~0 µs vs 9 µs/tx verify.
+  Contention only bites when the contended *work* is expensive (contracts).
+- **BUG I made and fixed (do not repeat):** the first `parallel_cmp` "account" path wrote a CONSTANT
+  leaf and batched changes like UTXO — it never modeled RMW or hot-account serialization, so its
+  "account == UTXO" was an artifact. `contention` fixes it. Also fixed a parallel-Merkle early-`break`
+  that skipped levels to the root when changes collapsed into one subtree.
+- **Where UTXO actually wins (architecture, not per-tx speed):** (1) a small **RAM-resident** payment
+  lane avoids reth's disk-bound 169 GB shared MPT (App C: 0.1–0.37 Ggas/s on real state vs ~105k tx/s
+  in RAM); (2) it **avoids the Block-STM contention machinery** (deterministic parallel, zero aborts —
+  robust under adversarial contention); (3) conflict-free parallelism for EXPENSIVE/contract execution.
+  The win is **isolation + small RAM state**, not "UTXO > account".
+- **Commitment choice:** Merkle is fine. ECMH (32 B, O(1)) needs DLog → rejected. Hash-only ⇒ incremental
+  Merkle (additive multiset hash is k-sum-broken). Mature alternatives: Bitcoin Core **MuHash**
+  (incremental multiset hash, group-based, what `coinstatsindex` ships) or **libbitcoinkernel** (C++/FFI,
+  full Bitcoin tx/Script semantics; needs cmake — NOT installed here). No reth-style EL uses Utreexo;
+  Utreexo lives in Bitcoin nodes (utreexod, Floresta/`rustreexo`).
+- **How Bitcoin scales sig verify (no batching):** libsecp256k1 + parallel `CCheckQueue` + **signature
+  cache** (verify-once at mempool, skip at block connect). reth caches recovered senders similarly.
+
+DO NOT fabricate numbers. k256 (pure Rust) is ~2× slower than libsecp256k1.
