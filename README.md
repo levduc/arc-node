@@ -1,3 +1,90 @@
+# Dual-EL payment-lane testnet (two lanes, two roots)
+
+> This fork adds a **second execution lane** to Arc. Each node runs **1 consensus layer (Malachite) + 2
+> execution layers (reth)** — a general **EVM lane** and a lean **payment lane** — and **every block
+> commits two state roots**. The CL builds, validates, and finalizes *both* ELs each block; all
+> validators re-execute both lanes and must agree on both roots.
+>
+> Full reference (architecture, gotchas, teardown): [`docs/dual-el-runbook.md`](docs/dual-el-runbook.md).
+
+```
+   Malachite BFT (4 validators): ordered heights, one commit certificate per height
+            │                         │
+   ConsensusBlock(N)          ConsensusBlock(N+1)
+   ├ execution_payload ─parentHash→ execution_payload      ← EVM lane  (its own hash chain)
+   ├ payment_payload   ─parentHash→ payment_payload        ← payment lane (its own hash chain)
+   └ proposer signature
+```
+
+## Prerequisites
+- Linux + Docker (compose v2), ≥8 cores, ≥16 GB RAM, ≥80 GB free disk.
+- **Node.js 22** (`nvm install 22 && nvm use 22`) — Node 18 breaks genesis.
+- **Rust** (rustup, picks up `rust-toolchain.toml`), **clang + libclang-dev**, **Foundry** (`.foundry-version`).
+
+## 1. Build (Docker images for both ELs + the dual-EL CL, plus the testnet manager)
+```bash
+make build-docker          # builds arc_execution:latest + arc_consensus:latest (BUILD_PROFILE=dev)
+cargo build --bin quake    # quake embeds the dual-EL docker-compose template
+cargo build --release --bin spammer   # load generator
+```
+
+## 2. Start the 4-node testnet (each node: 1 CL + 1 EVM-EL)
+```bash
+nvm use 22
+cargo run --bin quake -- -f crates/quake/scenarios/soak4.toml start -e 1000 --monitoring false
+```
+EVM ELs publish host ports **8545 / 8645 / 8745 / 8845** (http), `+1` ws, `+6` authrpc.
+
+## 3. Add the second (payment) EL to every node
+```bash
+cp assets/localdev/payment-jwt.hex .quake/soak4/assets/
+TESTNET=soak4 bash experiments/dual-el/launch-payment-els.sh
+```
+Payment ELs publish **19545 / 19645 / 19745 / 19845** (http), `+1` ws, `+6` authrpc. Each CL was
+generated with `--payment-execution-endpoint=http://NODE_el_pay:8551` and connects automatically
+(it retries until the payment EL is up). Within seconds both lanes advance in lockstep.
+
+## 4. Verify (two lanes, two roots, all validators agree)
+```bash
+# both lanes advancing, in lockstep:
+for p in 8645 19645; do cast block-number --rpc-url http://127.0.0.1:$p; done
+
+# cross-validator agreement at a settled height H (all four must print the SAME hash, per lane):
+H=$(($(cast block-number --rpc-url http://127.0.0.1:19645)-10))
+for p in 19545 19645 19745 19845; do cast block $H --rpc-url http://127.0.0.1:$p --json | jq -r .hash; done
+```
+
+## 5. Stress both lanes
+```bash
+# EVM lane:
+target/release/spammer ws --targets ws://127.0.0.1:8646,ws://127.0.0.1:8746,ws://127.0.0.1:8846 \
+  -r 300 -t 60 -a 500 -g 4 --mix transfer=100
+# payment lane:
+target/release/spammer ws --targets ws://127.0.0.1:19646,ws://127.0.0.1:19746,ws://127.0.0.1:19846 \
+  -r 300 -t 60 -a 500 -g 4 --mix transfer=100
+# fill blocks to the 100M gas limit with high-gas txs:
+#   --mix guzzler=100 --guzzler-fn-weights "hash-loop=100@2000"
+```
+
+## 6. Soak / correctness monitor (liveness + cross-validator agreement + health, with continuous spam)
+```bash
+DUR=3600 RATE=300 bash experiments/dual-el/soak.sh      # 1h; DUR=86400 for 24h
+```
+
+## Teardown
+```bash
+docker ps -aq --filter name=validator | xargs -r docker rm -f
+docker run --rm -v "$PWD/.quake":/q alpine rm -rf /q/soak4
+```
+
+> **Common gotchas** (full list in the runbook): a stray `anvil` on host `:8545` shadows validator1's
+> EVM host port (the node still works — query it over the docker network); leftover blockscout
+> containers from a monitored run can recreate the testnet dir as root (use `--monitoring false`);
+> EL datadirs are root-owned, so clear with the throwaway-container `rm` above; start all 4 validators
+> together from genesis (value-sync of a late joiner doesn't carry the payment lane in v0).
+
+---
+
 <p align="center">
   <a href="https://www.arc.network/">
     <picture>
