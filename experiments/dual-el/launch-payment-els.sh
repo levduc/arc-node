@@ -34,7 +34,9 @@ for i in 1 2 3 4; do
       --http --http.addr=0.0.0.0 --http.port=8545 --http.corsdomain='*' --http.api=eth,net,web3,txpool,debug \
       --ws --ws.addr=0.0.0.0 --ws.port=8546 --ws.origins='*' --ws.api=eth,net,web3,txpool \
       --authrpc.addr=0.0.0.0 --authrpc.port=8551 --authrpc.jwtsecret=/app/assets/payment-jwt.hex \
-      --metrics=0.0.0.0:9001 --disable-discovery --ipcdisable >/dev/null \
+      --metrics=0.0.0.0:9001 --disable-discovery --ipcdisable \
+      --arc.builder.deadline=2000 --arc.builder.wait-for-payload=true --txpool.nolocals \
+      --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 >/dev/null \
     && { docker network connect "$HOSTNET" "$name" 2>/dev/null; \
          echo "launched $name on $NET+$HOSTNET (RPC http://127.0.0.1:${http})"; } \
     || echo "FAILED $name"
