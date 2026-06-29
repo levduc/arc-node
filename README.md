@@ -1,3 +1,55 @@
+# Arc on reth 2.3 (execution-layer upgrade)
+
+> This branch ports Arc's execution layer from **reth 1.11 → reth 2.3** (revm 40, alloy 2.0,
+> Storage V2) while keeping the **Malachite** BFT consensus layer unchanged — CL↔EL is just the
+> Ethereum Engine API. It runs a **normal single-EL Arc node** (no payment-lane changes). reth 2.3
+> brings the sparse-trie cache / partial-proofs state-root path and the MDBX+RocksDB+static-files
+> Storage-V2 layout. Validated as a **live 4-node Malachite + reth-2.3 testnet**.
+
+## Run a local testnet on reth 2.3
+
+### Prerequisites
+- Linux/macOS + **Docker** (compose v2), ≥8 cores, ≥16 GB RAM, ≥50 GB free disk.
+- **Node.js 22** (`nvm install 22 && nvm use 22`) — Hardhat needs an even Node version; Node 18 breaks genesis.
+- **Rust 1.93** (rustup auto-selects it from `rust-toolchain.toml`), **clang + libclang-dev**,
+  **Foundry** (`.foundry-version`).
+
+### Start (one command — genesis + build both Docker images + run)
+```bash
+nvm use 22
+make testnet          # 5 validators (CL+EL) + Prometheus/Grafana/Blockscout, on reth 2.3
+```
+Lighter 4-validator run without the monitoring stack:
+```bash
+make testnet QUAKE_MANIFEST=crates/quake/scenarios/localdev4.toml \
+             QUAKE_START_ARGS="-e 1000 --monitoring false"
+```
+Validator1's EL RPC is on host `http://127.0.0.1:8545` (http) / `8546` (ws); the others on
+`8645/8745/8845/...`. (Build the images separately with `make build-docker` if you want to inspect
+the step; `make build` builds the host binaries.)
+
+### Verify it's producing blocks
+```bash
+cast block-number --rpc-url http://127.0.0.1:8545         # should climb
+cast block 1      --rpc-url http://127.0.0.1:8545 --json  # real reth-2.3 block (storage_v2)
+```
+
+### Drive load / stop
+```bash
+make testnet-load RATE=1000 TIME=60   # send tx load
+make testnet-down                     # stop
+make testnet-clean                    # remove all testnet resources
+```
+
+> Notes: reth 2.3 defaults to **Storage V2**, so this starts a **fresh** chain (no V1→V2 migration
+> needed for localdev). The reth dependencies point at the upstream tag `v2.3.0` (no local fork), so
+> it builds on any machine with network access. For joining the **public** Arc testnet you also need
+> public CL bootnodes/chainspec and a V1→V2 datadir migration — out of scope for this local runbook.
+
+The full developer guide (build, lint, tests, coverage, architecture) continues below.
+
+---
+
 <p align="center">
   <a href="https://www.arc.network/">
     <picture>
