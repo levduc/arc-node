@@ -18,21 +18,19 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use eyre::Context;
-use ssz::Decode;
 use tracing::{error, warn};
 
 use malachitebft_app_channel::app::types::core::Round;
 use malachitebft_app_channel::app::types::ProposedValue;
 use malachitebft_app_channel::Reply;
 
-use alloy_rpc_types_engine::ExecutionPayloadV3;
 use arc_consensus_types::{Address, ArcContext, Height};
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::persistence_meter::PersistenceMeter;
 
 use malachitebft_app_channel::app::types::core::Validity;
 
-use crate::block::ConsensusBlock;
+use crate::block::{unframe_lanes, ConsensusBlock};
 use crate::metrics::{AppMetrics, InvalidPayloadSource};
 use crate::payload::{validate_consensus_block, EnginePayloadValidator, PayloadValidator};
 use crate::state::State;
@@ -112,9 +110,9 @@ pub async fn handle(
 #[allow(clippy::too_many_arguments)]
 async fn on_process_synced_value(
     engine: impl PayloadValidator,
-    // NOTE (dual-EL v0): the synced value carries only the EVM payload, so synced
-    // blocks have no payment lane to re-validate. The live proposal-streaming path
-    // carries both lanes; value-sync of the payment lane is a follow-up.
+    // The synced value carries BOTH lanes (framed identically to the proposal-
+    // streaming path), so synced blocks re-validate the payment lane and
+    // reconstruct the same `value_id` the certificate was signed over.
     payment_engine: Option<&Engine>,
     undecided_blocks_repo: impl UndecidedBlocksRepository,
     invalid_payloads_repo: impl InvalidPayloadsRepository,
@@ -125,12 +123,12 @@ async fn on_process_synced_value(
     proposer: Address,
     value_bytes: Bytes,
 ) -> eyre::Result<Option<ProposedValue<ArcContext>>> {
-    let payload = match ExecutionPayloadV3::from_ssz_bytes(&value_bytes) {
-        Ok(payload) => payload,
+    let (payload, payment_payload) = match unframe_lanes(&value_bytes) {
+        Ok(pair) => pair,
         Err(e) => {
             warn!(
                 %height, %round, %proposer,
-                "Failed to decode synced value into an execution payload: {e:?}",
+                "Failed to decode synced value into execution payloads: {e:?}",
             );
             metrics.inc_invalid_payloads_count(InvalidPayloadSource::SyncDecode);
 
@@ -158,7 +156,7 @@ async fn on_process_synced_value(
         execution_payload: payload,
         validity: Validity::Valid,
         signature: None,
-    payment_payload: None,
+        payment_payload,
     };
 
     let validity = validate_consensus_block(
@@ -175,20 +173,23 @@ async fn on_process_synced_value(
     block.validity = validity;
 
     let block_hash = block.block_hash();
+    // The undecided store is keyed by the consensus value id (commitment over
+    // both lanes), so dedup must probe by value_id, not the EVM block hash.
+    let value_id = block.value_id();
 
     if !validity.is_valid() {
         error!(%height, %round, %proposer, %block_hash, "❌ Received invalid payload via sync");
     }
 
-    // If a undecided block for the sync value height round and hash exists then skip `wait_for_persisted_block`
+    // If a undecided block for the sync value height round and value_id exists then skip `wait_for_persisted_block`
     // so consensus path is not blocked on EL persistence.
     if let Some(existing) = undecided_blocks_repo
-        .get_by_round_and_hash(height, round, block_hash)
+        .get_by_round_and_hash(height, round, value_id)
         .await
         .wrap_err_with(|| {
             format!(
                 "Failed to query undecided blocks repo for dedup at \
-                 height={height}, round={round}, block_hash={block_hash}"
+                 height={height}, round={round}, value_id={value_id}"
             )
         })?
     {
@@ -242,7 +243,8 @@ mod tests {
     use bytes::Bytes;
     use malachitebft_core_types::Validity;
     use mockall::predicate::*;
-    use ssz::Encode;
+    use alloy_rpc_types_engine::ExecutionPayloadV3;
+    use arc_consensus_types::block::frame_lanes;
     use std::io;
 
     /// Sets up the dedup query (`get_by_round_and_hash`) on an
@@ -264,7 +266,7 @@ mod tests {
         let round = Round::new(0);
         let proposer = Address::new([0u8; 20]);
         let payload = ExecutionPayloadV3::arbitrary(&mut u).unwrap();
-        let value_bytes = Bytes::from(payload.as_ssz_bytes());
+        let value_bytes = Bytes::from(frame_lanes(&payload, None));
 
         let mut engine = MockPayloadValidator::new();
         engine
@@ -378,7 +380,7 @@ mod tests {
         let round = Round::new(0);
         let proposer = Address::new([0u8; 20]);
         let payload = ExecutionPayloadV3::arbitrary(&mut u).unwrap();
-        let value_bytes = Bytes::from(payload.as_ssz_bytes());
+        let value_bytes = Bytes::from(frame_lanes(&payload, None));
 
         let mut engine = MockPayloadValidator::new();
         engine
@@ -456,7 +458,7 @@ mod tests {
         let round = Round::new(0);
         let proposer = Address::new([0u8; 20]);
         let payload = ExecutionPayloadV3::arbitrary(&mut u).unwrap();
-        let value_bytes = Bytes::from(payload.as_ssz_bytes());
+        let value_bytes = Bytes::from(frame_lanes(&payload, None));
 
         let mut engine = MockPayloadValidator::new();
         engine
@@ -501,7 +503,7 @@ mod tests {
         let round = Round::new(0);
         let proposer = Address::new([0u8; 20]);
         let payload = ExecutionPayloadV3::arbitrary(&mut u).unwrap();
-        let value_bytes = Bytes::from(payload.as_ssz_bytes());
+        let value_bytes = Bytes::from(frame_lanes(&payload, None));
 
         let mut engine = MockPayloadValidator::new();
         engine
@@ -554,7 +556,7 @@ mod tests {
         let round = Round::new(0);
         let proposer = Address::new([0u8; 20]);
         let payload = ExecutionPayloadV3::arbitrary(&mut u).unwrap();
-        let value_bytes = Bytes::from(payload.as_ssz_bytes());
+        let value_bytes = Bytes::from(frame_lanes(&payload, None));
 
         let mut engine = MockPayloadValidator::new();
         engine.expect_validate_payload().returning(|_| {
@@ -605,7 +607,7 @@ mod tests {
         let round = Round::new(0);
         let proposer = Address::new([0u8; 20]);
         let payload = ExecutionPayloadV3::arbitrary(&mut u).unwrap();
-        let value_bytes = Bytes::from(payload.as_ssz_bytes());
+        let value_bytes = Bytes::from(frame_lanes(&payload, None));
 
         let mut engine = MockPayloadValidator::new();
         engine
@@ -670,7 +672,7 @@ mod tests {
         let proposer = Address::new([1u8; 20]);
         let payload = ExecutionPayloadV3::arbitrary(&mut u).unwrap();
         let block_hash = payload.payload_inner.payload_inner.block_hash;
-        let value_bytes = Bytes::from(payload.as_ssz_bytes());
+        let value_bytes = Bytes::from(frame_lanes(&payload, None));
 
         let existing_block = ConsensusBlock {
             height,

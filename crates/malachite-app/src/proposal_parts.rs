@@ -15,9 +15,8 @@
 // limitations under the License.
 
 use bytes::Bytes;
-use eyre::{eyre, Context as _};
+use eyre::Context as _;
 use sha3::Digest;
-use ssz::{Decode, Encode};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -27,7 +26,6 @@ use malachitebft_app_channel::app::streaming::{StreamContent, StreamId, StreamMe
 use malachitebft_app_channel::app::types::core::{Round, Validity};
 use malachitebft_app_channel::NetworkMsg;
 
-use alloy_rpc_types_engine::ExecutionPayloadV3;
 use arc_consensus_types::proposer::ProposerSelector;
 use arc_consensus_types::signing::{Signature, SigningError, SigningProvider, VerificationResult};
 use arc_consensus_types::{
@@ -35,7 +33,7 @@ use arc_consensus_types::{
     Validator, ValidatorSet,
 };
 
-use crate::block::ConsensusBlock;
+use crate::block::{frame_lanes, unframe_lanes, ConsensusBlock};
 
 #[cfg_attr(test, mockall::automock(type Error = std::io::Error;))]
 pub trait PublishProposalPart {
@@ -136,16 +134,7 @@ pub async fn make_proposal_parts(
 
     // Framed payload bytes: [u64-LE len(evm)] [evm SSZ] [payment SSZ (optional)].
     // The length prefix lets the decoder split the two lanes; absent payment lane => no trailer.
-    let data = {
-        let evm = block.execution_payload.as_ssz_bytes();
-        let mut buf = Vec::with_capacity(8 + evm.len());
-        buf.extend_from_slice(&(evm.len() as u64).to_le_bytes());
-        buf.extend_from_slice(&evm);
-        if let Some(pay) = &block.payment_payload {
-            buf.extend_from_slice(&pay.as_ssz_bytes());
-        }
-        buf
-    };
+    let data = frame_lanes(&block.execution_payload, block.payment_payload.as_ref());
 
     // Init
     {
@@ -287,24 +276,7 @@ pub fn assemble_block_from_parts(parts: &ProposalParts) -> eyre::Result<Consensu
     }
 
     // Framed: [u64-LE len(evm)] [evm SSZ] [payment SSZ (optional)].
-    if block_bytes.len() < 8 {
-        return Err(eyre!("block bytes too short to contain length prefix"));
-    }
-    let len_evm = u64::from_le_bytes(block_bytes[..8].try_into().unwrap()) as usize;
-    let evm_end = 8usize
-        .checked_add(len_evm)
-        .filter(|&e| e <= block_bytes.len())
-        .ok_or_else(|| eyre!("invalid evm payload length prefix"))?;
-    let execution_payload = ExecutionPayloadV3::from_ssz_bytes(&block_bytes[8..evm_end])
-        .map_err(|e| eyre!("Failed to decode execution payload: {e:?}"))?;
-    let payment_payload = if block_bytes.len() > evm_end {
-        Some(
-            ExecutionPayloadV3::from_ssz_bytes(&block_bytes[evm_end..])
-                .map_err(|e| eyre!("Failed to decode payment payload: {e:?}"))?,
-        )
-    } else {
-        None
-    };
+    let (execution_payload, payment_payload) = unframe_lanes(&block_bytes)?;
 
     let consensus_block = ConsensusBlock {
         height: parts.height(),

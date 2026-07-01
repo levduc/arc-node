@@ -277,7 +277,7 @@ async fn handle_consensus(
         AppMsg::GetDecidedValues { range, reply } => {
             info!(range = %DisplayRange(&range), "Received sync request");
 
-            get_decided_values::handle(state, engine, range, reply).await?;
+            get_decided_values::handle(state, engine, payment_engine, range, reply).await?;
         }
 
         // Request for the earliest height available in the block store.

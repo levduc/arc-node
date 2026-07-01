@@ -20,7 +20,6 @@ use alloy_rpc_types_engine::ExecutionPayloadV3;
 use arc_eth_engine::engine::Engine;
 use bytesize::ByteSize;
 use eyre::{eyre, WrapErr};
-use ssz::Encode;
 use tracing::{debug, error, info, warn};
 
 use malachitebft_app_channel::app::types::codec::HasEncodedLen;
@@ -33,7 +32,7 @@ use arc_consensus_types::codec::proto::ProtobufCodec;
 use arc_consensus_types::sync::{Response, ValueResponse};
 use arc_consensus_types::{ArcContext, Height};
 
-use crate::block::DecidedBlock;
+use crate::block::{commit_lanes, frame_lanes};
 use crate::metrics::AppMetrics;
 use crate::state::State;
 use crate::store::Store;
@@ -41,6 +40,7 @@ use crate::store::Store;
 pub async fn handle(
     state: &mut State,
     engine: &Engine,
+    payment_engine: Option<&Engine>,
     range: RangeInclusive<Height>,
     reply: Reply<Vec<RawDecidedValue<ArcContext>>>,
 ) -> Result<(), eyre::Error> {
@@ -69,6 +69,7 @@ pub async fn handle(
     let store = state.store().clone();
     let metrics = state.metrics().clone();
     let engine = engine.clone();
+    let payment_engine = payment_engine.cloned();
 
     // Spawn retrieval of decided values in a separate task to avoid blocking the main application loop.
     tokio::spawn(async move {
@@ -79,6 +80,7 @@ pub async fn handle(
             config.max_response_size,
             store,
             engine,
+            payment_engine,
             metrics,
         )
         .await
@@ -95,6 +97,7 @@ pub async fn handle(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn get_decided_values(
     requested_range: RangeInclusive<Height>,
     available_range: RangeInclusive<Height>,
@@ -102,6 +105,7 @@ async fn get_decided_values(
     max_response_size: ByteSize,
     store: Store,
     engine: Engine,
+    payment_engine: Option<Engine>,
     metrics: AppMetrics,
 ) -> Result<Vec<RawDecidedValue<ArcContext>>, eyre::Error> {
     let _guard = metrics.start_msg_process_timer("GetDecidedValues");
@@ -124,17 +128,30 @@ async fn get_decided_values(
 
     let execution_payloads = engine.eth.get_execution_payloads(&block_numbers).await?;
 
+    // Payment lane (second EL): fetch the payment payloads for the same heights so
+    // the synced value carries BOTH lanes. Without them, a syncing peer cannot
+    // reconstruct the `value_id` (commitment over both lanes) the certificate was
+    // signed over. `None` payment engine => single-EL, no payment lane.
+    let payment_payloads = match &payment_engine {
+        Some(pe) => pe.eth.get_execution_payloads(&block_numbers).await?,
+        None => vec![None; block_numbers.len()],
+    };
+
     let mut values = Vec::with_capacity(range.len());
     let mut total_bytes = ByteSize::b(0);
 
-    for (height, execution_payload) in heights.into_iter().zip(execution_payloads.into_iter()) {
+    for ((height, execution_payload), payment_payload) in heights
+        .into_iter()
+        .zip(execution_payloads.into_iter())
+        .zip(payment_payloads.into_iter())
+    {
         let Some(execution_payload) = execution_payload else {
             debug!(%height, "No execution payload found at this height from EL, skipping");
             continue;
         };
 
         let (raw_value, raw_bytes_len) =
-            match get_raw_decided_value(&store, execution_payload, height).await {
+            match get_raw_decided_value(&store, execution_payload, payment_payload, height).await {
                 Ok(result) => result,
                 Err(e) => {
                     warn!(%height, "Failed to get decided value at height: {e}");
@@ -192,6 +209,7 @@ async fn get_decided_values(
 async fn get_raw_decided_value(
     store: &Store,
     execution_payload: ExecutionPayloadV3,
+    payment_payload: Option<ExecutionPayloadV3>,
     height: Height,
 ) -> eyre::Result<(RawDecidedValue<ArcContext>, ByteSize)> {
     let stored = store
@@ -199,11 +217,25 @@ async fn get_raw_decided_value(
         .await?
         .ok_or_else(|| eyre!("No certificate found at height {height}"))?;
 
-    let decided_block = DecidedBlock::new(execution_payload, stored.certificate);
+    // Verify the lanes we fetched reproduce the committed value_id before shipping
+    // them to a peer. Guards against an EL2 mismatch (wrong/missing payment block)
+    // that would otherwise send a value the peer cannot validate against the cert.
+    let evm_block_hash = execution_payload.payload_inner.payload_inner.block_hash;
+    let payment_block_hash = payment_payload
+        .as_ref()
+        .map(|p| p.payload_inner.payload_inner.block_hash);
+    let value_id = commit_lanes(evm_block_hash, payment_block_hash);
+    if value_id != stored.certificate.value_id.block_hash() {
+        return Err(eyre!(
+            "commitment over fetched lanes ({value_id}) does not match certificate value_id ({}) at height {height}",
+            stored.certificate.value_id,
+        ));
+    }
 
+    let value_bytes = frame_lanes(&execution_payload, payment_payload.as_ref());
     let raw_value = RawDecidedValue {
-        certificate: decided_block.certificate,
-        value_bytes: decided_block.execution_payload.as_ssz_bytes().into(),
+        certificate: stored.certificate,
+        value_bytes: value_bytes.into(),
     };
 
     let response = Response::ValueResponse(ValueResponse::new(height, vec![raw_value.clone()]));
