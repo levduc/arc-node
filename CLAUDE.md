@@ -231,3 +231,32 @@ do steps 1+3+4 together next. The base testnet here was started with `-e 50000 -
   /tmp/Cargo.toml.preforkpatch); rebuild CL+EL images; (c) quake passes `--payment-execution-endpoint`
   (+ws/jwt) to each CL pointing at its payment EL; (d) boot, drive both lanes (dual spammer), confirm
   all validators compute identical paymentRoot. The Docker rebuild is the long pole.
+
+**🎯 value_id NOW COMMITS TO BOTH LANES + 24h LIVE SOAK PASS (2026-07-02, commit `4c86b4f`).**
+Closes the equivocation hole where the certified consensus value bound only the EVM lane (a proposer
+could stream two payment payloads under one EVM hash → fork the payment lane beneath a valid EVM
+commit certificate). Now `value_id = keccak(evm_block_hash ‖ payment_block_hash)` when a payment lane
+is present, else exactly the EVM hash (single-EL blocks byte-for-byte unchanged, no migration).
+- **types/block.rs:** `commit_lanes(evm, Option<pay>)` = single source of truth; `ConsensusBlock::value_id()`
+  / `payment_block_hash()` (block_hash() stays the real EVM hash for EL ops); the two `From` impls
+  (`ProposedValue`/`LocallyProposedValue`) vote on `value_id()`; `DecidedBlock` carries `payment_payload`,
+  `new()` re-checks the commitment vs the certificate, `from_stored_evm_only()` for DB reconstruction;
+  extracted `frame_lanes`/`unframe_lanes` (shared by streaming + sync).
+- **consensus-db/store.rs:** undecided blocks keyed by `value_id` (not EVM hash) so the decide-path
+  lookup by `certificate.value_id` resolves; DB reconstruction uses `from_stored_evm_only`.
+- **sync now carries BOTH lanes (closes the v0 gap above):** `process_synced_value` unframes both,
+  re-validates the payment lane, dedups by value_id; `get_decided_values`+`app.rs` thread
+  `payment_engine`, fetch EL2 payloads per height, verify the fetched lanes reproduce the certificate
+  value_id before shipping, frame both lanes. Decided store still persists EVM-only (no schema
+  migration); the authoritative both-lane commitment lives in `certificate.value_id`, payment block
+  is canonical in EL2.
+- **Tests:** 6 new `block::tests` incl. the equivocation guard (`value_id_changes_when_only_payment_lane_changes`),
+  order-sensitivity, frame/unframe round-trips. types 167 + consensus-db 82 + consensus lib 261 pass.
+- **24h SOAK PASS:** rebuilt the CL image from this commit, ran `soak4` (4× CL+EVM-EL+payment-EL) with
+  continuous dual-lane spam (300 tx/s/lane). **1422/1422 60s-checks, 0 failures over 86,400s**; both
+  lanes lockstep to ~329k blocks; per-lane block hash identical across all 4 validators at every settled
+  height (→ all validators computed an identical value_id every height); 12/12 containers, disk fine.
+  A nondeterministic/mismatched commitment would have halted or forked within minutes — it did not.
+  Harness: `experiments/dual-el/soak.sh` (this run used a path-adapted copy for the `arc-node-paymentlane`
+  clone). NOTE: two clones of this branch exist — `/home/papaduck/arc-node` (older, prior soak) and
+  `/home/papaduck/arc-node-paymentlane` (this commit); they have diverged.
