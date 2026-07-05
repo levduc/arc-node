@@ -157,18 +157,39 @@ cached), so the proxy's dense-vs-hashed ratios (2.7×→49×) are a **lower boun
 The headline holds and strengthens: a dense-keyed block costs **< 4 MiB of cold I/O at 2.1 billion
 accounts / 128 GiB**, while the hash-keyed layout is already reading GiB/block at 67 M. Note: building
 the 128 GiB tree took ~15–21 min (one-time); a real client uses incremental writes, not a full rebuild.
-Deferred (disproportionate for the marginal fidelity): a full `alloy-trie` MPT-over-KV baseline — the
-same-shape "hashed" layout already isolates the random-vs-dense driver and is conservative (a real MPT
-adds 16-ary + B-tree KV-index I/O on top).
+### Real Ethereum MPT baseline (`mpt_baseline`, measured 2026-07-05) — corrects the "proxy" framing
+Built the **actual** Ethereum MPT (alloy-trie, keccak-keyed accounts) and extracted each key's real
+path nodes:
+
+| accounts | MPT path nodes/key | MPT proof bytes/key | binary path nodes | binary proof (depth·32) |
+|---------:|-------------------:|--------------------:|------------------:|------------------------:|
+| 1 M   | 6.7 | 2644 B | 20 | 640 B |
+| 4 M   | 7.2 | 2928 B | 22 | 704 B |
+| 16 M  | 7.7 | 3172 B | 24 | 768 B |
+| 64 M  | 8.2 | 3467 B | 26 | 832 B |
+
+Two corrections to the earlier hand-wave: (1) **the real MPT single-key proof is ~4x LARGER than the
+dense binary Merkle** (3467 B vs 832 B @64 M) — each 16-ary branch node carries 16 child hashes
+(~512 B). So dense binary wins on proof size even single-key, over the real MPT, *before* the batched-
+block locality win. (2) The same-shape "hashed" proxy is **not a strict lower bound** on the MPT: the
+MPT touches *fewer, larger* nodes (~8 vs ~26), but each is a KV (MDBX B-tree) lookup — ~8 nodes x
+~3-4 index pages ~= ~30 random pages/update, **comparable** to the proxy's ~26 direct random reads. So
+the proxy is a fair *approximation* of the real MPT's random-access page count, not a bound either way.
+What is **robust** regardless: dense = sequential/contiguous (flat ~4-28 MiB/block); *any* random-keyed
+structure (real MPT or proxy) = ~30 random pages/update -> hundreds of MiB to GiB/block beyond RAM,
+superlinear. Still deferred (needs a persistent node store): the MPT's exact on-disk cold-**I/O** per
+block — but its two drivers (path-node count, node bytes) are now measured on the real structure.
 
 ## Interim verdict (account model, both dimensions, PQ)
 The "ideal" hash-domain structure for a payment lane is a **locality-keyed dense binary Merkle** (≈ NOMT):
 - Latency beyond RAM: cold reads flat ~20 MiB/block as state grows (vs MPT superlinear, 49× @67M).
-- Proofs: contiguous block witness ~depth hashes (0.9 KiB) vs MPT ~K·depth (315 KiB), ~350–2900×.
+- Proofs: single-key branch already ~4× smaller than the real MPT (832 B vs 3467 B @64M, measured);
+  contiguous block witness ~depth hashes (0.9 KiB) vs MPT ~K·depth, ~350–2900×.
 - Binary is ~proof-optimal in the hash domain; no PQ compromise (no vector commitments).
-Remaining: trust the number (real MPT baseline + validate the fadvise proxy on a real >62 GB build),
-then the production crux — how to realize locality (account-index assignment + address→index directory,
-append-dense growth, deletion). UTXO dropped (wrong for balances).
+DONE: real MPT baseline (measured) + >62 GB validation + production locality analysis. Robust core:
+random-keyed (MPT or proxy) → superlinear beyond RAM; dense → flat. Still deferred (needs a persistent
+node store): the MPT's exact on-disk cold-I/O/block (its drivers are now measured). UTXO dropped (wrong
+for balances); vector commitments dropped (not PQ).
 
 ## Realizing locality in production (the crux — analysis + measured operating points)
 The benchmark win assumes state is keyed by a **dense account index** and that a block's touched
