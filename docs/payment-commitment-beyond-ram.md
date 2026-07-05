@@ -57,10 +57,11 @@ Account model (all hash-based):
   witness (shared internal nodes) for clustered (dense) vs scattered (hash-keyed) leaves. This is the
   hash-domain proof lever (locality-aided), replacing the dropped vector-commitment variant.
 
-UTXO model (hash-based only):
-- **U0 UTXO set + Utreexo forest** — hash Merkle-forest accumulator (proof-carrying, ~O(log n)
-  resident). PQ-safe.
-- ~~U1 multiset hash (MuHash/ECMH)~~ — **dropped: discrete-log/group-based, not PQ.**
+~~UTXO model~~ — **dropped.** Academically interesting (conflict-free parallelism, statelessness) but
+wrong for a balance system in production: balances must be reconstructed by summing unspent outputs,
+every payment needs coin selection + change outputs, and each spend carries a per-coin proof. Terrible
+for "what is account X's balance." The payment lane is **account-based**; the search is now solely the
+ideal account commitment.
 
 Metrics per structure:
 - **Latency/I/O beyond RAM:** cold + warm state-root/update latency, **reads-per-block**,
@@ -72,13 +73,20 @@ Metrics per structure:
 0. **Design note** (this file) — commit early.
 1. **Account latency** (`disk_bench` bin): A0 vs A1 mmap, madvise-cold, `/proc/self/io` accounting,
    curve crossing RAM. First real beyond-RAM number. ← start here.
-2. **Hash-domain proofs** (`multiproof` bin): A2 — per-tx branch + batched block witness, clustered
-   (dense) vs scattered (hash-keyed) leaves, across N. Completes the account-model verdict (latency +
-   proofs, both PQ). ← next.
-3. **UTXO accumulator** (`utxo_accum` bin): U0 Utreexo, proof size + accumulator update beyond RAM.
-4. **Synthesis:** one table — structure × {reads/block beyond RAM, cold root latency, per-tx proof,
-   batched block witness, resident RAM} → the "ideal" pick, honestly scoped. Validate the fadvise proxy
-   vs a real >62 GB natural-pressure build.
+2. **Hash-domain proofs** (`multiproof` bin) — DONE. Per-tx branch + batched block witness, clustered
+   (dense) vs scattered. Completes the account-model verdict (latency + proofs, both PQ).
+3. **Trust the number** — real `alloy-trie` MPT baseline (the actual production thing being replaced;
+   "hashed" so far is only a lower bound), AND validate the fadvise cold proxy against a real >62 GB
+   natural-pressure build. ← next.
+4. **Realize locality in production** (the crux): dense indices need an assignment scheme + an
+   address→index directory. Open questions: (a) does the addr→index directory reintroduce random I/O?
+   (it's a point lookup, not merklized — likely a cheap separate index, but measure); (b) growing set →
+   an APPEND-dense tree over the populated prefix [0,N) (grows with users, stays dense) vs a fixed-depth
+   full tree; (c) deletion/dust → tombstone + index reuse without fragmenting locality; (d) deterministic
+   index assignment across validators. This is the gap between "dense Merkle wins when indices are given"
+   and "a working payment lane."
+5. **Synthesis:** one table — structure × {reads/block beyond RAM, cold root latency, per-tx proof,
+   batched block witness, resident RAM} → the "ideal" pick, honestly scoped.
 
 ## Phase 1 results — account layout, cold disk I/O per block (measured 2026-07-04)
 `disk_bench` (i7-11700F, 62 GB RAM, NVMe): one file-backed mmap binary Merkle over N dense accounts,
@@ -137,7 +145,9 @@ The "ideal" hash-domain structure for a payment lane is a **locality-keyed dense
 - Latency beyond RAM: cold reads flat ~20 MiB/block as state grows (vs MPT superlinear, 49× @67M).
 - Proofs: contiguous block witness ~depth hashes (0.9 KiB) vs MPT ~K·depth (315 KiB), ~350–2900×.
 - Binary is ~proof-optimal in the hash domain; no PQ compromise (no vector commitments).
-Remaining: UTXO comparison (Phase 3), and validate the fadvise cold proxy vs a real >62 GB build (Phase 4).
+Remaining: trust the number (real MPT baseline + validate the fadvise proxy on a real >62 GB build),
+then the production crux — how to realize locality (account-index assignment + address→index directory,
+append-dense growth, deletion). UTXO dropped (wrong for balances).
 
 ## Non-negotiables (repo methodology)
 Measured, reproducible, **no fabricated numbers**; state ranges/variance; every claim reruns from the
