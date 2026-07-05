@@ -60,6 +60,35 @@ Metrics per structure:
 4. **Synthesis:** one table — structure × {reads/block beyond RAM, cold root latency, proof size,
    verify cost, resident RAM} → the "ideal" pick, honestly scoped.
 
+## Phase 1 results — account layout, cold disk I/O per block (measured 2026-07-04)
+`disk_bench` (i7-11700F, 62 GB RAM, NVMe): one file-backed mmap binary Merkle over N dense accounts,
+block = 500 leaf updates + path recompute, cold via flush+`fadvise(DONTNEED)`+`madvise(DONTNEED)`,
+cold bytes from `/proc/self/io read_bytes`. Dense (`physical=logical`) vs hashed
+(`physical=logical·golden_odd mod 2^m`) — SAME tree, SAME root (verified), only node placement differs.
+
+| depth | accounts | node file | dense cold/blk | hashed cold/blk | **ratio** | dense lat | hashed lat |
+|------:|---------:|----------:|---------------:|----------------:|----------:|----------:|-----------:|
+| 22 | 4.2M  | 0.2 GiB | 19.0 MiB | 51.3 MiB   | **2.7×**  | 99 ms  | 153 ms  |
+| 24 | 16.8M | 1 GiB   | 18.9 MiB | 409.5 MiB  | **21.6×** | 139 ms | 854 ms  |
+| 26 | 67.1M | 4 GiB   | 22.0 MiB | 1078.7 MiB | **49×**   | 199 ms | 1982 ms |
+| 28 | 268M  | 16 GiB  | 25.6 MiB | (GiB/blk; too slow to finish 10 blocks) | — | 272 ms | — |
+
+**Headline:** dense cold reads stay ~**flat (~20 MiB/block)** as state grows 64× — a locality-keyed
+block touches a *bounded, contiguous* working set independent of total state size. Hashed cold reads
+grow **superlinearly** (random placement scatters each block's accesses across the whole, growing file;
+readahead then wastes bandwidth on unwanted neighbours). The locality advantage doesn't just survive
+beyond RAM — it **widens with scale** (2.7× → 21.6× → 49× and climbing). This is the empirical core of
+the answer: the MPT's random `keccak(addr)` keying is exactly what makes it degrade beyond RAM; a
+dense-index (locality-keyed) authenticated structure removes that.
+
+**Honest caveats:** (1) `fadvise` evicts the *whole* file including hot upper levels, so absolute dense
+numbers (~20 MiB) are pessimistic — a real >RAM run keeps upper levels cached, lowering dense further,
+so the ratio is if anything understated. (2) This isolates node *layout* at fixed Merkle shape; a real
+MPT adds KV-index I/O on top of random node placement, so "hashed" here is a **lower bound** on the
+MPT's penalty. (3) Uniform-random account access; real payments have locality (`--zipf`) which helps
+dense more. (4) Proxy still to be validated against a real >62 GB natural-pressure build (Phase 4).
+Merkle-branch proof = depth·32 B (704–896 B here), layout-independent; shrinking it is Phase 3.
+
 ## Non-negotiables (repo methodology)
 Measured, reproducible, **no fabricated numbers**; state ranges/variance; every claim reruns from the
 crate README. Reference SOTA so we don't reinvent: **NOMT** (page-optimized binary Merkle trie, 2024),
