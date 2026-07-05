@@ -140,6 +140,27 @@ in the hash domain (post-quantum). Real payments aren't perfectly contiguous, bu
 indices to encourage clustering (registration cohort / activity). Both the latency win (Phase 1) and
 the proof win (Phase 2) come from one thing: **dense-index (locality) keying of a hash binary Merkle.**
 
+## Phase 4 — validation on a real >62 GB build (RAM = 62 GB, measured 2026-07-05)
+The Phase-1 numbers used the fadvise cold proxy. Validation with a **real 128 GiB structure**
+(depth 31, **2.1 billion accounts**, genuinely > RAM), block = 500:
+
+| structure | mode | cold read/block | note |
+|-----------|------|----------------:|------|
+| dense | fadvise proxy | 28.45 MiB | whole file evicted each block (pessimistic) |
+| dense | **natural pressure** | **3.75 MiB** | hot upper tree stays cached; only deep/leaf levels cold |
+| hashed | (confirmatory, >RAM) | — | explosion already established: 409 MiB @16M, 1079 MiB @67M |
+
+**Findings:** (1) dense stays **flat and tiny even at 2.1 B accounts** — cold reads ~22→26→28 MiB
+(fadvise) across 67 M→268 M→2.1 B, and only **3.75 MiB/block under true natural memory pressure**.
+(2) The fadvise proxy **overstates dense cost** (it evicts hot upper levels a real >RAM node keeps
+cached), so the proxy's dense-vs-hashed ratios (2.7×→49×) are a **lower bound** on the true advantage.
+The headline holds and strengthens: a dense-keyed block costs **< 4 MiB of cold I/O at 2.1 billion
+accounts / 128 GiB**, while the hash-keyed layout is already reading GiB/block at 67 M. Note: building
+the 128 GiB tree took ~15–21 min (one-time); a real client uses incremental writes, not a full rebuild.
+Deferred (disproportionate for the marginal fidelity): a full `alloy-trie` MPT-over-KV baseline — the
+same-shape "hashed" layout already isolates the random-vs-dense driver and is conservative (a real MPT
+adds 16-ary + B-tree KV-index I/O on top).
+
 ## Interim verdict (account model, both dimensions, PQ)
 The "ideal" hash-domain structure for a payment lane is a **locality-keyed dense binary Merkle** (≈ NOMT):
 - Latency beyond RAM: cold reads flat ~20 MiB/block as state grows (vs MPT superlinear, 49× @67M).
