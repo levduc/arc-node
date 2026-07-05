@@ -8,6 +8,21 @@ state such that it **retains an advantage even when the state exceeds RAM**. Com
 and **UTXO** models, and optimize for **both** update latency (disk I/O per block) **and** proofs
 (witness size + verify cost).
 
+## Hard constraint: post-quantum, hash domain only
+Every commitment must be **hash-based** (collision/preimage resistance only → PQ-safe; Grover only
+halves security, so 256-bit). This **rules out** all discrete-log / pairing / lattice-vector schemes:
+Verkle, KZG, IPA, Pedersen vector commitments, and multiset hashes MuHash/ECMH are **out**. Two
+consequences that shape the design:
+1. **Binary Merkle is ~proof-optimal in the hash domain.** Widening a hash tree makes proofs *bigger*
+   (each level needs k−1 sibling hashes), so we do NOT get the Verkle "wide → tiny proof" trade. The
+   lever for small proofs is **batching + locality**, not the commitment.
+2. **Locality pays a second time, on proofs.** A block's *batched* Merkle multiproof shares internal
+   nodes across touched leaves; logically-clustered (dense-index) leaves overlap heavily → block
+   witness collapses far below K independent branches, while hash-scattered (MPT) leaves stay ≈ K full
+   branches. So the Phase-1 locality lever also shrinks the witness.
+Succinct-proof path that STAYS hash-based: STARK/FRI over the block's Merkle transition (PQ-safe) —
+noted as a direction, not built here.
+
 ## Why the MPT loses beyond RAM
 Ethereum's MPT keys by `keccak(addr)` → uniformly random. An account update walks ~log(n) nodes on
 random cold pages; a block's merklization is random-I/O-bound once the working set exceeds RAM
@@ -35,15 +50,17 @@ Root-free, reproducible cold-I/O measurement without a literal >62 GB build ever
 ## The matrix
 Structures × metrics, all measured at sizes **crossing the RAM boundary** (e.g. 10M → 500M+ entries).
 
-Account model:
+Account model (all hash-based):
 - **A0 hash-keyed MPT** — real `alloy-trie`, baseline (the thing to beat).
 - **A1 locality-keyed dense Merkle** — mmap dense binary Merkle, dense account index (the primary bet).
-- **A2 locality-keyed + vector commitment** — wide node, curve25519 (Pedersen/IPA-style) for the
-  *proof* dimension (small witness), same dense layout.
+- **A2 batched block multiproof** — same binary Merkle; measure per-tx branch AND the *batched* block
+  witness (shared internal nodes) for clustered (dense) vs scattered (hash-keyed) leaves. This is the
+  hash-domain proof lever (locality-aided), replacing the dropped vector-commitment variant.
 
-UTXO model:
-- **U0 UTXO set + hash accumulator** — Utreexo-style forest (proof-carrying, ~O(log n) resident).
-- **U1 UTXO set + multiset hash** — MuHash/ECMH-style O(1) commitment (curve25519), for comparison.
+UTXO model (hash-based only):
+- **U0 UTXO set + Utreexo forest** — hash Merkle-forest accumulator (proof-carrying, ~O(log n)
+  resident). PQ-safe.
+- ~~U1 multiset hash (MuHash/ECMH)~~ — **dropped: discrete-log/group-based, not PQ.**
 
 Metrics per structure:
 - **Latency/I/O beyond RAM:** cold + warm state-root/update latency, **reads-per-block**,
@@ -55,10 +72,13 @@ Metrics per structure:
 0. **Design note** (this file) — commit early.
 1. **Account latency** (`disk_bench` bin): A0 vs A1 mmap, madvise-cold, `/proc/self/io` accounting,
    curve crossing RAM. First real beyond-RAM number. ← start here.
-2. **UTXO accumulator** (`utxo_accum` bin): U0/U1, proof size + accumulator update beyond RAM.
-3. **Proof dimension** (`vector_commit` bin): A2 vs A1 witness size / verify; U1 O(1) commitment.
-4. **Synthesis:** one table — structure × {reads/block beyond RAM, cold root latency, proof size,
-   verify cost, resident RAM} → the "ideal" pick, honestly scoped.
+2. **Hash-domain proofs** (`multiproof` bin): A2 — per-tx branch + batched block witness, clustered
+   (dense) vs scattered (hash-keyed) leaves, across N. Completes the account-model verdict (latency +
+   proofs, both PQ). ← next.
+3. **UTXO accumulator** (`utxo_accum` bin): U0 Utreexo, proof size + accumulator update beyond RAM.
+4. **Synthesis:** one table — structure × {reads/block beyond RAM, cold root latency, per-tx proof,
+   batched block witness, resident RAM} → the "ideal" pick, honestly scoped. Validate the fadvise proxy
+   vs a real >62 GB natural-pressure build.
 
 ## Phase 1 results — account layout, cold disk I/O per block (measured 2026-07-04)
 `disk_bench` (i7-11700F, 62 GB RAM, NVMe): one file-backed mmap binary Merkle over N dense accounts,
@@ -89,8 +109,41 @@ MPT's penalty. (3) Uniform-random account access; real payments have locality (`
 dense more. (4) Proxy still to be validated against a real >62 GB natural-pressure build (Phase 4).
 Merkle-branch proof = depth·32 B (704–896 B here), layout-independent; shrinking it is Phase 3.
 
+## Phase 2 results — hash-domain block witness, locality vs scattered (measured 2026-07-04)
+`multiproof` (exact Merkle multiproof frontier count; PQ-safe, hashes only). Single-leaf branch =
+depth hashes (960 B at depth 30), position-independent. The batched BLOCK witness, depth 30 (1.07B
+accounts):
+
+| block | leaf placement | witness | amortized/tx | vs K independent |
+|------:|----------------|--------:|-------------:|-----------------:|
+| 500   | contiguous (locality) | **0.9 KiB** (30 hashes) | 0.06 | 497× |
+| 500   | window 4k             | 37.7 KiB | 2.42 | 12.4× |
+| 500   | window 1.02M          | 158.6 KiB | 10.1 | 3.0× |
+| 500   | scattered (MPT)       | 314.8 KiB | 20.1 | 1.5× |
+| 5000  | contiguous            | **0.9 KiB** (30 hashes) | 0.01 | 5007× |
+| 5000  | scattered (MPT)       | 2628 KiB | 16.8 | 1.8× |
+
+**Headline:** a block touching a **contiguous** account range proves in **~depth hashes total (≈0.9 KiB),
+INDEPENDENT of block size** — K contiguous leaves form one subtree, so the witness is just its path to
+the root. Scattered (hash-keyed MPT) leaves need ~K·depth hashes (315 KiB → 2.6 MiB). So the *same*
+locality lever from Phase 1 shrinks the block witness ~**350× (block 500) → ~2900× (block 5000)**, all
+in the hash domain (post-quantum). Real payments aren't perfectly contiguous, but even a locality
+*window* (accounts that transact together numbered nearby) gives 8–12×, and a payment lane can *assign*
+indices to encourage clustering (registration cohort / activity). Both the latency win (Phase 1) and
+the proof win (Phase 2) come from one thing: **dense-index (locality) keying of a hash binary Merkle.**
+
+## Interim verdict (account model, both dimensions, PQ)
+The "ideal" hash-domain structure for a payment lane is a **locality-keyed dense binary Merkle** (≈ NOMT):
+- Latency beyond RAM: cold reads flat ~20 MiB/block as state grows (vs MPT superlinear, 49× @67M).
+- Proofs: contiguous block witness ~depth hashes (0.9 KiB) vs MPT ~K·depth (315 KiB), ~350–2900×.
+- Binary is ~proof-optimal in the hash domain; no PQ compromise (no vector commitments).
+Remaining: UTXO comparison (Phase 3), and validate the fadvise cold proxy vs a real >62 GB build (Phase 4).
+
 ## Non-negotiables (repo methodology)
 Measured, reproducible, **no fabricated numbers**; state ranges/variance; every claim reruns from the
 crate README. Reference SOTA so we don't reinvent: **NOMT** (page-optimized binary Merkle trie, 2024),
-**QMDB** (append + in-RAM twig Merkle, 2025), **JMT** (Aptos, versioned SMT), **Verkle** (vector
-commitments). k256/curve25519 pure-Rust is ~2× slower than libsecp256k1 — note it, don't hide it.
+**QMDB** (append + in-RAM twig Merkle, 2025), **JMT** (Aptos, versioned SMT) — all hash-based, in
+scope. **Verkle** (vector commitments) is a conceptual reference only — **excluded on PQ grounds**.
+Hash choice: keccak256 here; a payment lane could pick a faster PQ hash (BLAKE3) — orthogonal to the
+structure. Signature verification (k256, ~2× slower than libsecp256k1) is a separate PQ question
+(Falcon/Dilithium/SPHINCS+) — out of scope for the commitment search; note it, don't hide it.
