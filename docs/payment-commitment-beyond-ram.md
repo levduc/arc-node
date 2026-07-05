@@ -149,6 +149,52 @@ Remaining: trust the number (real MPT baseline + validate the fadvise proxy on a
 then the production crux — how to realize locality (account-index assignment + address→index directory,
 append-dense growth, deletion). UTXO dropped (wrong for balances).
 
+## Realizing locality in production (the crux — analysis + measured operating points)
+The benchmark win assumes state is keyed by a **dense account index** and that a block's touched
+indices **cluster**. Two production questions decide whether that holds.
+
+**(1) The address→index directory — does it reintroduce random I/O? No, if txs reference accounts by
+index.** The clean design: a tx names accounts by their dense **index** (an account *number*), not their
+address. The index is assigned deterministically at account creation (e.g. `(block_height, position)` →
+next free index) and is known to the owner, like a bank account number or a Solana account key passed in
+the tx. The node then verifies the Merkle proof **at that index directly** — it never does an
+address→index lookup during block processing. The address→index map becomes a **client-side / locally
+rebuildable convenience index**, not consensus state and not on the node's hot path.
+- If a directory *is* needed on-node (pay-by-address UX): it is a **point lookup** (~1 random read/
+  lookup, 2/tx), O(1) not O(log n), a plain KV separable from the state tree. Additive cost ~2 reads/tx
+  ≪ the merklization saving (dense ~20 MiB vs MPT ~1 GiB per 500-tx block). Net win survives. Note the
+  MPT avoids a directory only by keying directly on `keccak(addr)` — which is *exactly* what forces its
+  random-I/O merklization. So the real trade is: MPT skips a directory but pays random merklization;
+  dense pays a cheap (or zero, via reference-by-index) directory and gets sequential merklization.
+
+**(2) Earning activity-locality — index assignment is a first-class lever, not free.** Real payments
+cluster by *activity*, not creation time, so the win is only as good as the index assignment. Measured
+proof witness vs the activity-clustering window (depth 30, 1.07 B accounts, block 500; the realistic
+operating range between best-case contiguous and MPT-scattered):
+
+| activity window | block witness | amortized/tx | vs MPT-scattered (315 KiB) |
+|----------------:|--------------:|-------------:|---------------------------:|
+| ~2k (tight cohort)   | 24 KiB  | 1.6  | ~13× smaller |
+| ~8k                  | 52 KiB  | 3.3  | ~6× |
+| ~32k                 | 81 KiB  | 5.2  | ~4× |
+| ~128k                | 112 KiB | 7.2  | ~2.8× |
+| ~2M (loose)          | 174 KiB | 11.1 | ~1.8× |
+| random (= MPT)       | 315 KiB | 20.2 | 1× (no win) |
+
+So the honest production claim is **not** the 350×/49× best case — it is: *if index assignment keeps
+transacting accounts within a window of a few thousand, you get ~10–20× on proofs and a proportional
+I/O win; a loose window still gives ~3×; fully random assignment gives nothing (you are back to the
+MPT).* Assignment strategies that earn tight windows: **temporal cohorts** (users onboarded together —
+a merchant's customers, an exchange's users — get contiguous indices and transact intra-cohort);
+**hierarchical/prefix** indices (`domain ‖ local`, e.g. per merchant / rollup / region) so intra-domain
+payments are windowed. Adaptive re-indexing by the observed activity graph is possible but rehashes
+paths — likely not worth it.
+
+**(3) Growth & deletion.** Append-dense: new accounts take the next free index → the tree is dense over
+the populated prefix `[0,N)`, grows with users, no wasted empty subtrees; depth = ⌈log₂ N⌉; balances
+update in place. Dust/close: tombstone + free-list reuse (reusing a low freed index keeps density;
+minor cohort-contiguity churn, acceptable).
+
 ## Non-negotiables (repo methodology)
 Measured, reproducible, **no fabricated numbers**; state ranges/variance; every claim reruns from the
 crate README. Reference SOTA so we don't reinvent: **NOMT** (page-optimized binary Merkle trie, 2024),
