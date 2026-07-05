@@ -180,6 +180,24 @@ structure (real MPT or proxy) = ~30 random pages/update -> hundreds of MiB to Gi
 superlinear. Still deferred (needs a persistent node store): the MPT's exact on-disk cold-**I/O** per
 block — but its two drivers (path-node count, node bytes) are now measured on the real structure.
 
+## The cut — where the MPT actually loses (the RAM line, measured 2026-07-05)
+The advantage is **not universal**; it exists only beyond RAM. Natural pressure, no forced eviction:
+
+| state | vs 62 GB RAM | dense cold/blk | hashed cold/blk | winner |
+|------:|--------------|---------------:|----------------:|--------|
+| 1 GiB · 16.8M | fits easily | 0.00 MiB | 0.00 MiB | tie — no win |
+| 4 GiB · 67M   | fits        | 0.00 MiB | 0.00 MiB | tie — no win |
+| 128 GiB · 2.1B | 2× over    | 3.75 MiB | GiB/block (too slow to finish 3 blocks) | dense ~1000× |
+
+Three regimes: **state ≪ RAM** → both fully cached, identical, *don't switch*; **state ≈ RAM** → the MPT
+crosses first (bulkier: 16-ary/RLP/address keys ≈ 2–4× bytes/account, so it thrashes at a few hundred M
+accounts here while the lean dense tree holds to ~1B); **state ≫ RAM** → MPT random-disk-bound & climbing,
+dense flat. A real payment ledger (Ethereum alone ≈ 250M accounts / ~1 TB today) lives permanently in the
+third regime — the cut is the operating point, not a corner case. Why balances specifically: payment work
+is O(1) (add/subtract two numbers), so ~100% of per-tx cost is the state-root update, and balance state
+only grows with users → guaranteed to cross RAM. For contracts the MPT tax hides behind execution
+(Arc ERC20: exec ~4%, state-root ~58%, persistence ~38%); for balances execution is ~0%, nothing to hide.
+
 ## Interim verdict (account model, both dimensions, PQ)
 The "ideal" hash-domain structure for a payment lane is a **locality-keyed dense binary Merkle** (≈ NOMT):
 - Latency beyond RAM: cold reads flat ~20 MiB/block as state grows (vs MPT superlinear, 49× @67M).
