@@ -226,8 +226,18 @@ fn pick_leaves(rng: &mut Rng, cap: usize, k: usize, zipf: bool) -> Vec<usize> {
     v
 }
 
-fn run_layout(dir: &str, depth: u32, block: usize, blocks: usize, zipf: bool, dense: bool) {
+#[allow(clippy::too_many_arguments)]
+fn run_layout(
+    dir: &str,
+    depth: u32,
+    block: usize,
+    blocks: usize,
+    zipf: bool,
+    dense: bool,
+    evict: bool,
+) {
     let name = if dense { "dense " } else { "hashed" };
+    let mode = if evict { "fadvise" } else { "natural" };
     let path = format!("{dir}/disk_bench_{}.bin", if dense { "dense" } else { "hashed" });
     let cap = 1usize << depth;
     let file_gib = (2.0 * cap as f64 * 32.0) / (1024.0 * 1024.0 * 1024.0);
@@ -243,7 +253,10 @@ fn run_layout(dir: &str, depth: u32, block: usize, blocks: usize, zipf: bool, de
     let (mut sum_bytes, mut sum_majflt, mut sum_ms) = (0u64, 0u64, 0.0f64);
     for _ in 0..blocks {
         let leaves = pick_leaves(&mut rng, cap, block, zipf);
-        t.evict(); // cold: working set > RAM
+        if evict {
+            t.evict(); // proxy: force every block cold
+        }
+        // else: natural memory pressure (meaningful only when file > RAM)
         let (b0, f0) = (read_bytes(), majflt());
         let s = Instant::now();
         t.apply_block(&leaves, rng.next());
@@ -256,7 +269,7 @@ fn run_layout(dir: &str, depth: u32, block: usize, blocks: usize, zipf: bool, de
     let n = blocks as f64;
     let proof_bytes = depth as usize * 32;
     println!(
-        "{name}  D={depth} N={cap} file={file_gib:.1}GiB build={build_s:.1}s root={} | \
+        "{name}[{mode}]  D={depth} N={cap} file={file_gib:.1}GiB build={build_s:.1}s root={} | \
 per-block: cold_read={:.2}MiB majflt={:.0} latency={:.2}ms | proof={}B ({} sibs)",
         &root0.to_string()[..10],
         sum_bytes as f64 / n / (1024.0 * 1024.0),
@@ -274,6 +287,7 @@ fn main() {
     let mut block = 500usize;
     let mut blocks = 40usize;
     let mut zipf = false;
+    let mut evict = true;
     let mut layout = "both".to_string();
     let mut dir = std::env::var("DISK_BENCH_DIR").unwrap_or_else(|_| "/tmp".to_string());
     let mut i = 1;
@@ -292,6 +306,7 @@ fn main() {
                 blocks = args[i].parse().unwrap();
             }
             "--zipf" => zipf = true,
+            "--no-evict" => evict = false,
             "--layout" => {
                 i += 1;
                 layout = args[i].clone();
@@ -309,9 +324,9 @@ fn main() {
 (cold via madvise DONTNEED; per-block reads from /proc/self/io)"
     );
     if layout == "dense" || layout == "both" {
-        run_layout(&dir, depth, block, blocks, zipf, true);
+        run_layout(&dir, depth, block, blocks, zipf, true, evict);
     }
     if layout == "hashed" || layout == "both" {
-        run_layout(&dir, depth, block, blocks, zipf, false);
+        run_layout(&dir, depth, block, blocks, zipf, false, evict);
     }
 }
