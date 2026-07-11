@@ -48,6 +48,122 @@ def _growth_loop():
         _series.append((round(time.time() - _t0, 1), es, eh, ps, ph))
         time.sleep(5)
 
+# ---- execution-cost metrics: state-root latency (reth prometheus) + disk I/O (cgroup) per lane ----
+_exec = {"evm": {}, "pay": {}}
+_exec_series = collections.deque(maxlen=240)  # (t, evm_root_ms, pay_root_ms, evm_rd_mbs, pay_rd_mbs)
+_mprev = {"evm": {}, "pay": {}}
+
+def _docker_out(args):
+    try:
+        return subprocess.run(["docker"] + args, capture_output=True, text=True, timeout=6).stdout.strip()
+    except Exception:
+        return ""
+
+def _discover_metrics():
+    """Host port of each lane's reth metrics endpoint + cgroup path, for validator2."""
+    cfg = {}
+    for lane, cname in (("evm", "validator2_el"), ("pay", "validator2_el_pay")):
+        port = None
+        out = _docker_out(["port", cname, "9001/tcp"])  # e.g. 0.0.0.0:9101
+        for tok in out.split():
+            if ":" in tok:
+                port = tok.rsplit(":", 1)[-1]
+        cid = _docker_out(["inspect", "-f", "{{.Id}}", cname])
+        cfg[lane] = {"port": port, "cid": cid}
+    return cfg
+
+def _prom_state_root_ms(text, prev):
+    """Rolling state-root latency from a histogram pair <name>_sum/<name>_count whose name
+    mentions state_root+duration (fallback: root+duration). Returns (ms, new_prev)."""
+    sums, counts = {}, {}
+    for ln in text.splitlines():
+        if ln.startswith("#") or " " not in ln:
+            continue
+        name, val = ln.split(" ", 1)
+        base = name.split("{")[0]
+        low = base.lower()
+        if ("root" not in low) or ("duration" not in low and "seconds" not in low and "histogram" not in low):
+            continue
+        try:
+            v = float(val.strip())
+        except ValueError:
+            continue
+        if base.endswith("_sum"):
+            sums[base[:-4]] = sums.get(base[:-4], 0.0) + v
+        elif base.endswith("_count"):
+            counts[base[:-6]] = counts.get(base[:-6], 0.0) + v
+    cands = [k for k in sums if k in counts]
+    if not cands:
+        return None, prev
+    pick = sorted(cands, key=lambda k: (("state_root" not in k.lower()), len(k)))[0]
+    s, c = sums[pick], counts[pick]
+    ps, pc = prev.get("sum", 0.0), prev.get("count", 0.0)
+    new_prev = {"sum": s, "count": c, "pick": pick}
+    if c > pc:
+        return round((s - ps) / (c - pc) * 1000.0, 2), new_prev
+    return prev.get("last_ms"), new_prev
+
+def _cgroup_io(cid):
+    """(read_bytes, write_bytes) totals from cgroup v2 io.stat for a container id."""
+    for p in (f"/sys/fs/cgroup/system.slice/docker-{cid}.scope/io.stat",
+              f"/sys/fs/cgroup/docker/{cid}/io.stat"):
+        try:
+            rb = wb = 0
+            with open(p) as f:
+                for ln in f:
+                    for tok in ln.split():
+                        if tok.startswith("rbytes="):
+                            rb += int(tok[7:])
+                        elif tok.startswith("wbytes="):
+                            wb += int(tok[7:])
+            return rb, wb
+        except Exception:
+            continue
+    return None, None
+
+def _exec_loop():
+    cfg = {}
+    while True:
+        try:
+            if not cfg or any(not cfg[l]["port"] for l in cfg):
+                cfg = _discover_metrics()
+            now = round(time.time() - _t0, 1)
+            for lane in ("evm", "pay"):
+                port, cid = cfg.get(lane, {}).get("port"), cfg.get(lane, {}).get("cid")
+                st = _exec[lane]
+                if port:
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=3) as r:
+                            text = r.read().decode()
+                    except Exception:
+                        text = ""
+                    if text:
+                        ms, _mprev[lane] = _prom_state_root_ms(text, _mprev[lane])
+                        if ms is not None:
+                            st["root_ms"] = ms
+                            _mprev[lane]["last_ms"] = ms
+                if cid:
+                    rb, wb = _cgroup_io(cid)
+                    if rb is not None:
+                        pt, prb, pwb = st.get("_io", (None, 0, 0))
+                        if pt is not None and now > pt:
+                            dt = now - pt
+                            st["rd_mb_s"] = round((rb - prb) / dt / 1048576, 2)
+                            st["wr_mb_s"] = round((wb - pwb) / dt / 1048576, 2)
+                        st["_io"] = (now, rb, wb)
+            _exec_series.append((now,
+                                 _exec["evm"].get("root_ms"), _exec["pay"].get("root_ms"),
+                                 _exec["evm"].get("rd_mb_s"), _exec["pay"].get("rd_mb_s")))
+        except Exception:
+            pass
+        time.sleep(3)
+
+def exec_stats():
+    def pub(d):
+        return {k: v for k, v in d.items() if not k.startswith("_")}
+    return {"evm": pub(_exec["evm"]), "pay": pub(_exec["pay"]),
+            "series": [x for x in list(_exec_series)[-100:]]}
+
 # unique addresses seen in blocks (from + to), per lane — climbs as new accounts are created
 _addr = {"evm": set(), "pay": set()}
 _alast = {"evm": 0, "pay": 0}
@@ -157,7 +273,7 @@ def collect():
         eh, ph = evm["block"]["hash"], pay["block"]["hash"]
         both = {"height": evm["settled"], "evm_hash": eh, "pay_hash": ph,
                 "value_id": value_id(eh, ph)}
-    return {"evm": evm, "pay": pay, "both": both, "growth": growth()}
+    return {"evm": evm, "pay": pay, "both": both, "growth": growth(), "exec": exec_stats()}
 
 HTML = r"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
@@ -229,6 +345,19 @@ h1 b{color:var(--pay)}
 .hdrtbl td.val{color:#7d8794}
 .hdrtbl tr.diff td.evm{color:var(--evm)} .hdrtbl tr.diff td.pay{color:var(--pay)}
 .hdrtbl tr.diff td.k{color:var(--ink)}
+.xc{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin:16px 0 0}
+.xc .hd{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:12px}
+.xc .hd .rx{color:var(--warn);letter-spacing:.04em;text-transform:none}
+.xgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px 30px;margin-bottom:14px}
+.xstat .gl{font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:600;margin-bottom:6px}
+.xstat.evm .gl{color:var(--evm)} .xstat.pay .gl{color:var(--pay)}
+.xrow{display:flex;align-items:baseline;gap:10px;padding:6px 0;border-top:1px solid var(--line)}
+.xrow .gk{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);width:92px;flex:none}
+.xrow .gv{font-size:21px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+.xrow .gu{font-size:11px;color:var(--dim)}
+.xc .gct{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);margin:4px 0 5px}
+.xc svg{width:100%;height:110px;display:block}
+@media(max-width:640px){.xgrid{grid-template-columns:1fr}}
 .agree{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 22px;
  display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
 .vgrp{display:flex;gap:22px;flex-wrap:wrap}
@@ -317,6 +446,22 @@ h1 b{color:var(--pay)}
  </div>
 </div>
 
+<div class=xc>
+ <div class=hd><span>execution cost &mdash; state root &amp; disk I/O (validator2, live)</span><span class=rx>the divergence the payment lane exists to avoid</span></div>
+ <div class=xgrid>
+  <div class="xstat evm"><div class=gl>EVM lane</div>
+   <div class=xrow><span class=gk>state root</span><span class=gv id=xEvmRoot>&mdash;</span><span class=gu>ms avg</span></div>
+   <div class=xrow><span class=gk>disk read</span><span class=gv id=xEvmRd>&mdash;</span><span class=gu>MB/s</span></div>
+   <div class=xrow><span class=gk>disk write</span><span class=gv id=xEvmWr>&mdash;</span><span class=gu>MB/s</span></div></div>
+  <div class="xstat pay"><div class=gl>Payment lane</div>
+   <div class=xrow><span class=gk>state root</span><span class=gv id=xPayRoot>&mdash;</span><span class=gu>ms avg</span></div>
+   <div class=xrow><span class=gk>disk read</span><span class=gv id=xPayRd>&mdash;</span><span class=gu>MB/s</span></div>
+   <div class=xrow><span class=gk>disk write</span><span class=gv id=xPayWr>&mdash;</span><span class=gu>MB/s</span></div></div>
+ </div>
+ <div class=gct>state-root latency over time &mdash; <span style="color:var(--evm)">EVM</span> vs <span style="color:var(--pay)">payment</span></div>
+ <svg id=svgExec viewBox="0 0 640 110" preserveAspectRatio=none></svg>
+</div>
+
 <div class=foot>
  The certified consensus value binds <span class=mono2>keccak(evmBlockHash &#8214; paymentBlockHash)</span> &mdash;
  both lanes are committed by one BFT certificate, so every validator must agree on <em>both</em> roots at every height.
@@ -356,6 +501,29 @@ function drawGrowth(g){
  document.getElementById('grwNote').textContent=rh?('history grows ~'+rh+'× faster than state'):'';
  spark('svgState',g.series,3,'#42c98a');
  spark('svgHist',g.series,4,'#e0a44b');
+}
+function drawExec(x){
+ if(!x)return;
+ const set=(id,v)=>{document.getElementById(id).textContent=(v==null?'—':v);};
+ set('xEvmRoot',x.evm.root_ms);set('xPayRoot',x.pay.root_ms);
+ set('xEvmRd',x.evm.rd_mb_s);set('xPayRd',x.pay.rd_mb_s);
+ set('xEvmWr',x.evm.wr_mb_s);set('xPayWr',x.pay.wr_mb_s);
+ const s=(x.series||[]).filter(r=>r[1]!=null||r[2]!=null);
+ if(s.length<2)return;
+ const W=640,H=110,pad=8;
+ const ts=s.map(r=>r[0]);
+ const t0=ts[0],span=(ts[ts.length-1]-t0)||1;
+ const vmax=Math.max(...s.map(r=>Math.max(r[1]||0,r[2]||0)),0.1)*1.15;
+ const X=t=>pad+((t-t0)/span)*(W-2*pad);
+ const Y=v=>H-pad-((v||0)/vmax)*(H-2*pad);
+ const line=idx=>{let d='',pen=false;
+  for(const r of s){ if(r[idx]==null){pen=false;continue;}
+   d+=(pen?'L':'M')+X(r[0]).toFixed(1)+','+Y(r[idx]).toFixed(1);pen=true;}
+  return d;};
+ document.getElementById('svgExec').innerHTML=
+  '<text x="'+(W-10)+'" y="14" text-anchor="end" font-family="ui-monospace,monospace" font-size="10" fill="#7d8794">max '+vmax.toFixed(1)+' ms</text>'+
+  '<path d="'+line(1)+'" fill=none stroke="#3aa8c1" stroke-width=2/>'+
+  '<path d="'+line(2)+'" fill=none stroke="#42c98a" stroke-width=2/>';
 }
 const HDR_INTS=['gasUsed','gasLimit','timestamp','baseFeePerGas','blobGasUsed','excessBlobGas'];
 function fmtHdr(f,v){
@@ -406,6 +574,7 @@ async function tick(){
  }
  drawGrowth(s.growth);
  renderHeaders(s);
+ drawExec(s.exec);
  if(s.both){
   document.getElementById('vidHeight').textContent='height '+s.both.height;
   document.getElementById('vidEvm').textContent=s.both.evm_hash;
@@ -443,5 +612,6 @@ class Srv(socketserver.ThreadingMixIn, http.server.HTTPServer):
 if __name__ == "__main__":
     threading.Thread(target=_growth_loop, daemon=True).start()
     threading.Thread(target=_addr_loop, daemon=True).start()
+    threading.Thread(target=_exec_loop, daemon=True).start()
     print(f"dual-EL dashboard on http://localhost:{PORT}")
     Srv(("0.0.0.0", PORT), H).serve_forever()
