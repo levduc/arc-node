@@ -18,7 +18,7 @@
 # Uses its own run dir (/tmp/dualel-bloat); do not run together with demo.sh.
 set -uo pipefail
 
-REPO="/home/papaduck/arc-node-paymentlane"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCEN="soak4"
 PORT=8080
 RUN="/tmp/dualel-bloat"

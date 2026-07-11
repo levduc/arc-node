@@ -8,7 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 PORT = 8080
 CAST = os.path.expanduser("~/.foundry/bin/cast")
 # representative validator datadirs (all validators hold ~identical state)
-DDIR = "/home/papaduck/arc-node-paymentlane/.quake/soak4/validator2"
+_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+DDIR = os.path.join(_REPO, ".quake", "soak4", "validator2")
 _series = collections.deque(maxlen=240)  # (elapsed_s, evm_mb, pay_mb)
 _t0 = time.time()
 

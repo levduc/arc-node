@@ -9,7 +9,7 @@
 # unique addresses, cross-validator agreement).
 set -uo pipefail
 
-REPO="/home/papaduck/arc-node-paymentlane"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCEN="soak4"
 PORT=8080
 RUN="/tmp/dualel-demo"            # pids, logs, stop-flag
@@ -110,7 +110,8 @@ import sys,json;s=json.load(sys.stdin);g=s.get('growth',{})
 b=s.get('both') or {}
 print('dashboard : up  ('+('agree' if s['evm']['agree'] and s['pay']['agree'] else 'DIVERGENCE')+')')
 print('value_id  :', (b.get('value_id') or '-')[:14]+'…')
-print('state     : EVM %s MB / PAY %s MB'%(g.get('evm_mb'),g.get('pay_mb')))
+def mb(kb): return '%.1f MB'%(kb/1024) if kb<1048576 else '%.2f GB'%(kb/1048576)
+print('state     : EVM %s / PAY %s   history: EVM %s / PAY %s'%(mb(g.get('evm_state',0)),mb(g.get('pay_state',0)),mb(g.get('evm_hist',0)),mb(g.get('pay_hist',0))))
 print('addresses : EVM %s / PAY %s (unique, live)'%(g.get('evm_addr'),g.get('pay_addr')))" 2>/dev/null
   else
     echo "dashboard : down"
