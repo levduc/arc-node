@@ -460,6 +460,16 @@ h1 b{color:var(--pay)}
  </div>
  <div class=gct>state-root latency over time &mdash; <span style="color:var(--evm)">EVM</span> vs <span style="color:var(--pay)">payment</span></div>
  <svg id=svgExec viewBox="0 0 640 110" preserveAspectRatio=none></svg>
+ <div class=gnote><b>Why is the EVM number so high even while its state is small?</b> The bloat block
+  inserts ~4,750 <em>fresh</em> storage slots per block, all into <em>one</em> contract's storage trie.
+  Reth parallelizes state-root work <em>across</em> accounts, so a single account's storage trie is
+  computed <b>serially</b>: ~4,750 random-keyed insert paths (branch splits, ~8k trie-cache misses per
+  block, measured) ≈ ~15 µs/slot — the <b>level</b> is the write-set shape, not state size. The
+  <b>state-size effect</b> is the <em>trend</em>: the write set is constant every block, so the climb of
+  the blue line (e.g. 34&rarr;70 ms while state grew 58&rarr;450 MB) is purely the deepening,
+  cache-exceeding trie. Disk read &asymp; 0 &rArr; still CPU-bound; when state outgrows the page cache,
+  the read row lifts off zero — that is the beyond-RAM moment. The payment lane's small, parallel,
+  in-place write set stays at &lt;1 ms throughout.</div>
 </div>
 
 <div class=foot>
