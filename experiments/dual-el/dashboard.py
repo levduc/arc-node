@@ -143,6 +143,17 @@ def _exec_loop():
                         if ms is not None:
                             st["root_ms"] = ms
                             _mprev[lane]["last_ms"] = ms
+                        ep = _mprev[lane].setdefault("exec", {})
+                        es = ec = None
+                        for ln in text.splitlines():
+                            if ln.startswith("reth_sync_execution_execution_histogram_sum "):
+                                es = float(ln.split()[1])
+                            elif ln.startswith("reth_sync_execution_execution_histogram_count "):
+                                ec = float(ln.split()[1])
+                        if es is not None and ec is not None:
+                            if ec > ep.get("c", 0):
+                                st["exec_ms"] = round((es - ep.get("s", 0.0)) / (ec - ep.get("c", 0)) * 1000.0, 2)
+                            ep["s"], ep["c"] = es, ec
                 if cid:
                     for mp in (f"/sys/fs/cgroup/system.slice/docker-{cid}.scope/memory.current",
                                f"/sys/fs/cgroup/docker/{cid}/memory.current"):
@@ -459,11 +470,13 @@ h1 b{color:var(--pay)}
  <div class=xgrid>
   <div class="xstat evm"><div class=gl>EVM lane</div>
    <div class=xrow><span class=gk>state root</span><span class=gv id=xEvmRoot>&mdash;</span><span class=gu>ms avg</span></div>
+   <div class=xrow><span class=gk>execution</span><span class=gv id=xEvmExec>&mdash;</span><span class=gu>ms avg</span></div>
    <div class=xrow><span class=gk>disk read</span><span class=gv id=xEvmRd>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>disk write</span><span class=gv id=xEvmWr>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>RAM (EL)</span><span class=gv id=xEvmMem>&mdash;</span><span class=gu>GB</span></div></div>
   <div class="xstat pay"><div class=gl>Payment lane</div>
    <div class=xrow><span class=gk>state root</span><span class=gv id=xPayRoot>&mdash;</span><span class=gu>ms avg</span></div>
+   <div class=xrow><span class=gk>execution</span><span class=gv id=xPayExec>&mdash;</span><span class=gu>ms avg</span></div>
    <div class=xrow><span class=gk>disk read</span><span class=gv id=xPayRd>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>disk write</span><span class=gv id=xPayWr>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>RAM (EL)</span><span class=gv id=xPayMem>&mdash;</span><span class=gu>GB</span></div></div>
@@ -526,6 +539,7 @@ function drawExec(x){
  if(!x)return;
  const set=(id,v)=>{document.getElementById(id).textContent=(v==null?'—':v);};
  set('xEvmRoot',x.evm.root_ms);set('xPayRoot',x.pay.root_ms);
+ set('xEvmExec',x.evm.exec_ms);set('xPayExec',x.pay.exec_ms);
  set('xEvmRd',x.evm.rd_mb_s);set('xPayRd',x.pay.rd_mb_s);
  set('xEvmWr',x.evm.wr_mb_s);set('xPayWr',x.pay.wr_mb_s);
  set('xEvmMem',x.evm.mem_gb);set('xPayMem',x.pay.mem_gb);
