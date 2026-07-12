@@ -88,13 +88,13 @@ PY
     bloat(){ while [ ! -f "$STOP" ]; do
       target/release/spammer ws \
         --targets "ws://127.0.0.1:8546,ws://127.0.0.1:8646,ws://127.0.0.1:8746,ws://127.0.0.1:8846" \
-        -r 2000 -t 3600 -g 8 -a 1000 -l --recipient-pool 0x3000000000:10000 --mix transfer=998,guzzler=2 \
+        -r 6 -t 3600 -g 2 -a 200 -l --mix guzzler=100 \
         --guzzler-fn-weights "storage-write=100@${SLOTS_PER_CALL}" \
         >"$RUN/spam_evm.log" 2>&1; sleep 1; done; }
     pay(){ while [ ! -f "$STOP" ]; do
       target/release/spammer ws \
         --targets "ws://127.0.0.1:19546,ws://127.0.0.1:19646,ws://127.0.0.1:19746,ws://127.0.0.1:19846" \
-        -r "$PAY_RATE" -t 3600 -g 8 -a "$EXTRA_ACCOUNTS" --recipient-pool 0x2000000000:10000000 --mix transfer=100 \
+        -r 3500 -t 3600 -g 8 -a "$EXTRA_ACCOUNTS" --recipient-pool 0x2000000000:10000000 --mix transfer=100 \
         >"$RUN/spam_pay.log" 2>&1; sleep 1; done; }
     bloat & pay & wait
   ) >/dev/null 2>&1 &
