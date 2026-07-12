@@ -60,7 +60,7 @@ out.write(json.dumps({k:v for k,v in g.items() if k!='alloc'})[:-1]+', "alloc": 
 first=True
 for a,v in g['alloc'].items():
     out.write(('' if first else ',')+json.dumps(a)+':'+json.dumps(v)); first=False
-for i in range(10_000_000):
+for i in range(30_000_000):
     out.write(',"0x%040x":{"balance":"0xde0b6b3a7640000"}'%(0x2000000000+i))
 out.write('}}')
 PY
@@ -73,7 +73,7 @@ PY
 
   echo "==> [2/5] payment EL per validator (gossip-peered)…"
   cp assets/localdev/payment-jwt.hex ".quake/${SCEN}/assets/" 2>/dev/null || true
-  PAYMENT_GENESIS=payment-genesis.json TESTNET="$SCEN" bash experiments/dual-el/launch-payment-els.sh >"$RUN/paylane.log" 2>&1
+  STAGGER=180 PAYMENT_GENESIS=payment-genesis.json TESTNET="$SCEN" bash experiments/dual-el/launch-payment-els.sh >"$RUN/paylane.log" 2>&1
 
   echo "==> [3/5] waiting for both lanes to produce…"
   for i in $(seq 1 30); do
@@ -94,9 +94,14 @@ PY
     pay(){ while [ ! -f "$STOP" ]; do
       target/release/spammer ws \
         --targets "ws://127.0.0.1:19546,ws://127.0.0.1:19646,ws://127.0.0.1:19746,ws://127.0.0.1:19846" \
-        -r 6000 -t 3600 -g 8 -a "$EXTRA_ACCOUNTS" --recipient-pool 0x2000000000:100000000 --mix transfer=100 \
+        -r 6000 -t 3600 -g 8 -a "$EXTRA_ACCOUNTS" --recipient-pool 0x2000000000:30000000 --mix transfer=100 \
         >"$RUN/spam_pay.log" 2>&1; sleep 1; done; }
-    bloat & pay & wait
+    grow(){ while [ ! -f "$STOP" ]; do
+      target/release/spammer ws \
+        --targets "ws://127.0.0.1:19546,ws://127.0.0.1:19646,ws://127.0.0.1:19746,ws://127.0.0.1:19846" \
+        -r 50 -t 3600 -g 2 -a 200 -l --fresh-recipients --mix transfer=100 \
+        >"$RUN/spam_grow.log" 2>&1; sleep 1; done; }
+  bloat & pay & grow & wait
   ) >/dev/null 2>&1 &
   echo $! >"$RUN/spam.pid"
 
