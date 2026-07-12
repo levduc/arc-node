@@ -28,7 +28,7 @@ EXTRA_ACCOUNTS=1000
 # per-tx gas cap; 600 was rejected "gas limit too high"). ~18 tx fill a 100M block.
 EVM_RATE=80; SLOTS_PER_CALL=250
 # Payment lane: moderate transfer load (leave CPU headroom for the EVM lane's trie work).
-PAY_RATE=2000
+PAY_RATE=6000
 cd "$REPO"
 mkdir -p "$RUN"
 
