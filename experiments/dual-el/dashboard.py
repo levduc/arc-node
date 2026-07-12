@@ -515,8 +515,8 @@ function drawGrowth(g){
  document.getElementById('evmHistR').textContent=fmtRate(g.evm_hist_rate);
  document.getElementById('payStateR').textContent=fmtRate(g.pay_state_rate);
  document.getElementById('payHistR').textContent=fmtRate(g.pay_hist_rate);
- document.getElementById('evmAcct').textContent='· '+nf(g.evm_addr)+' accts';
- document.getElementById('payAcct').textContent='· '+nf(g.pay_addr)+' accts';
+ document.getElementById('evmAcct').textContent='· '+nf(g.evm_addr)+' touched';
+ document.getElementById('payAcct').textContent='· '+nf(g.pay_addr)+' touched';
  const rh=g.pay_state_rate>0?Math.round(g.pay_hist_rate/g.pay_state_rate):0;
  document.getElementById('grwNote').textContent=rh?('history grows ~'+rh+'× faster than state'):'';
  spark('svgState',g.series,3,'#42c98a');

@@ -51,9 +51,29 @@ start() {
       -e "$EXTRA_ACCOUNTS" --monitoring false --force >"$RUN/quake.log" 2>&1 || true
   [ "$(val_up)" -ge 8 ] || { echo "!! validators failed to start — see $RUN/quake.log"; exit 1; }
 
+  echo "==> [1b] preseed payment genesis (10M accounts) + init datadirs…"
+  python3 - <<'PY'
+import json
+g=json.load(open('.quake/soak4/assets/genesis.json'))
+out=open('.quake/soak4/assets/payment-genesis.json','w')
+out.write(json.dumps({k:v for k,v in g.items() if k!='alloc'})[:-1]+', "alloc": {')
+first=True
+for a,v in g['alloc'].items():
+    out.write(('' if first else ',')+json.dumps(a)+':'+json.dumps(v)); first=False
+for i in range(10_000_000):
+    out.write(',"0x%040x":{"balance":"0xde0b6b3a7640000"}'%(0x2000000000+i))
+out.write('}}')
+PY
+  BIN=$(grep -oE '[^" ]*arc-node-execution' ".quake/$SCEN/assets/entrypoint_el.sh" | head -1)
+  mkdir -p ".quake/$SCEN/validator1/reth-pay"
+  docker run --rm -v "$PWD/.quake/$SCEN/validator1/reth-pay":/data/reth/execution-data \
+    -v "$PWD/.quake/$SCEN/assets":/app/assets --entrypoint "$BIN" arc_execution:latest \
+    init --datadir /data/reth/execution-data --chain /app/assets/payment-genesis.json >/dev/null 2>&1
+  for i in 2 3 4; do rm -rf ".quake/$SCEN/validator$i/reth-pay"; cp -a ".quake/$SCEN/validator1/reth-pay" ".quake/$SCEN/validator$i/reth-pay"; done
+
   echo "==> [2/5] payment EL per validator (gossip-peered)…"
   cp assets/localdev/payment-jwt.hex ".quake/${SCEN}/assets/" 2>/dev/null || true
-  TESTNET="$SCEN" bash experiments/dual-el/launch-payment-els.sh >"$RUN/paylane.log" 2>&1
+  PAYMENT_GENESIS=payment-genesis.json TESTNET="$SCEN" bash experiments/dual-el/launch-payment-els.sh >"$RUN/paylane.log" 2>&1
 
   echo "==> [3/5] waiting for both lanes to produce…"
   for i in $(seq 1 30); do

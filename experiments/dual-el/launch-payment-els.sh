@@ -30,7 +30,7 @@ for i in 1 2 3 4; do
     -v "$ASSETS":/app/assets \
     -p ${http}:8545 -p ${ws}:8546 -p ${auth}:8551 -p ${met}:9001 \
     "$IMG" \
-    node --datadir=/data/reth/execution-data --chain=/app/assets/genesis.json \
+    node --datadir=/data/reth/execution-data --chain=/app/assets/${PAYMENT_GENESIS:-genesis.json} \
       --http --http.addr=0.0.0.0 --http.port=8545 --http.corsdomain='*' --http.api=eth,net,web3,txpool,debug,admin \
       --ws --ws.addr=0.0.0.0 --ws.port=8546 --ws.origins='*' --ws.api=eth,net,web3,txpool \
       --authrpc.addr=0.0.0.0 --authrpc.port=8551 --authrpc.jwtsecret=/app/assets/payment-jwt.hex \
