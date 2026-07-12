@@ -12,7 +12,8 @@
 # NOTE: validator1's EVM host port (8545) may be shadowed by a stray anvil; its EVM is read over the
 # internal docker network. The other endpoints are read on the host.
 export PATH="$HOME/.cargo/bin:$HOME/.foundry/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-cd /home/papaduck/arc-node
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO"
 DUR=${DUR:-3600}; RATE=${RATE:-300}
 LOG=/tmp/dualel-soak.log; : > "$LOG"
 STOP=/tmp/dualel-soak.stop; rm -f "$STOP"
@@ -56,7 +57,7 @@ while [ $(( $(date +%s) - START )) -lt "$DUR" ]; do
     eb=$(hashat 8645 $HE); ec=$(hashat 8745 $HE); ed=$(hashat 8845 $HE)
     if [ -n "$eb" ] && { [ "$eb" != "$ec" ] || [ "$eb" != "$ed" ]; }; then log "FAIL agreement: EVM@$HE differs: $eb $ec $ed"; iterfail=1; fi
   fi
-  disk=$(df -BG --output=avail /home/papaduck/arc-node 2>/dev/null | tail -1 | tr -dc '0-9')
+  disk=$(df -BG --output=avail "$REPO" 2>/dev/null | tail -1 | tr -dc '0-9')
   [ -n "$disk" ] && [ "$disk" -lt 20 ] && { log "FAIL disk: only ${disk}G free"; iterfail=1; }
   [ "$iterfail" -ne 0 ] && fails=$((fails+1))
   log "ok=$([ $iterfail -eq 0 ] && echo Y || echo N) EVM[$e1 $e2 $e3 $e4] PAY[$p1 $p2 $p3 $p4] up=$up dagree@pay$H/evm$HE disk=${disk}G fails=$fails/$checks"
