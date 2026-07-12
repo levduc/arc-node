@@ -88,8 +88,8 @@ PY
     bloat(){ while [ ! -f "$STOP" ]; do
       target/release/spammer ws \
         --targets "ws://127.0.0.1:8546,ws://127.0.0.1:8646,ws://127.0.0.1:8746,ws://127.0.0.1:8846" \
-        -r "$EVM_RATE" -t 3600 -g 2 -a 200 -l \
-        --mix guzzler=100 --guzzler-fn-weights "storage-write=100@${SLOTS_PER_CALL}" \
+        -r 2000 -t 3600 -g 8 -a 1000 -l --recipient-pool 0x3000000000:10000 --mix transfer=998,guzzler=2 \
+        --guzzler-fn-weights "storage-write=100@${SLOTS_PER_CALL}" \
         >"$RUN/spam_evm.log" 2>&1; sleep 1; done; }
     pay(){ while [ ! -f "$STOP" ]; do
       target/release/spammer ws \
