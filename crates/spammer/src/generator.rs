@@ -93,6 +93,8 @@ pub(crate) struct TxGenerator {
     max_txs_per_account: u64,
     query_latest_nonce: bool,
     tx_input_size: usize,
+    fresh_recipients: bool,
+    fresh_ctr: std::sync::atomic::AtomicU64,
     guzzler_fn_weights: GuzzlerFnWeights,
     erc20_fn_weights: Erc20FnWeights,
     tx_type_mix: TxTypeMix,
@@ -127,6 +129,7 @@ impl TxGenerator {
         max_txs_per_account: u64,
         query_latest_nonce: bool,
         tx_input_size: usize,
+        fresh_recipients: bool,
         guzzler_fn_weights: GuzzlerFnWeights,
         erc20_fn_weights: Erc20FnWeights,
         tx_type_mix: TxTypeMix,
@@ -143,6 +146,10 @@ impl TxGenerator {
             max_txs_per_account,
             query_latest_nonce,
             tx_input_size,
+            fresh_recipients,
+            fresh_ctr: std::sync::atomic::AtomicU64::new(
+                (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) & 0xFFFF_FFFF) << 28,
+            ),
             guzzler_fn_weights,
             erc20_fn_weights,
             tx_type_mix,
@@ -844,6 +851,19 @@ impl TxGenerator {
         highest_nonce.ok_or_else(|| eyre::eyre!("all nodes failed to return nonce for {address}"))
     }
 
+    /// Recipient for a plain transfer. In fresh mode every tx pays a brand-new address
+    /// (=> creates a new account per transfer); counter is seeded from wall time so
+    /// recipients stay unique across spammer restarts.
+    fn transfer_recipient(&self, nonce: u64) -> Address {
+        if self.fresh_recipients {
+            let n = self.fresh_ctr.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Address::left_padding_from(&n.to_be_bytes())
+        } else {
+            // avoid zero address and Ethereum precompile addresses
+            Address::left_padding_from(&(nonce.wrapping_add(0x1000)).to_be_bytes())
+        }
+    }
+
     /// Create a new EIP-1559 transaction.
     fn make_eip1559_tx(&self, nonce: u64) -> TxEip1559 {
         let input = Bytes::from(vec![0u8; self.tx_input_size]);
@@ -855,7 +875,7 @@ impl TxGenerator {
             max_priority_fee_per_gas: MAX_PRIORITY_FEE_PER_GAS,
             max_fee_per_gas: MAX_FEE_PER_GAS,
             gas_limit: 30_000 + input_gas, // base tx + input gas, Arc requires ~26k for transfers (blocklist check)
-            to: Address::left_padding_from(&(nonce.wrapping_add(0x1000)).to_be_bytes()).into(), // avoid zero address and Ethereum precompile addresses
+            to: self.transfer_recipient(nonce).into(),
             value: U256::from(1e16), // 0.01 ETH
             input,
             access_list: Default::default(),
@@ -872,7 +892,7 @@ impl TxGenerator {
             nonce,
             gas_price: MAX_FEE_PER_GAS,
             gas_limit: 30_000 + input_gas,
-            to: Address::left_padding_from(&(nonce.wrapping_add(0x1000)).to_be_bytes()).into(),
+            to: self.transfer_recipient(nonce).into(),
             value: U256::from(1e16), // 0.01 ETH
             input,
         }
@@ -925,6 +945,7 @@ mod tests {
             max_txs_per_account,
             false,
             0,
+            false,
             GuzzlerFnWeights::default(),
             Erc20FnWeights {
                 transfer: 100,
@@ -1041,6 +1062,7 @@ mod tests {
             0,
             false,
             0,
+            false,
             GuzzlerFnWeights::default(),
             Erc20FnWeights::default(),
             TxTypeMix {

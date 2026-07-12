@@ -144,6 +144,13 @@ def _exec_loop():
                             st["root_ms"] = ms
                             _mprev[lane]["last_ms"] = ms
                 if cid:
+                    for mp in (f"/sys/fs/cgroup/system.slice/docker-{cid}.scope/memory.current",
+                               f"/sys/fs/cgroup/docker/{cid}/memory.current"):
+                        try:
+                            st["mem_gb"] = round(int(open(mp).read()) / 2**30, 2)
+                            break
+                        except Exception:
+                            pass
                     rb, wb = _cgroup_io(cid)
                     if rb is not None:
                         pt, prb, pwb = st.get("_io", (None, 0, 0))
@@ -453,11 +460,13 @@ h1 b{color:var(--pay)}
   <div class="xstat evm"><div class=gl>EVM lane</div>
    <div class=xrow><span class=gk>state root</span><span class=gv id=xEvmRoot>&mdash;</span><span class=gu>ms avg</span></div>
    <div class=xrow><span class=gk>disk read</span><span class=gv id=xEvmRd>&mdash;</span><span class=gu>MB/s</span></div>
-   <div class=xrow><span class=gk>disk write</span><span class=gv id=xEvmWr>&mdash;</span><span class=gu>MB/s</span></div></div>
+   <div class=xrow><span class=gk>disk write</span><span class=gv id=xEvmWr>&mdash;</span><span class=gu>MB/s</span></div>
+   <div class=xrow><span class=gk>RAM (EL)</span><span class=gv id=xEvmMem>&mdash;</span><span class=gu>GB</span></div></div>
   <div class="xstat pay"><div class=gl>Payment lane</div>
    <div class=xrow><span class=gk>state root</span><span class=gv id=xPayRoot>&mdash;</span><span class=gu>ms avg</span></div>
    <div class=xrow><span class=gk>disk read</span><span class=gv id=xPayRd>&mdash;</span><span class=gu>MB/s</span></div>
-   <div class=xrow><span class=gk>disk write</span><span class=gv id=xPayWr>&mdash;</span><span class=gu>MB/s</span></div></div>
+   <div class=xrow><span class=gk>disk write</span><span class=gv id=xPayWr>&mdash;</span><span class=gu>MB/s</span></div>
+   <div class=xrow><span class=gk>RAM (EL)</span><span class=gv id=xPayMem>&mdash;</span><span class=gu>GB</span></div></div>
  </div>
  <div class=gct>state-root latency over time &mdash; <span style="color:var(--evm)">EVM</span> vs <span style="color:var(--pay)">payment</span></div>
  <svg id=svgExec viewBox="0 0 640 110" preserveAspectRatio=none></svg>
@@ -519,6 +528,7 @@ function drawExec(x){
  set('xEvmRoot',x.evm.root_ms);set('xPayRoot',x.pay.root_ms);
  set('xEvmRd',x.evm.rd_mb_s);set('xPayRd',x.pay.rd_mb_s);
  set('xEvmWr',x.evm.wr_mb_s);set('xPayWr',x.pay.wr_mb_s);
+ set('xEvmMem',x.evm.mem_gb);set('xPayMem',x.pay.mem_gb);
  const s=(x.series||[]).filter(r=>r[1]!=null||r[2]!=null);
  if(s.length<2)return;
  const W=640,H=110,pad=8;

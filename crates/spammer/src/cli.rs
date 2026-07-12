@@ -91,6 +91,9 @@ pub struct SpammerArgs {
     /// Size of transaction input data in bytes
     #[clap(short = 's', long, default_value_t = defaults::TX_INPUT_SIZE, global = true)]
     pub tx_input_size: usize,
+    /// Every transfer pays a brand-new recipient address (creates a new account per tx)
+    #[clap(long, default_value_t = false, global = true)]
+    pub fresh_recipients: bool,
     /// Maximum number of transactions to send per account (0 for no limit)
     ///
     /// A low value helps reduce the risk of nonce gaps. A high value will
@@ -337,6 +340,7 @@ impl SpammerArgs {
             max_rate: self.rate,
             max_time: self.time,
             tx_input_size: self.tx_input_size,
+            fresh_recipients: self.fresh_recipients,
             max_txs_per_account: self.max_txs_per_account,
             silent,
             show_pool_status: self.show_pool_status,
@@ -367,6 +371,7 @@ mod tests {
             rate: defaults::RATE,
             time: defaults::TIME,
             tx_input_size: defaults::TX_INPUT_SIZE,
+            fresh_recipients: false,
             max_txs_per_account: defaults::MAX_TXS_PER_ACCOUNT,
             preinit_accounts: false,
             query_latest_nonce: false,

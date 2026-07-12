@@ -309,6 +309,7 @@ pub struct Config {
     pub max_time: u64,
     /// Size of transaction input data in bytes
     pub tx_input_size: usize,
+    pub fresh_recipients: bool,
     /// Maximum number of transactions to send per account (0 for no limit)
     pub max_txs_per_account: u64,
     /// Whether to run in silent mode
