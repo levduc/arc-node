@@ -74,7 +74,7 @@ start() {
     pay(){ while [ ! -f "$STOP" ]; do
       target/release/spammer ws \
         --targets "ws://127.0.0.1:19546,ws://127.0.0.1:19646,ws://127.0.0.1:19746,ws://127.0.0.1:19846" \
-        -r "$PAY_RATE" -t 3600 -g 8 -a "$EXTRA_ACCOUNTS" --fresh-recipients --mix transfer=100 \
+        -r "$PAY_RATE" -t 3600 -g 8 -a "$EXTRA_ACCOUNTS" --recipient-pool 0x2000000000:10000000 --mix transfer=100 \
         >"$RUN/spam_pay.log" 2>&1; sleep 1; done; }
     bloat & pay & wait
   ) >/dev/null 2>&1 &

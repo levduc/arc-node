@@ -94,6 +94,11 @@ pub struct SpammerArgs {
     /// Every transfer pays a brand-new recipient address (creates a new account per tx)
     #[clap(long, default_value_t = false, global = true)]
     pub fresh_recipients: bool,
+    /// Recipient pool "base:size" (e.g. 0x100000000:10000000): sequential walk with wrap —
+    /// first pass creates the accounts, later passes are pure balance updates (takes precedence
+    /// over --fresh-recipients)
+    #[clap(long, global = true)]
+    pub recipient_pool: Option<String>,
     /// Maximum number of transactions to send per account (0 for no limit)
     ///
     /// A low value helps reduce the risk of nonce gaps. A high value will
@@ -341,6 +346,14 @@ impl SpammerArgs {
             max_time: self.time,
             tx_input_size: self.tx_input_size,
             fresh_recipients: self.fresh_recipients,
+            recipient_pool: self.recipient_pool.as_ref().map(|v| {
+                let (b, z) = v.split_once(':').expect("--recipient-pool needs base:size");
+                let parse = |x: &str| -> u64 {
+                    if let Some(h) = x.strip_prefix("0x") { u64::from_str_radix(h, 16).unwrap() }
+                    else { x.parse().unwrap() }
+                };
+                (parse(b), parse(z))
+            }),
             max_txs_per_account: self.max_txs_per_account,
             silent,
             show_pool_status: self.show_pool_status,
@@ -372,6 +385,7 @@ mod tests {
             time: defaults::TIME,
             tx_input_size: defaults::TX_INPUT_SIZE,
             fresh_recipients: false,
+            recipient_pool: None,
             max_txs_per_account: defaults::MAX_TXS_PER_ACCOUNT,
             preinit_accounts: false,
             query_latest_nonce: false,

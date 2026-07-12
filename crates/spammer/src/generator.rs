@@ -94,6 +94,7 @@ pub(crate) struct TxGenerator {
     query_latest_nonce: bool,
     tx_input_size: usize,
     fresh_recipients: bool,
+    recipient_pool: Option<(u64, u64)>,
     fresh_ctr: std::sync::atomic::AtomicU64,
     guzzler_fn_weights: GuzzlerFnWeights,
     erc20_fn_weights: Erc20FnWeights,
@@ -130,6 +131,7 @@ impl TxGenerator {
         query_latest_nonce: bool,
         tx_input_size: usize,
         fresh_recipients: bool,
+        recipient_pool: Option<(u64, u64)>,
         guzzler_fn_weights: GuzzlerFnWeights,
         erc20_fn_weights: Erc20FnWeights,
         tx_type_mix: TxTypeMix,
@@ -147,6 +149,7 @@ impl TxGenerator {
             query_latest_nonce,
             tx_input_size,
             fresh_recipients,
+            recipient_pool,
             fresh_ctr: std::sync::atomic::AtomicU64::new(
                 (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) & 0xFFFF_FFFF) << 28,
             ),
@@ -855,7 +858,13 @@ impl TxGenerator {
     /// (=> creates a new account per transfer); counter is seeded from wall time so
     /// recipients stay unique across spammer restarts.
     fn transfer_recipient(&self, nonce: u64) -> Address {
-        if self.fresh_recipients {
+        if let Some((base, size)) = self.recipient_pool {
+            // Fixed address window [base, base+size): sequential walk with wrap-around.
+            // First pass CREATES the pool's accounts; every later pass is pure balance
+            // UPDATES over existing accounts (steady-state payments on a large state).
+            let n = self.fresh_ctr.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % size;
+            Address::left_padding_from(&(base + n).to_be_bytes())
+        } else if self.fresh_recipients {
             let n = self.fresh_ctr.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Address::left_padding_from(&n.to_be_bytes())
         } else {
@@ -946,6 +955,7 @@ mod tests {
             false,
             0,
             false,
+            None,
             GuzzlerFnWeights::default(),
             Erc20FnWeights {
                 transfer: 100,
@@ -1063,6 +1073,7 @@ mod tests {
             false,
             0,
             false,
+            None,
             GuzzlerFnWeights::default(),
             Erc20FnWeights::default(),
             TxTypeMix {
