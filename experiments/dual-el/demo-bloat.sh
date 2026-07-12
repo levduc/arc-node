@@ -26,7 +26,7 @@ DASH="$REPO/experiments/dual-el/dashboard.py"
 EXTRA_ACCOUNTS=1000
 # EVM lane: guzzler storage-write. 250 fresh slots/call ≈ 5.5M gas/tx (2x-estimate fits the pool's
 # per-tx gas cap; 600 was rejected "gas limit too high"). ~18 tx fill a 100M block.
-EVM_RATE=80; SLOTS_PER_CALL=250
+EVM_RATE=8; SLOTS_PER_CALL=250
 # Payment lane: moderate transfer load (leave CPU headroom for the EVM lane's trie work).
 PAY_RATE=6000
 cd "$REPO"
@@ -68,7 +68,7 @@ start() {
     bloat(){ while [ ! -f "$STOP" ]; do
       target/release/spammer ws \
         --targets "ws://127.0.0.1:8546,ws://127.0.0.1:8646,ws://127.0.0.1:8746,ws://127.0.0.1:8846" \
-        -r "$EVM_RATE" -t 3600 -g 2 -a 200 \
+        -r "$EVM_RATE" -t 3600 -g 2 -a 200 -l \
         --mix guzzler=100 --guzzler-fn-weights "storage-write=100@${SLOTS_PER_CALL}" \
         >"$RUN/spam_evm.log" 2>&1; sleep 1; done; }
     pay(){ while [ ! -f "$STOP" ]; do
