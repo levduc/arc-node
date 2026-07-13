@@ -260,3 +260,55 @@ is present, else exactly the EVM hash (single-EL blocks byte-for-byte unchanged,
   Harness: `experiments/dual-el/soak.sh` (this run used a path-adapted copy for the `arc-node-paymentlane`
   clone). NOTE: two clones of this branch exist — `/home/papaduck/arc-node` (older, prior soak) and
   `/home/papaduck/arc-node-paymentlane` (this commit); they have diverged.
+
+**DUAL-EL DEMO TOOLING + STATE-BLOAT/PRESEED RUNS (2026-07-10..13, commits e91ff14..8a36e23+).**
+Tooling (experiments/dual-el/): `demo.sh` (start/stop/status: quake soak4 + payment ELs + dual load +
+dashboard; stop DELETES datadirs), `demo-bloat.sh` (state-experiment variant: preseeds 10M payment
+accounts in genesis at start — regenerated EVERY run — guzzler bloat on EVM lane, pool-update load on
+payment lane, memory caps applied at start), `demo-empty.sh` (clean chain, no preseed/load),
+`dashboard.py` (localhost:8080: per-lane block/root/tx cards, value_id callout via cast keccak,
+state-vs-history split [state=db/ = what a pruned snapshot ships; history=static_files+rocksdb minus
+RocksDB WAL churn], touched-accounts counter, side-by-side headers, per-lane exec_ms+root_ms from reth
+prometheus + disk I/O + RAM from cgroups, block-production rate; settled height anchors on MAX head so
+an offline validator can't pin the display; "agree"=no-fork at settled height, NOT all-in-sync).
+Spammer additions: `--fresh-recipients` (every transfer to a new address = new account/tx; wall-time-
+seeded counter), `--recipient-pool base:size` (seq walk w/ wrap: first pass creates pool, then pure
+balance updates — separates onboarding from steady-state payments). Payment ELs gossip via static
+admin_addPeer mesh (launch-payment-els.sh; un-fed validator otherwise proposes empty payment blocks on
+its round-robin turn). PAYMENT_GENESIS env selects payment-lane genesis.
+
+KEY FINDINGS (all measured; trend log ~/dualel-bloat-trend.log):
+1. **Genesis-resident alloc RAM**: reth keeps the entire genesis alloc in process RSS forever
+   (~250B/account): 10M preseed = ~2.7G/EL, 30M = ~8G/EL, on top of disk state (10M=0.66GB, 30M=2.1GB
+   MDBX) and working caches. 100M preseed = 7.2GB genesis JSON, ~30-60min parse+root per EL BOOT (OOM
+   cascade if boots overlap; must boot sequentially, uncapped, then clamp). Production: don't preseed
+   huge allocs; organic/tx-created accounts live only in DB.
+2. **Proposer build-failure crash-exit (FIXED 509f404)**: payment getPayload timeout during get_value
+   crashed the CL → restart-loop on same height → quorum loss + stall. Fix: log + skip round (same as
+   existing None path). Confined to our get_value.rs handler, no consensus semantics.
+3. **Value-sync batch livelock (OPEN)**: both-lane sync batches (10 heights × ~500tx payloads ≈ 2.2MiB)
+   exceed client request timeout under load → lagging validator loops request/timeout forever and its
+   request storm taxes healthy peers. Fix pending: value_sync.batch_size 10→~3 in scenario config.
+   (Sync itself validated live: val2 caught up 2000 heights with both lanes re-validated — 4c86b4f.)
+4. **Shared-box ceiling + caps**: 12 nodes on 62G thrash-froze uncapped under heavy state loads (swap
+   sawtooth; sheds every ~45min; one hard machine freeze, no oom-kill logged — hardware suspected).
+   Per-container caps (docker update, live) fix isolation: one container OOMs alone (137, ~3min
+   recovery) instead of box death. Budget caps for END-state (EVM ELs pinned at 97% of 2.5G once the
+   guzzler trie grew → 0.16blk/s; 5G fixed it). Current: pay 10G / evm 5G (bump demo-bloat from 2.5G!)
+   / cl 0.75G. After ANY EL pool wipe (restart) spammers MUST be bounced (-l re-syncs nonces) or all
+   their txs queue forever nonce-gapped.
+5. **Latency coupling measured**: one certificate/height couples cadence = max(T_evm,T_pay)+overhead.
+   Guzzler-full EVM blocks (50-90M gas keccak+cold-SSTORE, all txs serial on ONE contract+counter — the
+   hot-account worst case; executed TWICE: build+re-execute) drag the pair to 0.1-0.7 blk/s while
+   payment exec stays ~5ms. Light lanes hit ~3.8-3.9 blk/s (24h soak) ≈ the 250ms target. Builder
+   deadline bounds block FULLNESS, not cadence (2000→250ms changed nothing under saturated mempool).
+6. **RUN7 3h averages (10M preseed, cumulative histograms)**: EVM(guzzler) root 10.79ms/exec 57.25ms
+   per block (~18tx) vs PAY root 2.59ms/exec 5.20ms per block (273-4761tx) → per-tx gap 2-3 orders of
+   magnitude; payment transfers ≈ 33µs/tx exec on 10M accounts; payment proposer builds full blocks
+   ~40x faster (exec proxy). Zero forks/divergence across ALL runs incl. OOM kills, CL restarts,
+   460-height sync catch-up. Payment state root flat 1-11ms on 10M throughout.
+7. Ops runbook: CL "Manual intervention required" park after EL races → docker restart CL once ELs up;
+   exit-137 pay EL → boot uncapped (60g) then clamp; /tmp wiped on reboot → trend log in home dir.
+RECOMMENDED DEMO CONFIG: 10M preseed + fixed CL (509f404) + caps pay10/evm5/cl0.75 + batch_size fix
+before 4-validator demos. demo-empty.sh for clean-slate demos. Exec benchmark (empty vs 10M preseed,
+identical 1500tx/s transfers both lanes, 1h each): results land in /tmp/execcmp2-results.txt (2026-07-13).
