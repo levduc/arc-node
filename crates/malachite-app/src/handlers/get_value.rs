@@ -88,7 +88,18 @@ pub async fn handle(
         stream_id,
         timeout,
     )
-    .await?;
+    .await;
+
+    // A proposer that fails to BUILD (e.g. a lane's engine getPayload times out under load)
+    // must not crash the node: skip the reply so this round simply times out and consensus
+    // moves on (identical to the existing None path). The next round/proposer recovers.
+    let proposed_value = match proposed_value {
+        Ok(v) => v,
+        Err(e) => {
+            error!(%height, %round, "GetValue: failed to build proposal; skipping round: {e:#}");
+            return Ok(());
+        }
+    };
 
     if let Some(proposed_value) = proposed_value {
         if round.as_i64() == 0 {
