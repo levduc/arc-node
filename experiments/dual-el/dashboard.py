@@ -274,7 +274,9 @@ def lane_state(ports):
     live = [h for h in heads.values() if h is not None]
     if not live:
         return {"up": False, "heads": heads}
-    settled = max(1, min(live) - 3)
+    # anchor on the LIVE head (max), not min — a stalled/offline validator must not pin the display;
+    # lagging nodes simply return no block at this height and are excluded from the agreement check
+    settled = max(1, max(live) - 3)
     blocks = dict(zip(ports, POOL.map(lambda p: block_at(p, settled), ports.values())))
     hashes = [b["hash"] for b in blocks.values() if b]
     agree = len(hashes) >= 2 and len(set(hashes)) == 1
