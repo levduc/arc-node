@@ -19,7 +19,7 @@ BASE="$(pwd)/.quake/$TESTNET"
 [ -d "$ASSETS" ] || { echo "no testnet assets at $ASSETS (start the testnet first)"; exit 1; }
 [ -f "$ASSETS/payment-jwt.hex" ] || { echo "missing $ASSETS/payment-jwt.hex"; exit 1; }
 
-for i in 1 2 3 4; do
+for i in 1 2 3 4; do sleep ${STAGGER:-0};
   name="validator${i}_el_pay"
   http=$((19545 + (i-1)*100)); ws=$((19546 + (i-1)*100)); auth=$((19551 + (i-1)*100)); met=$((19001 + (i-1)*100))
   dd="$BASE/validator${i}/reth-pay"; mkdir -p "$dd"
@@ -49,7 +49,7 @@ done
 echo "peering payment ELs for tx gossip…"
 sleep 5
 declare -A ENODE
-for i in 1 2 3 4; do
+for i in 1 2 3 4; do sleep ${STAGGER:-0};
   name="validator${i}_el_pay"; http=$((19545 + (i-1)*100))
   ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$name" 2>/dev/null)
   pub=$(curl -s -m 4 -X POST "http://127.0.0.1:$http" -H 'content-type: application/json' \
@@ -57,7 +57,7 @@ for i in 1 2 3 4; do
         | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['enode'].split('@')[0])" 2>/dev/null)
   ENODE[$i]="${pub}@${ip}:30303"
 done
-for i in 1 2 3 4; do
+for i in 1 2 3 4; do sleep ${STAGGER:-0};
   http=$((19545 + (i-1)*100))
   for j in 1 2 3 4; do
     [ "$i" -eq "$j" ] && continue
@@ -66,7 +66,7 @@ for i in 1 2 3 4; do
   done
 done
 sleep 3
-for i in 1 2 3 4; do
+for i in 1 2 3 4; do sleep ${STAGGER:-0};
   http=$((19545 + (i-1)*100))
   peers=$(curl -s -m 4 -X POST "http://127.0.0.1:$http" -H 'content-type: application/json' \
     --data '{"jsonrpc":"2.0","id":1,"method":"admin_peers","params":[]}' 2>/dev/null \

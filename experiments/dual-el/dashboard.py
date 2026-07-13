@@ -53,6 +53,7 @@ def _growth_loop():
 _exec = {"evm": {}, "pay": {}}
 _exec_series = collections.deque(maxlen=240)  # (t, evm_root_ms, pay_root_ms, evm_rd_mbs, pay_rd_mbs)
 _mprev = {"evm": {}, "pay": {}}
+_hr = collections.deque(maxlen=40)  # (t, consensus height) for block-rate
 
 def _docker_out(args):
     try:
@@ -170,6 +171,12 @@ def _exec_loop():
                             st["rd_mb_s"] = round((rb - prb) / dt / 1048576, 2)
                             st["wr_mb_s"] = round((wb - pwb) / dt / 1048576, 2)
                         st["_io"] = (now, rb, wb)
+            try:
+                hh = head(EVM["val2"])
+                if hh:
+                    _hr.append((now, hh))
+            except Exception:
+                pass
             _exec_series.append((now,
                                  _exec["evm"].get("root_ms"), _exec["pay"].get("root_ms"),
                                  _exec["evm"].get("rd_mb_s"), _exec["pay"].get("rd_mb_s")))
@@ -180,7 +187,11 @@ def _exec_loop():
 def exec_stats():
     def pub(d):
         return {k: v for k, v in d.items() if not k.startswith("_")}
-    return {"evm": pub(_exec["evm"]), "pay": pub(_exec["pay"]),
+    blk_s = None
+    hr = list(_hr)
+    if len(hr) >= 2 and hr[-1][0] > hr[0][0]:
+        blk_s = round((hr[-1][1] - hr[0][1]) / (hr[-1][0] - hr[0][0]), 2)
+    return {"evm": pub(_exec["evm"]), "pay": pub(_exec["pay"]), "blk_s": blk_s,
             "series": [x for x in list(_exec_series)[-100:]]}
 
 # unique addresses seen in blocks (from + to), per lane — climbs as new accounts are created
@@ -466,7 +477,7 @@ h1 b{color:var(--pay)}
 </div>
 
 <div class=xc>
- <div class=hd><span>execution cost &mdash; state root &amp; disk I/O (validator2, live)</span><span class=rx>the divergence the payment lane exists to avoid</span></div>
+ <div class=hd><span>execution cost &mdash; state root &amp; disk I/O (validator2, live)</span><span class=rx id=xRate>&mdash;</span></div>
  <div class=xgrid>
   <div class="xstat evm"><div class=gl>EVM lane</div>
    <div class=xrow><span class=gk>state root</span><span class=gv id=xEvmRoot>&mdash;</span><span class=gu>ms avg</span></div>
@@ -540,6 +551,7 @@ function drawExec(x){
  const set=(id,v)=>{document.getElementById(id).textContent=(v==null?'—':v);};
  set('xEvmRoot',x.evm.root_ms);set('xPayRoot',x.pay.root_ms);
  set('xEvmExec',x.evm.exec_ms);set('xPayExec',x.pay.exec_ms);
+ document.getElementById('xRate').textContent=(x.blk_s!=null?('block production: '+x.blk_s+' blk/s'):'—');
  set('xEvmRd',x.evm.rd_mb_s);set('xPayRd',x.pay.rd_mb_s);
  set('xEvmWr',x.evm.wr_mb_s);set('xPayWr',x.pay.wr_mb_s);
  set('xEvmMem',x.evm.mem_gb);set('xPayMem',x.pay.mem_gb);

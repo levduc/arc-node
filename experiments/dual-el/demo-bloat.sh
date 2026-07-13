@@ -82,6 +82,13 @@ PY
     sleep 3
   done
 
+  echo "==> [3b] memory caps (isolation; pay ELs already booted uncapped)…"
+  for i in 1 2 3 4; do
+    docker update --memory 768m --memory-swap 768m validator${i}_cl >/dev/null
+    docker update --memory 2560m --memory-swap 2560m validator${i}_el >/dev/null
+    docker update --memory 12g --memory-swap 12g validator${i}_el_pay >/dev/null
+  done
+
   echo "==> [4/5] load: EVM = storage-bloat (guzzler ${SLOTS_PER_CALL} fresh slots/call), PAYMENT = transfers…"
   rm -f "$RUN/spam.stop"
   ( STOP="$RUN/spam.stop"
@@ -94,7 +101,7 @@ PY
     pay(){ while [ ! -f "$STOP" ]; do
       target/release/spammer ws \
         --targets "ws://127.0.0.1:19546,ws://127.0.0.1:19646,ws://127.0.0.1:19746,ws://127.0.0.1:19846" \
-        -r 6000 -t 3600 -g 8 -a "$EXTRA_ACCOUNTS" --recipient-pool 0x2000000000:30000000 --mix transfer=100 \
+        -r 1500 -t 3600 -g 8 -a "$EXTRA_ACCOUNTS" --recipient-pool 0x2000000000:30000000 --mix transfer=100 \
         >"$RUN/spam_pay.log" 2>&1; sleep 1; done; }
     grow(){ while [ ! -f "$STOP" ]; do
       target/release/spammer ws \
