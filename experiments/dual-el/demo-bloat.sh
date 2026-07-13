@@ -85,7 +85,7 @@ PY
   echo "==> [3b] memory caps (isolation; pay ELs already booted uncapped)…"
   for i in 1 2 3 4; do
     docker update --memory 768m --memory-swap 768m validator${i}_cl >/dev/null
-    docker update --memory 2560m --memory-swap 2560m validator${i}_el >/dev/null
+    docker update --memory 5g --memory-swap 5g validator${i}_el >/dev/null
     docker update --memory 10g --memory-swap 10g validator${i}_el_pay >/dev/null
   done
 
