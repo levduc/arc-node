@@ -212,8 +212,8 @@ def _exec_loop():
                     if es is not None and ec:
                         execs_avg[n] = round(es / ec * 1000.0, 2)
                     if es is not None and ec is not None:
-                        if ec > ep.get("c", 0):
-                            ep["last"] = round((es - ep.get("s", 0.0)) / (ec - ep.get("c", 0)) * 1000.0, 2)
+                        if "c" in ep and ec > ep["c"]:   # need a prior baseline: first sample is not a delta
+                            ep["last"] = round((es - ep["s"]) / (ec - ep["c"]) * 1000.0, 2)
                             ep["t"] = now
                         ep["s"], ep["c"] = es, ec
                     if ep.get("last") is not None and now - ep.get("t", 0) <= 45:
