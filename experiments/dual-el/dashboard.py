@@ -17,6 +17,8 @@ if _fp:
     try: FLEET = json.load(open(_fp))
     except Exception: FLEET = {}
 def _val_of_port(port):
+    try: port = int(port)
+    except (TypeError, ValueError): return None
     for base in (8545, 8546, 19545, 19546, 9001, 19001):
         i = port - base
         if 0 <= i <= 300 and i % 100 == 0: return f"val{i//100 + 1}"
