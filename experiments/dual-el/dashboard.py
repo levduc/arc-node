@@ -79,16 +79,23 @@ def _docker_out(args):
         return ""
 
 def _discover_metrics():
-    """Host port of each lane's reth metrics endpoint + cgroup path, for validator2."""
+    """Metrics sources per lane. Fleet mode: deterministic per-validator ports (9001/19001 +
+    100*(n-1)) scraped via each validator's host; cgroups come from the LOCAL validator.
+    Single-machine: docker-port discovery on validator2 (original behavior)."""
     cfg = {}
-    for lane, cname in (("evm", "validator2_el"), ("pay", "validator2_el_pay")):
-        port = None
-        out = _docker_out(["port", cname, "9001/tcp"])  # e.g. 0.0.0.0:9101
-        for tok in out.split():
-            if ":" in tok:
-                port = tok.rsplit(":", 1)[-1]
+    local_val = "validator1" if FLEET else "validator2"
+    for lane, base, cname in (("evm", 9001, f"{local_val}_el"), ("pay", 19001, f"{local_val}_el_pay")):
+        if FLEET:
+            ports = {n: base + 100 * (n - 1) for n in (1, 2, 3, 4)}
+        else:
+            port = None
+            out = _docker_out(["port", cname, "9001/tcp"])
+            for tok in out.split():
+                if ":" in tok:
+                    port = tok.rsplit(":", 1)[-1]
+            ports = {2: int(port)} if port else {}
         cid = _docker_out(["inspect", "-f", "{{.Id}}", cname])
-        cfg[lane] = {"port": port, "cid": cid}
+        cfg[lane] = {"ports": ports, "cid": cid}
     return cfg
 
 def _prom_state_root_ms(text, prev):
@@ -144,34 +151,49 @@ def _exec_loop():
     cfg = {}
     while True:
         try:
-            if not cfg or any(not cfg[l]["port"] for l in cfg):
+            if not cfg or any(not cfg[l].get("ports") for l in cfg):
                 cfg = _discover_metrics()
             now = round(time.time() - _t0, 1)
             for lane in ("evm", "pay"):
-                port, cid = cfg.get(lane, {}).get("port"), cfg.get(lane, {}).get("cid")
+                ports, cid = cfg.get(lane, {}).get("ports") or {}, cfg.get(lane, {}).get("cid")
                 st = _exec[lane]
-                if port:
+                roots, execs = {}, {}
+                for n, port in ports.items():
+                    key = f"{lane}{n}"
+                    prev = _mprev.setdefault(key, {})
                     try:
                         with urllib.request.urlopen(f"http://{_host(port)}:{port}/metrics", timeout=3) as r:
                             text = r.read().decode()
                     except Exception:
-                        text = ""
-                    if text:
-                        ms, _mprev[lane] = _prom_state_root_ms(text, _mprev[lane])
-                        if ms is not None:
-                            st["root_ms"] = ms
-                            _mprev[lane]["last_ms"] = ms
-                        ep = _mprev[lane].setdefault("exec", {})
-                        es = ec = None
-                        for ln in text.splitlines():
-                            if ln.startswith("reth_sync_execution_execution_histogram_sum "):
-                                es = float(ln.split()[1])
-                            elif ln.startswith("reth_sync_execution_execution_histogram_count "):
-                                ec = float(ln.split()[1])
-                        if es is not None and ec is not None:
-                            if ec > ep.get("c", 0):
-                                st["exec_ms"] = round((es - ep.get("s", 0.0)) / (ec - ep.get("c", 0)) * 1000.0, 2)
-                            ep["s"], ep["c"] = es, ec
+                        continue
+                    ms, _mprev[key] = _prom_state_root_ms(text, prev)
+                    prev = _mprev[key]
+                    if ms is not None:
+                        roots[n] = ms
+                        prev["last_ms"] = ms
+                    elif prev.get("last_ms") is not None:
+                        roots[n] = prev["last_ms"]
+                    ep = prev.setdefault("exec", {})
+                    es = ec = None
+                    for ln in text.splitlines():
+                        if ln.startswith("reth_sync_execution_execution_histogram_sum "):
+                            es = float(ln.split()[1])
+                        elif ln.startswith("reth_sync_execution_execution_histogram_count "):
+                            ec = float(ln.split()[1])
+                    if es is not None and ec is not None:
+                        if ec > ep.get("c", 0):
+                            ep["last"] = round((es - ep.get("s", 0.0)) / (ec - ep.get("c", 0)) * 1000.0, 2)
+                        ep["s"], ep["c"] = es, ec
+                    if ep.get("last") is not None:
+                        execs[n] = ep["last"]
+                if roots:
+                    vals = list(roots.values())
+                    st["root_ms"] = round(sum(vals) / len(vals), 2)
+                    st["root_by_val"] = " · ".join(f"v{n} {roots.get(n, '—')}" for n in sorted(ports))
+                if execs:
+                    vals = list(execs.values())
+                    st["exec_ms"] = round(sum(vals) / len(vals), 2)
+                    st["exec_by_val"] = " · ".join(f"v{n} {execs.get(n, '—')}" for n in sorted(ports))
                 if cid:
                     for mp in (f"/sys/fs/cgroup/system.slice/docker-{cid}.scope/memory.current",
                                f"/sys/fs/cgroup/docker/{cid}/memory.current"):
@@ -501,13 +523,17 @@ h1 b{color:var(--pay)}
  <div class=xgrid>
   <div class="xstat evm"><div class=gl>EVM lane</div>
    <div class=xrow><span class=gk>state root</span><span class=gv id=xEvmRoot>&mdash;</span><span class=gu>ms avg</span></div>
+   <div class=xrow><span class=gk></span><span class=gu id=xEvmRootBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>execution</span><span class=gv id=xEvmExec>&mdash;</span><span class=gu>ms avg</span></div>
+   <div class=xrow><span class=gk></span><span class=gu id=xEvmExecBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>disk read</span><span class=gv id=xEvmRd>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>disk write</span><span class=gv id=xEvmWr>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>RAM (EL)</span><span class=gv id=xEvmMem>&mdash;</span><span class=gu>GB</span></div></div>
   <div class="xstat pay"><div class=gl>Payment lane</div>
    <div class=xrow><span class=gk>state root</span><span class=gv id=xPayRoot>&mdash;</span><span class=gu>ms avg</span></div>
+   <div class=xrow><span class=gk></span><span class=gu id=xPayRootBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>execution</span><span class=gv id=xPayExec>&mdash;</span><span class=gu>ms avg</span></div>
+   <div class=xrow><span class=gk></span><span class=gu id=xPayExecBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>disk read</span><span class=gv id=xPayRd>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>disk write</span><span class=gv id=xPayWr>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>RAM (EL)</span><span class=gv id=xPayMem>&mdash;</span><span class=gu>GB</span></div></div>
@@ -569,8 +595,11 @@ function drawGrowth(g){
 function drawExec(x){
  if(!x)return;
  const set=(id,v)=>{document.getElementById(id).textContent=(v==null?'—':v);};
- set('xEvmRoot',x.evm.root_ms);set('xPayRoot',x.pay.root_ms);
- set('xEvmExec',x.evm.exec_ms);set('xPayExec',x.pay.exec_ms);
+ function xset(id,avg,by){var el=document.getElementById(id);if(!el)return;
+   el.textContent=(avg==null?'—':avg)+(by?'':'');el.title=by||'';
+   var bid=document.getElementById(id+'By');if(bid)bid.textContent=by||'';}
+ xset('xEvmRoot',x.evm.root_ms,x.evm.root_by_val);xset('xPayRoot',x.pay.root_ms,x.pay.root_by_val);
+ xset('xEvmExec',x.evm.exec_ms,x.evm.exec_by_val);xset('xPayExec',x.pay.exec_ms,x.pay.exec_by_val);
  document.getElementById('xRate').textContent=(x.blk_s!=null?('block production: '+x.blk_s+' blk/s'):'—');
  set('xEvmRd',x.evm.rd_mb_s);set('xPayRd',x.pay.rd_mb_s);
  set('xEvmWr',x.evm.wr_mb_s);set('xPayWr',x.pay.wr_mb_s);
