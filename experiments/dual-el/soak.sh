@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Soak the dual-EL testnet with CONTINUOUS dual-lane spam and check for consensus errors.
-#   DUR  = seconds to run        (default 3600; use 86400 for 24h)
-#   RATE = tx/s per lane         (default 300)
+#   DUR       = seconds to run                       (default 3600; use 86400 for 24h)
+# Load mimics demo-bloat.sh: EVM lane = GasGuzzler storage-write bloat (fresh slots, state growth),
+# payment lane = pool-update transfers over the preseeded accounts + slow organic growth.
+#   EVM_RATE  = guzzler tx/s                          (default 6; ~18 tx fill a 100M block)
+#   SLOTS     = fresh storage slots per guzzler call  (default 250)
+#   PAY_RATE  = payment transfers tx/s                (default 1500)
+#   POOL      = recipient pool base:size              (default 0x2000000000:10000000 = the 10M preseed)
+#   GROW_RATE = fresh-recipient transfers tx/s        (default 50; new account per tx)
 # Every 60s it checks:
 #   - LIVENESS : every lane on every node strictly advanced since the last check (else consensus halt)
 #   - AGREEMENT: at a settled height the block hash is identical across all validators, per lane
@@ -14,7 +20,9 @@
 export PATH="$HOME/.cargo/bin:$HOME/.foundry/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
-DUR=${DUR:-3600}; RATE=${RATE:-300}
+DUR=${DUR:-3600}
+EVM_RATE=${EVM_RATE:-6}; SLOTS=${SLOTS:-250}
+PAY_RATE=${PAY_RATE:-1500}; POOL=${POOL:-0x2000000000:10000000}; GROW_RATE=${GROW_RATE:-50}
 LOG=/tmp/dualel-soak.log; : > "$LOG"
 STOP=/tmp/dualel-soak.stop; rm -f "$STOP"
 START=$(date +%s)
@@ -29,14 +37,25 @@ bn1evm(){ docker run --rm --network arc_testnet_default curlimages/curl:latest -
 hashat(){ cast block $2 --rpc-url http://127.0.0.1:$1 --json 2>/dev/null \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['hash'])" 2>/dev/null; }
 
-# --- continuous spammers on both lanes (respawn until STOP exists) ---
-spam_loop(){ local tag=$1 tgts=$2; while [ ! -f "$STOP" ]; do
-  target/release/spammer ws --targets "$tgts" -r "$RATE" -t 600 -a 500 -g 4 --mix transfer=100 \
-    >/tmp/soak_spam_${tag}.log 2>&1; sleep 1; done; }
-spam_loop evm "ws://127.0.0.1:8646,ws://127.0.0.1:8746,ws://127.0.0.1:8846" &
-spam_loop pay "ws://127.0.0.1:19646,ws://127.0.0.1:19746,ws://127.0.0.1:19846" &
+# --- continuous spammers, demo-bloat profile (respawn until STOP exists; -l re-syncs nonces
+# on every respawn so an EL restart mid-soak can not nonce-wedge the load) ---
+EVM_TGTS="ws://127.0.0.1:8646,ws://127.0.0.1:8746,ws://127.0.0.1:8846"
+PAY_TGTS="ws://127.0.0.1:19546,ws://127.0.0.1:19646,ws://127.0.0.1:19746,ws://127.0.0.1:19846"
+bloat_loop(){ while [ ! -f "$STOP" ]; do
+  target/release/spammer ws --targets "$EVM_TGTS" -r "$EVM_RATE" -t 600 -g 2 -a 200 -l \
+    --mix guzzler=100 --guzzler-fn-weights "storage-write=100@${SLOTS}" \
+    >/tmp/soak_spam_evm.log 2>&1; sleep 1; done; }
+pay_loop(){ while [ ! -f "$STOP" ]; do
+  target/release/spammer ws --targets "$PAY_TGTS" -r "$PAY_RATE" -t 600 -g 8 -a 1000 -l \
+    --recipient-pool "$POOL" --mix transfer=100 \
+    >/tmp/soak_spam_pay.log 2>&1; sleep 1; done; }
+grow_loop(){ while [ ! -f "$STOP" ]; do
+  target/release/spammer ws --targets "$PAY_TGTS" -r "$GROW_RATE" -t 600 -g 2 -a 200 -l \
+    --fresh-recipients --mix transfer=100 \
+    >/tmp/soak_spam_grow.log 2>&1; sleep 1; done; }
+bloat_loop & pay_loop & grow_loop &
 
-log "SOAK START dur=${DUR}s rate=${RATE}tx/s/lane. 4 nodes, each CL+EVM-EL+payment-EL, continuous dual-lane spam."
+log "SOAK START dur=${DUR}s evm=${EVM_RATE}tx/s guzzler@${SLOTS} pay=${PAY_RATE}tx/s pool=${POOL} grow=${GROW_RATE}tx/s. 4 nodes, demo-bloat load profile."
 while [ $(( $(date +%s) - START )) -lt "$DUR" ]; do
   checks=$((checks+1)); iterfail=0
   e2=$(bn 8645); e3=$(bn 8745); e4=$(bn 8845); e1=$(bn1evm)
