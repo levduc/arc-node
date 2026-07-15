@@ -179,7 +179,7 @@ def _exec_loop():
             for lane in ("evm", "pay"):
                 ports, cid = cfg.get(lane, {}).get("ports") or {}, cfg.get(lane, {}).get("cid")
                 st = _exec[lane]
-                roots, execs, roots_avg, execs_avg = {}, {}, {}, {}
+                roots, execs, roots_avg, execs_avg, persists = {}, {}, {}, {}, {}
                 for n, port in ports.items():
                     key = f"{lane}{n}"
                     prev = _mprev.setdefault(key, {})
@@ -188,7 +188,7 @@ def _exec_loop():
                             text = r.read().decode()
                     except Exception:
                         continue
-                    carry = {k: prev[k] for k in ("exec", "last_ms", "root_t") if k in prev}
+                    carry = {k: prev[k] for k in ("exec", "persist", "last_ms", "root_t") if k in prev}
                     ms, _mprev[key] = _prom_state_root_ms(text, prev)
                     _mprev[key].update(carry)   # _prom_state_root_ms returns a fresh dict; keep exec baseline + hold state
                     prev = _mprev[key]
@@ -199,7 +199,7 @@ def _exec_loop():
                     elif prev.get("last_ms") is not None and now - prev.get("root_t", 0) <= 45:
                         roots[n] = prev["last_ms"]
                     ep = prev.setdefault("exec", {})
-                    es = ec = rs = rc = None
+                    es = ec = rs = rc = ps_ = pc_ = None
                     for ln in text.splitlines():
                         if ln.startswith("reth_sync_execution_execution_histogram_sum "):
                             es = float(ln.split()[1])
@@ -209,10 +209,22 @@ def _exec_loop():
                             rs = float(ln.split()[1])
                         elif ln.startswith("reth_sync_block_validation_state_root_histogram_count "):
                             rc = float(ln.split()[1])
+                        elif ln.startswith("reth_consensus_engine_persistence_save_blocks_duration_seconds_sum "):
+                            ps_ = float(ln.split()[1])
+                        elif ln.startswith("reth_consensus_engine_persistence_save_blocks_duration_seconds_count "):
+                            pc_ = float(ln.split()[1])
                     if rs is not None and rc:
                         roots_avg[n] = round(rs / rc * 1000.0, 2)
                     if es is not None and ec:
                         execs_avg[n] = round(es / ec * 1000.0, 2)
+                    pp = prev.setdefault("persist", {})
+                    if ps_ is not None and pc_ is not None:
+                        if "c" in pp and pc_ > pp["c"]:
+                            pp["last"] = round((ps_ - pp["s"]) / (pc_ - pp["c"]) * 1000.0, 2)
+                            pp["t"] = now
+                        pp["s"], pp["c"] = ps_, pc_
+                    if pp.get("last") is not None and now - pp.get("t", 0) <= 45:
+                        persists[n] = pp["last"]
                     if es is not None and ec is not None:
                         if "c" in ep and ec > ep["c"]:   # need a prior baseline: first sample is not a delta
                             ep["last"] = round((es - ep["s"]) / (ec - ep["c"]) * 1000.0, 2)
@@ -224,6 +236,12 @@ def _exec_loop():
                     st["root_ms"] = None; st["root_by_val"] = None
                 if not execs:
                     st["exec_ms"] = None; st["exec_by_val"] = None
+                if persists:
+                    vals = list(persists.values())
+                    st["persist_ms"] = round(sum(vals) / len(vals), 2)
+                    st["persist_by_val"] = " · ".join(f"v{n} {persists.get(n, '—')}" for n in sorted(ports))
+                else:
+                    st["persist_ms"] = None; st["persist_by_val"] = None
                 if roots:
                     vals = list(roots.values())
                     st["root_ms"] = round(sum(vals) / len(vals), 2)
@@ -576,6 +594,7 @@ h1 b{color:var(--pay)}
    <div class=xrow><span class=gk></span><span class=gu id=xEvmRootBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>execution</span><span class=gv id=xEvmExec>&mdash;</span><span class=gu>ms avg</span></div>
    <div class=xrow><span class=gk></span><span class=gu id=xEvmExecBy style="font-size:10px"></span></div>
+   <div class=xrow><span class=gk>persistence</span><span class=gv id=xEvmPersist>&mdash;</span><span class=gu>ms/blk</span></div>
    <div class=xrow><span class=gk>throughput</span><span class=gv id=xEvmTps>&mdash;</span><span class=gu>tx/s</span></div>
    <div class=xrow><span class=gk>root avg (run)</span><span class=gv id=xEvmRootAvg>&mdash;</span><span class=gu>ms</span></div>
    <div class=xrow><span class=gk>exec avg (run)</span><span class=gv id=xEvmExecAvg>&mdash;</span><span class=gu>ms</span></div>
@@ -587,6 +606,7 @@ h1 b{color:var(--pay)}
    <div class=xrow><span class=gk></span><span class=gu id=xPayRootBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>execution</span><span class=gv id=xPayExec>&mdash;</span><span class=gu>ms avg</span></div>
    <div class=xrow><span class=gk></span><span class=gu id=xPayExecBy style="font-size:10px"></span></div>
+   <div class=xrow><span class=gk>persistence</span><span class=gv id=xPayPersist>&mdash;</span><span class=gu>ms/blk</span></div>
    <div class=xrow><span class=gk>throughput</span><span class=gv id=xPayTps>&mdash;</span><span class=gu>tx/s</span></div>
    <div class=xrow><span class=gk>root avg (run)</span><span class=gv id=xPayRootAvg>&mdash;</span><span class=gu>ms</span></div>
    <div class=xrow><span class=gk>exec avg (run)</span><span class=gv id=xPayExecAvg>&mdash;</span><span class=gu>ms</span></div>
@@ -657,6 +677,7 @@ function drawExec(x){
  xset('xEvmRoot',x.evm.root_ms,x.evm.root_by_val);xset('xPayRoot',x.pay.root_ms,x.pay.root_by_val);
  xset('xEvmExec',x.evm.exec_ms,x.evm.exec_by_val);xset('xPayExec',x.pay.exec_ms,x.pay.exec_by_val);
  set('xEvmTps',x.evm.tps);set('xPayTps',x.pay.tps);
+ xset('xEvmPersist',x.evm.persist_ms,x.evm.persist_by_val);xset('xPayPersist',x.pay.persist_ms,x.pay.persist_by_val);
  xset('xEvmRootAvg',x.evm.root_avg_ms,x.evm.root_avg_by_val);xset('xPayRootAvg',x.pay.root_avg_ms,x.pay.root_avg_by_val);
  xset('xEvmExecAvg',x.evm.exec_avg_ms,x.evm.exec_avg_by_val);xset('xPayExecAvg',x.pay.exec_avg_ms,x.pay.exec_avg_by_val);
  document.getElementById('xRate').textContent=(x.blk_s!=null?('block production: '+x.blk_s+' blk/s'):'—');
