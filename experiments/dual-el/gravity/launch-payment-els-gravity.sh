@@ -32,7 +32,7 @@ for i in 1 2 3 4; do sleep ${STAGGER:-0};
       --http --http.addr=0.0.0.0 --http.port=8545 --http.corsdomain='*' --http.api=eth,net,web3,txpool,debug,admin \
       --ws --ws.addr=0.0.0.0 --ws.port=8546 --ws.origins='*' --ws.api=eth,net,web3,txpool \
       --authrpc.addr=0.0.0.0 --authrpc.port=8551 --authrpc.jwtsecret=/app/assets/payment-jwt.hex \
-      --gravity.disable-pipe-execution \
+      --gravity.disable-pipe-execution --gravity.cache.capacity 500000 \
       --metrics=0.0.0.0:9001 --disable-discovery --ipcdisable \
       --port 30303 \
       --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 >/dev/null \
