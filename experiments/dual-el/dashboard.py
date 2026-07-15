@@ -188,7 +188,9 @@ def _exec_loop():
                             text = r.read().decode()
                     except Exception:
                         continue
+                    carry = {k: prev[k] for k in ("exec", "last_ms", "root_t") if k in prev}
                     ms, _mprev[key] = _prom_state_root_ms(text, prev)
+                    _mprev[key].update(carry)   # _prom_state_root_ms returns a fresh dict; keep exec baseline + hold state
                     prev = _mprev[key]
                     if ms is not None:
                         roots[n] = ms
