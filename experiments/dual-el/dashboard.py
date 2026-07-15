@@ -71,6 +71,28 @@ _exec = {"evm": {}, "pay": {}}
 _exec_series = collections.deque(maxlen=240)  # (t, evm_root_ms, pay_root_ms, evm_rd_mbs, pay_rd_mbs)
 _mprev = {"evm": {}, "pay": {}}
 _hr = collections.deque(maxlen=40)  # (t, consensus height) for block-rate
+_tps = {"evm": {"last": None, "win": collections.deque()},
+        "pay": {"last": None, "win": collections.deque()}}  # rolling (t, txs) per lane
+
+def _feed_tps(lane, port, now):
+    st = _tps[lane]
+    h = head(port)
+    if h is None: return
+    last = st["last"]
+    if last is None or h < last:            # first sample or chain reset
+        st["last"] = h; st["win"].clear(); return
+    for n in range(max(last + 1, h - 29), h + 1):   # cap catch-up to 30 blocks/tick
+        c = rpc(port, "eth_getBlockTransactionCountByNumber", [hex(n)])
+        if c is not None:
+            st["win"].append((now, int(c, 16)))
+    st["last"] = h
+    while st["win"] and now - st["win"][0][0] > 60: st["win"].popleft()
+
+def _tps_value(lane, now):
+    w = _tps[lane]["win"]
+    if len(w) < 2: return None
+    span = max(now - w[0][0], 3.0)
+    return round(sum(x[1] for x in w) / span, 1)
 
 def _docker_out(args):
     try:
@@ -230,6 +252,10 @@ def _exec_loop():
                 hh = head(EVM["val2"])
                 if hh:
                     _hr.append((now, hh))
+                _feed_tps("evm", EVM["val2"], now)
+                _feed_tps("pay", PAY["val2"], now)
+                _exec["evm"]["tps"] = _tps_value("evm", now)
+                _exec["pay"]["tps"] = _tps_value("pay", now)
             except Exception:
                 pass
             _exec_series.append((now,
@@ -542,6 +568,7 @@ h1 b{color:var(--pay)}
    <div class=xrow><span class=gk></span><span class=gu id=xEvmRootBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>execution</span><span class=gv id=xEvmExec>&mdash;</span><span class=gu>ms avg</span></div>
    <div class=xrow><span class=gk></span><span class=gu id=xEvmExecBy style="font-size:10px"></span></div>
+   <div class=xrow><span class=gk>throughput</span><span class=gv id=xEvmTps>&mdash;</span><span class=gu>tx/s</span></div>
    <div class=xrow><span class=gk>root avg (run)</span><span class=gv id=xEvmRootAvg>&mdash;</span><span class=gu>ms</span></div>
    <div class=xrow><span class=gk>exec avg (run)</span><span class=gv id=xEvmExecAvg>&mdash;</span><span class=gu>ms</span></div>
    <div class=xrow><span class=gk>disk read</span><span class=gv id=xEvmRd>&mdash;</span><span class=gu>MB/s</span></div>
@@ -552,6 +579,7 @@ h1 b{color:var(--pay)}
    <div class=xrow><span class=gk></span><span class=gu id=xPayRootBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>execution</span><span class=gv id=xPayExec>&mdash;</span><span class=gu>ms avg</span></div>
    <div class=xrow><span class=gk></span><span class=gu id=xPayExecBy style="font-size:10px"></span></div>
+   <div class=xrow><span class=gk>throughput</span><span class=gv id=xPayTps>&mdash;</span><span class=gu>tx/s</span></div>
    <div class=xrow><span class=gk>root avg (run)</span><span class=gv id=xPayRootAvg>&mdash;</span><span class=gu>ms</span></div>
    <div class=xrow><span class=gk>exec avg (run)</span><span class=gv id=xPayExecAvg>&mdash;</span><span class=gu>ms</span></div>
    <div class=xrow><span class=gk>disk read</span><span class=gv id=xPayRd>&mdash;</span><span class=gu>MB/s</span></div>
@@ -620,6 +648,7 @@ function drawExec(x){
    var bid=document.getElementById(id+'By');if(bid)bid.textContent=by||'';}
  xset('xEvmRoot',x.evm.root_ms,x.evm.root_by_val);xset('xPayRoot',x.pay.root_ms,x.pay.root_by_val);
  xset('xEvmExec',x.evm.exec_ms,x.evm.exec_by_val);xset('xPayExec',x.pay.exec_ms,x.pay.exec_by_val);
+ set('xEvmTps',x.evm.tps);set('xPayTps',x.pay.tps);
  xset('xEvmRootAvg',x.evm.root_avg_ms,x.evm.root_avg_by_val);xset('xPayRootAvg',x.pay.root_avg_ms,x.pay.root_avg_by_val);
  xset('xEvmExecAvg',x.evm.exec_avg_ms,x.evm.exec_avg_by_val);xset('xPayExecAvg',x.pay.exec_avg_ms,x.pay.exec_avg_by_val);
  document.getElementById('xRate').textContent=(x.blk_s!=null?('block production: '+x.blk_s+' blk/s'):'—');
