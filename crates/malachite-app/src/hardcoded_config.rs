@@ -278,13 +278,24 @@ pub fn build_value_sync_config(enabled: bool) -> ValueSyncConfig {
     ValueSyncConfig {
         enabled,
         status_update_interval: value_sync::STATUS_UPDATE_INTERVAL,
-        request_timeout: value_sync::REQUEST_TIMEOUT,
+        // Both-lane sync batches carry FULL payloads for two ELs; a batch of 10 loaded blocks is
+        // multiple MiB and cannot complete within 1s on slow links -> request/timeout livelock
+        // (a lagging validator never catches up and its retry storm taxes healthy peers).
+        // Overridable per-node for large-payload chains / slow links; defaults unchanged.
+        request_timeout: std::env::var("ARC_VALUE_SYNC_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .map(Duration::from_secs)
+            .unwrap_or(value_sync::REQUEST_TIMEOUT),
         max_request_size: value_sync::MAX_REQUEST_SIZE,
         max_response_size: value_sync::MAX_RESPONSE_SIZE,
         parallel_requests: value_sync::PARALLEL_REQUESTS,
         scoring_strategy: ScoringStrategy::Ema,
         inactive_threshold: value_sync::INACTIVE_THRESHOLD,
-        batch_size: value_sync::BATCH_SIZE,
+        batch_size: std::env::var("ARC_VALUE_SYNC_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(value_sync::BATCH_SIZE),
     }
 }
 
