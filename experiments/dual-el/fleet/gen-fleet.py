@@ -42,10 +42,10 @@ for n in (2, 3, 4):
         name = f"validator{n}_{kind}"
         svc = c["services"].pop(name)
         svc["volumes"] = [v.replace(LOCAL_BASE, REMOTE_BASE) for v in svc["volumes"]]
-    nets = svc.get("networks")
-    if isinstance(nets, dict):
-        for v in nets.values():
-            if isinstance(v, dict): v.pop("ipv4_address", None)
+        nets = svc.get("networks")
+        if isinstance(nets, dict):
+            for v in nets.values():
+                if isinstance(v, dict): v.pop("ipv4_address", None)
         svc.pop("depends_on", None)
         svcs[name] = svc
     remote = {"services": svcs,
