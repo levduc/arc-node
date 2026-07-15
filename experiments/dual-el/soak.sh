@@ -39,8 +39,11 @@ hashat(){ cast block $2 --rpc-url http://127.0.0.1:$1 --json 2>/dev/null \
 
 # --- continuous spammers, demo-bloat profile (respawn until STOP exists; -l re-syncs nonces
 # on every respawn so an EL restart mid-soak can not nonce-wedge the load) ---
-EVM_TGTS="ws://127.0.0.1:8646,ws://127.0.0.1:8746,ws://127.0.0.1:8846"
-PAY_TGTS="ws://127.0.0.1:19546,ws://127.0.0.1:19646,ws://127.0.0.1:19746,ws://127.0.0.1:19846"
+# Override for multi-machine fleets, e.g.:
+#   EVM_TGTS="ws://127.0.0.1:8546,ws://100.85.150.119:8646,ws://100.70.62.92:8746,ws://100.86.97.40:8846"
+#   PAY_TGTS="ws://127.0.0.1:19546,ws://100.85.150.119:19646,ws://100.70.62.92:19746,ws://100.86.97.40:19846"
+EVM_TGTS=${EVM_TGTS:-"ws://127.0.0.1:8646,ws://127.0.0.1:8746,ws://127.0.0.1:8846"}
+PAY_TGTS=${PAY_TGTS:-"ws://127.0.0.1:19546,ws://127.0.0.1:19646,ws://127.0.0.1:19746,ws://127.0.0.1:19846"}
 bloat_loop(){ while [ ! -f "$STOP" ]; do
   target/release/spammer ws --targets "$EVM_TGTS" -r "$EVM_RATE" -t 600 -g 2 -a 200 -l \
     --mix guzzler=100 --guzzler-fn-weights "storage-write=100@${SLOTS}" \
