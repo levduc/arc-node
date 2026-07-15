@@ -72,8 +72,9 @@ el4.setdefault("ports", []).append("30403:30303")
 
 remote = {
     "services": remote_services,
-    "networks": {"default": {"name": "arc_testnet_default"},
-                 "host-access": {"name": "arc_testnet_host-access"}},
+    "networks": {"default": {"name": "arc_testnet_default", "driver": "bridge", "internal": True,
+                          "ipam": {"config": [{"subnet": "172.21.0.0/16"}]}},
+                 "host-access": {"name": "arc_testnet_host-access", "driver": "bridge"}},
 }
 
 open(COMPOSE + ".prefleet", "w").write(yaml.dump(orig, sort_keys=False))

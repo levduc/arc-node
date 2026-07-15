@@ -45,8 +45,9 @@ for n in (2, 3, 4):
         svc.pop("depends_on", None)
         svcs[name] = svc
     remote = {"services": svcs,
-              "networks": {"default": {"name": "arc_testnet_default"},
-                           "host-access": {"name": "arc_testnet_host-access"}}}
+              "networks": {"default": {"name": "arc_testnet_default", "driver": "bridge", "internal": True,
+                          "ipam": {"config": [{"subnet": "172.21.0.0/16"}]}},
+                 "host-access": {"name": "arc_testnet_host-access", "driver": "bridge"}}}
     open(f"{LOCAL_BASE}/compose-val{n}.yaml", "w").write(yaml.dump(remote, sort_keys=False))
 
 open(COMPOSE + ".prefleet", "w").write(yaml.dump(orig, sort_keys=False))
