@@ -62,6 +62,10 @@ for name in ("validator4_cl", "validator4_el"):
 # ---- remote compose: val4 only, paths + peers rewritten ----
 for name, svc in remote_services.items():
     svc["volumes"] = [v.replace(LOCAL_BASE, REMOTE_BASE) for v in svc["volumes"]]
+    nets = svc.get("networks")
+    if isinstance(nets, dict):
+        for v in nets.values():
+            if isinstance(v, dict): v.pop("ipv4_address", None)
     svc.pop("depends_on", None)
 subs_cl = [(f"/ip4/{CL_IP(n)}/tcp/27000", f"/ip4/{LOCAL_TS}/tcp/{CL_HOSTPORT(n)}") for n in (1, 2, 3)]
 remote_services["validator4_cl"]["command"] = rewrite_cmd(remote_services["validator4_cl"]["command"], subs_cl)
@@ -72,8 +76,7 @@ el4.setdefault("ports", []).append("30403:30303")
 
 remote = {
     "services": remote_services,
-    "networks": {"default": {"name": "arc_testnet_default", "driver": "bridge", "internal": True,
-                          "ipam": {"config": [{"subnet": "172.21.0.0/16"}]}},
+    "networks": {"default": {"name": "arc_testnet_default", "driver": "bridge", "internal": True},
                  "host-access": {"name": "arc_testnet_host-access", "driver": "bridge"}},
 }
 
