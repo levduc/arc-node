@@ -24,7 +24,7 @@ setup_env(){ export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DI
 payment_el_cmd(){ # payment_el_cmd <n> <base> -> docker run command string for valN payment EL
   local n=$1 base=$2
   local rpc=$(PAY_PORT $n) ws=$((19546+(n-1)*100)) auth=$((19551+(n-1)*100)) met=$((19001+(n-1)*100)) p2p=$((30410+n))
-  echo "docker rm -f validator${n}_el_pay 2>/dev/null; docker run -d --name validator${n}_el_pay --network arc_testnet_default \
+  echo "docker rm -f validator${n}_el_pay 2>/dev/null; docker run -d --name validator${n}_el_pay --network arc_testnet_host-access \
   --entrypoint /app/assets/entrypoint_el.sh \
   -v $base/validator${n}/reth-pay:/data/reth/execution-data -v $base/assets:/app/assets \
   -p ${rpc}:8545 -p ${ws}:8546 -p ${auth}:8551 -p ${met}:9001 -p ${p2p}:30303 \
@@ -35,7 +35,7 @@ payment_el_cmd(){ # payment_el_cmd <n> <base> -> docker run command string for v
   --authrpc.addr=0.0.0.0 --authrpc.port=8551 --authrpc.jwtsecret=/app/assets/payment-jwt.hex \
   --metrics=0.0.0.0:9001 --disable-discovery --ipcdisable --port 30303 \
   --arc.builder.deadline=2000 --arc.builder.wait-for-payload=true --txpool.nolocals \
-  --txpool.pending-max-count=200000 --txpool.queued-max-count=200000"
+  --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 && docker network connect arc_testnet_default validator${n}_el_pay"
 }
 
 start(){
