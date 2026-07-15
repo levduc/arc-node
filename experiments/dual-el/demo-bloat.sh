@@ -52,10 +52,10 @@ start() {
   [ "$(val_up)" -ge 8 ] || { echo "!! validators failed to start — see $RUN/quake.log"; exit 1; }
 
   echo "==> [1b] preseed payment genesis (10M accounts) + init datadirs…"
-  python3 - <<'PY'
+  python3 - <<'PY' || { echo "!! preseed generation FAILED"; exit 1; }
 import json
 g=json.load(open('.quake/soak4/assets/genesis.json'))
-out=open('.quake/soak4/assets/payment-genesis.json','w')
+out=open('.quake/soak4/assets/payment-genesis.json.tmp','w')
 out.write(json.dumps({k:v for k,v in g.items() if k!='alloc'})[:-1]+', "alloc": {')
 first=True
 for a,v in g['alloc'].items():
@@ -63,12 +63,20 @@ for a,v in g['alloc'].items():
 for i in range(10_000_000):
     out.write(',"0x%040x":{"balance":"0xde0b6b3a7640000"}'%(0x2000000000+i))
 out.write('}}')
+out.close()
+import os
+sz=os.path.getsize('.quake/soak4/assets/payment-genesis.json.tmp')
+assert sz > 700_000_000, f"payment genesis too small: {sz}"
+os.rename('.quake/soak4/assets/payment-genesis.json.tmp','.quake/soak4/assets/payment-genesis.json')
+print(f"payment-genesis.json written ({sz/1e6:.0f} MB)")
 PY
   BIN=$(grep -oE '[^" ]*arc-node-execution' ".quake/$SCEN/assets/entrypoint_el.sh" | head -1)
   mkdir -p ".quake/$SCEN/validator1/reth-pay"
   docker run --rm -v "$PWD/.quake/$SCEN/validator1/reth-pay":/data/reth/execution-data \
     -v "$PWD/.quake/$SCEN/assets":/app/assets --entrypoint "$BIN" arc_execution:latest \
-    init --datadir /data/reth/execution-data --chain /app/assets/payment-genesis.json >/dev/null 2>&1
+    init --datadir /data/reth/execution-data --chain /app/assets/payment-genesis.json 2>&1 | tail -1
+  dsz=$(du -sm ".quake/$SCEN/validator1/reth-pay" | cut -f1)
+  [ "$dsz" -ge 400 ] || { echo "!! payment init produced only ${dsz}MB (expected ~660MB) — ABORT"; exit 1; }
   for i in 2 3 4; do rm -rf ".quake/$SCEN/validator$i/reth-pay"; cp -a ".quake/$SCEN/validator1/reth-pay" ".quake/$SCEN/validator$i/reth-pay"; done
 
   echo "==> [2/5] payment EL per validator (gossip-peered)…"
@@ -78,9 +86,10 @@ PY
   echo "==> [3/5] waiting for both lanes to produce…"
   for i in $(seq 1 30); do
     e=$(bn 8645); p=$(bn 19645)
-    [ -n "$e" ] && [ -n "$p" ] && [ "$e" -ge 3 ] && [ "$p" -ge 3 ] && { echo "    both lanes live (EVM $e / PAY $p)"; break; }
+    [ -n "$e" ] && [ -n "$p" ] && [ "$e" -ge 3 ] && [ "$p" -ge 3 ] && { echo "    both lanes live (EVM $e / PAY $p)"; LANES_OK=1; break; }
     sleep 3
   done
+  [ "${LANES_OK:-0}" = 1 ] || { echo "!! lanes never came up — ABORT (no silent half-started demo)"; exit 1; }
 
   echo "==> [3b] memory caps (isolation; pay ELs already booted uncapped)…"
   for i in 1 2 3 4; do
