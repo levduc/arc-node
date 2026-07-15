@@ -9,7 +9,7 @@ PORT = 8080
 CAST = os.path.expanduser("~/.foundry/bin/cast")
 # representative validator datadirs (all validators hold ~identical state)
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DDIR = os.path.join(_REPO, ".quake", "soak4", "validator2")
+DDIR = os.path.join(_REPO, ".quake", "soak4", "validator1" if FLEET else "validator2")
 _series = collections.deque(maxlen=240)  # (elapsed_s, evm_mb, pay_mb)
 _t0 = time.time()
 
@@ -135,7 +135,7 @@ def _exec_loop():
                 st = _exec[lane]
                 if port:
                     try:
-                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=3) as r:
+                        with urllib.request.urlopen(f"http://{_host(port)}:{port}/metrics", timeout=3) as r:
                             text = r.read().decode()
                     except Exception:
                         text = ""
@@ -240,11 +240,26 @@ def growth():
             "pay_state_rate": rate_kb_per_min(3), "pay_hist_rate": rate_kb_per_min(4), **ua}
 EVM = {"val1": 8545, "val2": 8645, "val3": 8745, "val4": 8845}
 PAY = {"val1": 19545, "val2": 19645, "val3": 19745, "val4": 19845}
+
+# ---- fleet mode: DUALEL_FLEET=/path/to/json with {"val2": "100.x.y.z", ...} maps a validator's
+# ports to another host (multi-machine testnet). Unset => single-machine behavior unchanged. ----
+FLEET = {}
+_fp = os.environ.get("DUALEL_FLEET")
+if _fp:
+    try: FLEET = json.load(open(_fp))
+    except Exception: FLEET = {}
+def _val_of_port(port):
+    for base in (8545, 8546, 19545, 19546, 9001, 19001):
+        i = port - base
+        if 0 <= i <= 300 and i % 100 == 0: return f"val{i//100 + 1}"
+    return None
+def _host(port):
+    return FLEET.get(_val_of_port(port) or "", "127.0.0.1")
 POOL = ThreadPoolExecutor(max_workers=16)
 
 def rpc(port, method, params):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
-    req = urllib.request.Request(f"http://127.0.0.1:{port}", data=body,
+    req = urllib.request.Request(f"http://{_host(port)}:{port}", data=body,
                                  headers={"content-type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=1.5) as r:
