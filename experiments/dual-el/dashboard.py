@@ -157,7 +157,7 @@ def _exec_loop():
             for lane in ("evm", "pay"):
                 ports, cid = cfg.get(lane, {}).get("ports") or {}, cfg.get(lane, {}).get("cid")
                 st = _exec[lane]
-                roots, execs = {}, {}
+                roots, execs, roots_avg, execs_avg = {}, {}, {}, {}
                 for n, port in ports.items():
                     key = f"{lane}{n}"
                     prev = _mprev.setdefault(key, {})
@@ -174,12 +174,20 @@ def _exec_loop():
                     elif prev.get("last_ms") is not None:
                         roots[n] = prev["last_ms"]
                     ep = prev.setdefault("exec", {})
-                    es = ec = None
+                    es = ec = rs = rc = None
                     for ln in text.splitlines():
                         if ln.startswith("reth_sync_execution_execution_histogram_sum "):
                             es = float(ln.split()[1])
                         elif ln.startswith("reth_sync_execution_execution_histogram_count "):
                             ec = float(ln.split()[1])
+                        elif ln.startswith("reth_sync_block_validation_state_root_histogram_sum "):
+                            rs = float(ln.split()[1])
+                        elif ln.startswith("reth_sync_block_validation_state_root_histogram_count "):
+                            rc = float(ln.split()[1])
+                    if rs is not None and rc:
+                        roots_avg[n] = round(rs / rc * 1000.0, 2)
+                    if es is not None and ec:
+                        execs_avg[n] = round(es / ec * 1000.0, 2)
                     if es is not None and ec is not None:
                         if ec > ep.get("c", 0):
                             ep["last"] = round((es - ep.get("s", 0.0)) / (ec - ep.get("c", 0)) * 1000.0, 2)
@@ -194,6 +202,14 @@ def _exec_loop():
                     vals = list(execs.values())
                     st["exec_ms"] = round(sum(vals) / len(vals), 2)
                     st["exec_by_val"] = " · ".join(f"v{n} {execs.get(n, '—')}" for n in sorted(ports))
+                if roots_avg:
+                    vals = list(roots_avg.values())
+                    st["root_avg_ms"] = round(sum(vals) / len(vals), 2)
+                    st["root_avg_by_val"] = " · ".join(f"v{n} {roots_avg.get(n, '—')}" for n in sorted(ports))
+                if execs_avg:
+                    vals = list(execs_avg.values())
+                    st["exec_avg_ms"] = round(sum(vals) / len(vals), 2)
+                    st["exec_avg_by_val"] = " · ".join(f"v{n} {execs_avg.get(n, '—')}" for n in sorted(ports))
                 if cid:
                     for mp in (f"/sys/fs/cgroup/system.slice/docker-{cid}.scope/memory.current",
                                f"/sys/fs/cgroup/docker/{cid}/memory.current"):
@@ -526,6 +542,8 @@ h1 b{color:var(--pay)}
    <div class=xrow><span class=gk></span><span class=gu id=xEvmRootBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>execution</span><span class=gv id=xEvmExec>&mdash;</span><span class=gu>ms avg</span></div>
    <div class=xrow><span class=gk></span><span class=gu id=xEvmExecBy style="font-size:10px"></span></div>
+   <div class=xrow><span class=gk>root avg (run)</span><span class=gv id=xEvmRootAvg>&mdash;</span><span class=gu>ms</span></div>
+   <div class=xrow><span class=gk>exec avg (run)</span><span class=gv id=xEvmExecAvg>&mdash;</span><span class=gu>ms</span></div>
    <div class=xrow><span class=gk>disk read</span><span class=gv id=xEvmRd>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>disk write</span><span class=gv id=xEvmWr>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>RAM (EL)</span><span class=gv id=xEvmMem>&mdash;</span><span class=gu>GB</span></div></div>
@@ -534,6 +552,8 @@ h1 b{color:var(--pay)}
    <div class=xrow><span class=gk></span><span class=gu id=xPayRootBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>execution</span><span class=gv id=xPayExec>&mdash;</span><span class=gu>ms avg</span></div>
    <div class=xrow><span class=gk></span><span class=gu id=xPayExecBy style="font-size:10px"></span></div>
+   <div class=xrow><span class=gk>root avg (run)</span><span class=gv id=xPayRootAvg>&mdash;</span><span class=gu>ms</span></div>
+   <div class=xrow><span class=gk>exec avg (run)</span><span class=gv id=xPayExecAvg>&mdash;</span><span class=gu>ms</span></div>
    <div class=xrow><span class=gk>disk read</span><span class=gv id=xPayRd>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>disk write</span><span class=gv id=xPayWr>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>RAM (EL)</span><span class=gv id=xPayMem>&mdash;</span><span class=gu>GB</span></div></div>
@@ -600,6 +620,8 @@ function drawExec(x){
    var bid=document.getElementById(id+'By');if(bid)bid.textContent=by||'';}
  xset('xEvmRoot',x.evm.root_ms,x.evm.root_by_val);xset('xPayRoot',x.pay.root_ms,x.pay.root_by_val);
  xset('xEvmExec',x.evm.exec_ms,x.evm.exec_by_val);xset('xPayExec',x.pay.exec_ms,x.pay.exec_by_val);
+ xset('xEvmRootAvg',x.evm.root_avg_ms,x.evm.root_avg_by_val);xset('xPayRootAvg',x.pay.root_avg_ms,x.pay.root_avg_by_val);
+ xset('xEvmExecAvg',x.evm.exec_avg_ms,x.evm.exec_avg_by_val);xset('xPayExecAvg',x.pay.exec_avg_ms,x.pay.exec_avg_by_val);
  document.getElementById('xRate').textContent=(x.blk_s!=null?('block production: '+x.blk_s+' blk/s'):'—');
  set('xEvmRd',x.evm.rd_mb_s);set('xPayRd',x.pay.rd_mb_s);
  set('xEvmWr',x.evm.wr_mb_s);set('xPayWr',x.pay.wr_mb_s);
