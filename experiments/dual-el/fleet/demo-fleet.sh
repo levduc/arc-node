@@ -111,15 +111,8 @@ PY
       --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"admin_addPeer\",\"params\":[\"${EN[$j]}\"]}" >/dev/null; done
   done
 
-  echo "==> [8/9] loads (demo-bloat profile, targets across the fleet)"
-  EVM_TGTS="ws://127.0.0.1:8546,ws://${RTS[2]}:8646,ws://${RTS[3]}:8746,ws://${RTS[4]}:8846"
-  PAY_TGTS="ws://127.0.0.1:19546,ws://${RTS[2]}:19646,ws://${RTS[3]}:19746,ws://${RTS[4]}:19846"
-  ( STOP="$RUN/spam.stop"
-    b(){ while [ ! -f "$STOP" ]; do target/release/spammer ws --targets "$EVM_TGTS" -r 6 -t 600 -g 2 -a 200 -l --mix guzzler=100 --guzzler-fn-weights "storage-write=100@250" >"$RUN/spam_evm.log" 2>&1; sleep 1; done; }
-    p(){ while [ ! -f "$STOP" ]; do target/release/spammer ws --targets "$PAY_TGTS" -r 1500 -t 600 -g 8 -a 1000 -l --recipient-pool 0x2000000000:10000000 --mix transfer=100 >"$RUN/spam_pay.log" 2>&1; sleep 1; done; }
-    g(){ while [ ! -f "$STOP" ]; do target/release/spammer ws --targets "$PAY_TGTS" -r 50 -t 600 -g 2 -a 200 -l --fresh-recipients --mix transfer=100 >"$RUN/spam_grow.log" 2>&1; sleep 1; done; }
-    b & p & g & wait ) >/dev/null 2>&1 & echo $! >"$RUN/spam.pid"
-
+  echo "==> [8/9] NO load started. Flood the fleet separately with:"
+  echo "    ./experiments/dual-el/fleet/spam-fleet.sh start   (stop|status; rates via env)"
   echo "==> [9/9] fleet dashboard"
   python3 -c "import json;json.dump({'val2':'${RTS[2]}','val3':'${RTS[3]}','val4':'${RTS[4]}'},open('$RUN/fleet-endpoints.json','w'))"
   old=$(ss -ltnp 2>/dev/null | grep ':8080 ' | grep -oP 'pid=\K[0-9]+' | head -1); [ -n "$old" ] && kill "$old" 2>/dev/null
