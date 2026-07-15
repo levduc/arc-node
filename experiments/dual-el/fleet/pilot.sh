@@ -80,4 +80,8 @@ for ep in "local-evm2 http://127.0.0.1:8645" "remote-evm4 http://$REMOTE_TS:8845
     | python3 -c "import sys,json;print(int(json.load(sys.stdin)['result'],16))" 2>/dev/null)
   echo "HEAD $1 = ${hh:-UNREACHABLE}"
 done
-echo "PILOT SETUP DONE $(date +%F_%T) — watch heads converge; agreement check via dashboard"
+echo "==> restart dashboard in fleet mode (val4 -> $REMOTE_TS)"
+python3 -c "import json;json.dump({'val4':'$REMOTE_TS'},open('/tmp/dualel-pilot-fleet.json','w'))"
+old=$(ss -ltnp 2>/dev/null | grep ':8080 ' | grep -oP 'pid=\K[0-9]+' | head -1); [ -n "$old" ] && kill "$old" 2>/dev/null
+DUALEL_FLEET=/tmp/dualel-pilot-fleet.json nohup python3 experiments/dual-el/dashboard.py >/tmp/dualel-bloat/dashboard.log 2>&1 &
+echo "PILOT SETUP DONE $(date +%F_%T) — dashboard http://localhost:8080 (fleet mode: val4 remote)"
