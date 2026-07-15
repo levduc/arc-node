@@ -9,8 +9,8 @@
 set -uxo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO"
-REMOTE=papaduck
-REMOTE_TS=100.70.62.92
+REMOTE=${REMOTE:-ginnythui}
+REMOTE_TS=${REMOTE_TS:-100.85.150.119}
 LOCAL_TS=100.124.148.61
 RBASE=/home/papaduck/arc-fleet/soak4
 LBASE="$REPO/.quake/soak4"

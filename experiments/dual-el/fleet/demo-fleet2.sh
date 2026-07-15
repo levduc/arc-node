@@ -15,11 +15,11 @@ case "${1:-}" in
     bash experiments/dual-el/fleet/pilot.sh
     ;;
   stop)
-    timeout 60 tailscale ssh papaduck "ids=\$(docker ps -aq --filter name=validator); [ -n \"\$ids\" ] && docker rm -f \$ids; docker run --rm -v /home/papaduck/arc-fleet:/f --user root alpine rm -rf /f/soak4 2>/dev/null" || true
+    timeout 60 tailscale ssh ${REMOTE:-ginnythui} "ids=\$(docker ps -aq --filter name=validator); [ -n \"\$ids\" ] && docker rm -f \$ids; docker run --rm -v /home/papaduck/arc-fleet:/f --user root alpine rm -rf /f/soak4 2>/dev/null" || true
     ./experiments/dual-el/demo-bloat.sh stop
     ;;
   status)
-    for ep in "val1(local) 127.0.0.1 19545" "val2(local) 127.0.0.1 19645" "val3(local) 127.0.0.1 19745" "val4(papaduck) 100.70.62.92 19845"; do
+    for ep in "val1(local) 127.0.0.1 19545" "val2(local) 127.0.0.1 19645" "val3(local) 127.0.0.1 19745" "val4(remote) ${REMOTE_TS:-100.85.150.119} 19845"; do
       set -- $ep
       h=$(curl -s -m5 -X POST "http://$2:$3" -H 'content-type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' | python3 -c "import sys,json;print(int(json.load(sys.stdin)['result'],16))" 2>/dev/null)
       echo "$1 pay head: ${h:-UNREACHABLE}"
