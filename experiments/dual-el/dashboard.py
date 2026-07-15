@@ -595,6 +595,7 @@ h1 b{color:var(--pay)}
    <div class=xrow><span class=gk>execution</span><span class=gv id=xEvmExec>&mdash;</span><span class=gu>ms avg</span></div>
    <div class=xrow><span class=gk></span><span class=gu id=xEvmExecBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>persistence</span><span class=gv id=xEvmPersist>&mdash;</span><span class=gu>ms/blk</span></div>
+   <div class=xrow><span class=gk></span><span class=gu id=xEvmPersistBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>throughput</span><span class=gv id=xEvmTps>&mdash;</span><span class=gu>tx/s</span></div>
    <div class=xrow><span class=gk>root avg (run)</span><span class=gv id=xEvmRootAvg>&mdash;</span><span class=gu>ms</span></div>
    <div class=xrow><span class=gk>exec avg (run)</span><span class=gv id=xEvmExecAvg>&mdash;</span><span class=gu>ms</span></div>
@@ -607,6 +608,7 @@ h1 b{color:var(--pay)}
    <div class=xrow><span class=gk>execution</span><span class=gv id=xPayExec>&mdash;</span><span class=gu>ms avg</span></div>
    <div class=xrow><span class=gk></span><span class=gu id=xPayExecBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>persistence</span><span class=gv id=xPayPersist>&mdash;</span><span class=gu>ms/blk</span></div>
+   <div class=xrow><span class=gk></span><span class=gu id=xPayPersistBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>throughput</span><span class=gv id=xPayTps>&mdash;</span><span class=gu>tx/s</span></div>
    <div class=xrow><span class=gk>root avg (run)</span><span class=gv id=xPayRootAvg>&mdash;</span><span class=gu>ms</span></div>
    <div class=xrow><span class=gk>exec avg (run)</span><span class=gv id=xPayExecAvg>&mdash;</span><span class=gu>ms</span></div>
