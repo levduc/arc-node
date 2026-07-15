@@ -9,6 +9,21 @@ PORT = 8080
 CAST = os.path.expanduser("~/.foundry/bin/cast")
 # representative validator datadirs (all validators hold ~identical state)
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+# ---- fleet mode: DUALEL_FLEET=/path/to/json with {"val2": "100.x.y.z", ...} maps a validator's
+# ports to another host (multi-machine testnet). Unset => single-machine behavior unchanged. ----
+FLEET = {}
+_fp = os.environ.get("DUALEL_FLEET")
+if _fp:
+    try: FLEET = json.load(open(_fp))
+    except Exception: FLEET = {}
+def _val_of_port(port):
+    for base in (8545, 8546, 19545, 19546, 9001, 19001):
+        i = port - base
+        if 0 <= i <= 300 and i % 100 == 0: return f"val{i//100 + 1}"
+    return None
+def _host(port):
+    return FLEET.get(_val_of_port(port) or "", "127.0.0.1")
+
 DDIR = os.path.join(_REPO, ".quake", "soak4", "validator1" if FLEET else "validator2")
 _series = collections.deque(maxlen=240)  # (elapsed_s, evm_mb, pay_mb)
 _t0 = time.time()
@@ -241,20 +256,6 @@ def growth():
 EVM = {"val1": 8545, "val2": 8645, "val3": 8745, "val4": 8845}
 PAY = {"val1": 19545, "val2": 19645, "val3": 19745, "val4": 19845}
 
-# ---- fleet mode: DUALEL_FLEET=/path/to/json with {"val2": "100.x.y.z", ...} maps a validator's
-# ports to another host (multi-machine testnet). Unset => single-machine behavior unchanged. ----
-FLEET = {}
-_fp = os.environ.get("DUALEL_FLEET")
-if _fp:
-    try: FLEET = json.load(open(_fp))
-    except Exception: FLEET = {}
-def _val_of_port(port):
-    for base in (8545, 8546, 19545, 19546, 9001, 19001):
-        i = port - base
-        if 0 <= i <= 300 and i % 100 == 0: return f"val{i//100 + 1}"
-    return None
-def _host(port):
-    return FLEET.get(_val_of_port(port) or "", "127.0.0.1")
 POOL = ThreadPoolExecutor(max_workers=16)
 
 def rpc(port, method, params):
