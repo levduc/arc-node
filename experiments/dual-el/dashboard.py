@@ -193,7 +193,8 @@ def _exec_loop():
                     if ms is not None:
                         roots[n] = ms
                         prev["last_ms"] = ms
-                    elif prev.get("last_ms") is not None:
+                        prev["root_t"] = now
+                    elif prev.get("last_ms") is not None and now - prev.get("root_t", 0) <= 45:
                         roots[n] = prev["last_ms"]
                     ep = prev.setdefault("exec", {})
                     es = ec = rs = rc = None
@@ -213,9 +214,14 @@ def _exec_loop():
                     if es is not None and ec is not None:
                         if ec > ep.get("c", 0):
                             ep["last"] = round((es - ep.get("s", 0.0)) / (ec - ep.get("c", 0)) * 1000.0, 2)
+                            ep["t"] = now
                         ep["s"], ep["c"] = es, ec
-                    if ep.get("last") is not None:
+                    if ep.get("last") is not None and now - ep.get("t", 0) <= 45:
                         execs[n] = ep["last"]
+                if not roots:
+                    st["root_ms"] = None; st["root_by_val"] = None
+                if not execs:
+                    st["exec_ms"] = None; st["exec_by_val"] = None
                 if roots:
                     vals = list(roots.values())
                     st["root_ms"] = round(sum(vals) / len(vals), 2)
