@@ -47,6 +47,9 @@ for n in (2, 3, 4):
             for v in nets.values():
                 if isinstance(v, dict): v.pop("ipv4_address", None)
         svc.pop("depends_on", None)
+        if kind == "cl":
+            svc.setdefault("environment", {}).update(
+                {"ARC_VALUE_SYNC_BATCH_SIZE": "3", "ARC_VALUE_SYNC_TIMEOUT_SECS": "15"})
         svcs[name] = svc
     remote = {"services": svcs,
               "networks": {"default": {"name": "arc_testnet_default", "driver": "bridge", "internal": True},

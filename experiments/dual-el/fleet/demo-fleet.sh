@@ -44,7 +44,7 @@ start(){
   pkill -x spammer 2>/dev/null; rm -f "$RUN/spam.stop"
   ids=$(docker ps -aq --filter name=validator); [ -n "$ids" ] && docker rm -f $ids
   docker run --rm -v "$REPO/.quake":/q --user root alpine rm -rf /q/$SCEN
-  for n in 2 3 4; do tss "${RHOST[$n]}" "ids=\$(docker ps -aq --filter name=validator); [ -n \"\$ids\" ] && docker rm -f \$ids; docker run --rm -v /home/papaduck/arc-fleet:/f --user root alpine rm -rf /f/$SCEN 2>/dev/null; mkdir -p $RBASE" || true; done
+  for n in 2 3 4; do tss "${RHOST[$n]}" "ids=\$(docker ps -aq --filter name=validator); [ -n \"\$ids\" ] && docker rm -f \$ids; docker run --rm -v /home/papaduck/arc-fleet:/f --user root alpine rm -rf /f/$SCEN 2>/dev/null; mkdir -p $RBASE; uid=\$(id -u); gid=\$(id -g); docker run --rm -v /home/papaduck/arc-fleet:/f --user root alpine chown -R \$uid:\$gid /f; true" || true; done
 
   echo "==> [1/9] generate testnet locally (quake)"
   target/release/quake -f "crates/quake/scenarios/${SCEN}.toml" start -e 1000 --monitoring false --force >"$RUN/quake.log" 2>&1 || true
