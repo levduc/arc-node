@@ -46,7 +46,7 @@ timeout 60 tailscale ssh "$REMOTE" "docker rm -f validator4_el_pay 2>/dev/null; 
   --ws --ws.addr=0.0.0.0 --ws.port=8546 --ws.origins='*' --ws.api=eth,net,web3,txpool \
   --authrpc.addr=0.0.0.0 --authrpc.port=8551 --authrpc.jwtsecret=/app/assets/payment-jwt.hex \
   --metrics=0.0.0.0:9001 --disable-discovery --ipcdisable --port 30303 \
-  --arc.builder.deadline=2000 --arc.builder.wait-for-payload=true --txpool.nolocals \
+  --arc.builder.deadline=500 --arc.builder.wait-for-payload=true --txpool.nolocals \
   --txpool.pending-max-count=200000 --txpool.queued-max-count=200000"
 
 echo "==> [7/8] cross-machine payment gossip mesh (tailscale enodes)"

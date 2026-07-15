@@ -36,7 +36,7 @@ for i in 1 2 3 4; do sleep ${STAGGER:-0};
       --authrpc.addr=0.0.0.0 --authrpc.port=8551 --authrpc.jwtsecret=/app/assets/payment-jwt.hex \
       --metrics=0.0.0.0:9001 --disable-discovery --ipcdisable \
       --port 30303 \
-      --arc.builder.deadline=2000 --arc.builder.wait-for-payload=true --txpool.nolocals \
+      --arc.builder.deadline=500 --arc.builder.wait-for-payload=true --txpool.nolocals \
       --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 >/dev/null \
     && { docker network connect "$HOSTNET" "$name" 2>/dev/null; \
          echo "launched $name on $NET+$HOSTNET (RPC http://127.0.0.1:${http})"; } \
