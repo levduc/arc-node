@@ -91,6 +91,9 @@ pub struct SpammerArgs {
     /// nonce-gaps accounts); target ~2-3 blocks' worth of transactions.
     #[clap(long, default_value_t = 0, global = true)]
     pub pool_target: u64,
+    /// Chain ID used to sign transactions (must match the target lane's chainId)
+    #[clap(long = "chain-id", default_value_t = 1337, global = true)]
+    pub chain_id: u64,
     /// Maximum time in seconds to send transactions (applies to all generators) (0 for no limit)
     #[clap(short = 't', long, default_value_t = defaults::TIME, global = true)]
     pub time: u64,
@@ -391,6 +394,7 @@ mod tests {
             num_txs: defaults::NUM_TXS,
             rate: defaults::RATE,
             pool_target: 0,
+            chain_id: 1337,
             time: defaults::TIME,
             tx_input_size: defaults::TX_INPUT_SIZE,
             fresh_recipients: false,

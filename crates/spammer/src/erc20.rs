@@ -22,7 +22,7 @@ use color_eyre::eyre::Result;
 use crate::config::Erc20Function;
 use crate::generator::{
     TxGenerator, GAS_ESTIMATE_MARGIN_DEN, GAS_ESTIMATE_MARGIN_NUM, MAX_FEE_PER_GAS,
-    MAX_PRIORITY_FEE_PER_GAS, TESTNET_CHAIN_ID,
+    MAX_PRIORITY_FEE_PER_GAS, testnet_chain_id,
 };
 use crate::ws::WsClient;
 
@@ -83,7 +83,7 @@ pub(crate) async fn prepare_erc20_tx(
             .unwrap_or(ERC20_GAS_FALLBACK)
     };
     Ok(TxEip1559 {
-        chain_id: TESTNET_CHAIN_ID,
+        chain_id: testnet_chain_id(),
         nonce,
         max_priority_fee_per_gas: MAX_PRIORITY_FEE_PER_GAS,
         max_fee_per_gas: MAX_FEE_PER_GAS,

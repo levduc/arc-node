@@ -96,6 +96,9 @@ enum TargetCommand {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Lane routing: sign txs with the target lane's chainId (default 1337).
+    spammer::set_chain_id(cli.args.chain_id);
+
     // Initialize tracing
     let level = cli.verbosity.tracing_level_filter();
     let filter = EnvFilter::builder()

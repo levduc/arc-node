@@ -36,7 +36,10 @@ use crate::ws::{WsClient, WsClientBuilder};
 
 use crate::erc20::TEST_TOKEN_ADDRESS;
 
-pub(crate) const TESTNET_CHAIN_ID: u64 = 1337;
+static CHAIN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1337);
+/// Set once at startup from --chain-id before any generator runs.
+pub fn set_chain_id(id: u64) { CHAIN_ID.store(id, std::sync::atomic::Ordering::Relaxed); }
+pub(crate) fn testnet_chain_id() -> u64 { CHAIN_ID.load(std::sync::atomic::Ordering::Relaxed) }
 
 /// Max fee per gas (in wei) used for all generated transactions.
 ///
@@ -879,7 +882,7 @@ impl TxGenerator {
         let input_gas = input.len() as u64 * 16;
 
         TxEip1559 {
-            chain_id: TESTNET_CHAIN_ID,
+            chain_id: testnet_chain_id(),
             nonce,
             max_priority_fee_per_gas: MAX_PRIORITY_FEE_PER_GAS,
             max_fee_per_gas: MAX_FEE_PER_GAS,
@@ -897,7 +900,7 @@ impl TxGenerator {
         let input_gas = input.len() as u64 * 16;
 
         TxLegacy {
-            chain_id: Some(TESTNET_CHAIN_ID),
+            chain_id: Some(testnet_chain_id()),
             nonce,
             gas_price: MAX_FEE_PER_GAS,
             gas_limit: 30_000 + input_gas,
@@ -917,7 +920,7 @@ impl TxGenerator {
     ) -> TxEip1559 {
         let input = Self::encode_guzzler_calldata(guzzler_function, arg);
         TxEip1559 {
-            chain_id: TESTNET_CHAIN_ID,
+            chain_id: testnet_chain_id(),
             nonce,
             max_priority_fee_per_gas: MAX_PRIORITY_FEE_PER_GAS,
             max_fee_per_gas: MAX_FEE_PER_GAS,

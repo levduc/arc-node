@@ -25,6 +25,7 @@ mod cli;
 mod config;
 mod erc20;
 mod generator;
+pub use generator::set_chain_id;
 mod latency;
 mod rate_limiter;
 mod result_tracker;
