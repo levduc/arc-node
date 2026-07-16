@@ -12,8 +12,8 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"; cd "$REPO"
 RUN=/tmp/dualel-fleet; mkdir -p "$RUN"; STOP="$RUN/spam.stop"
-EVM_RATE=${EVM_RATE:-6}; SLOTS=${SLOTS:-250}
-PAY_RATE=${PAY_RATE:-1500}; POOL=${POOL:-0x2000000000:10000000}; GROW_RATE=${GROW_RATE:-50}
+EVM_RATE=${EVM_RATE:-10}; SLOTS=${SLOTS:-250}
+PAY_RATE=${PAY_RATE:-6500}; POOL=${POOL:-0x2000000000:10000000}; GROW_RATE=${GROW_RATE:-50}
 EVM_TGTS=${EVM_TGTS:-"ws://127.0.0.1:8546"}
 PAY_TGTS=${PAY_TGTS:-"ws://127.0.0.1:19546"}
 
