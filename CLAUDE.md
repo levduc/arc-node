@@ -312,3 +312,73 @@ KEY FINDINGS (all measured; trend log ~/dualel-bloat-trend.log):
 RECOMMENDED DEMO CONFIG: 10M preseed + fixed CL (509f404) + caps pay10/evm5/cl0.75 + batch_size fix
 before 4-validator demos. demo-empty.sh for clean-slate demos. Exec benchmark (empty vs 10M preseed,
 identical 1500tx/s transfers both lanes, 1h each): results land in /tmp/execcmp2-results.txt (2026-07-13).
+
+**MULTI-MACHINE FLEET (2026-07-14..16, branch `fleet-multi-machine`).** 4 validators on 4 tailscale
+machines, driven entirely from ginny-alienware: val1 here (62G, wifi) + val2 ginnythui
+(100.85.150.119, 62G, wired) + val3 papaduck (100.70.62.92, 78G, wired) + val4 papaduck-alien2
+(100.86.97.40, 15G, wifi). tailscale ssh enabled on remotes; arc images shipped via docker save|gzip|ssh
+docker load. LAN 2-8ms.
+
+Topology mechanics (gen-fleet.py rewrites quake's compose): CL P2P = persistent-peers multiaddrs
+/ip4/<host-ts-ip>/tcp/2700(N-1) (host-published); EVM EL P2P = trusted-peers enodes @<ts-ip>:3030N +
+published 3030N:30303; payment ELs publish 3041N:30303 + admin_addPeer ts-enodes. Remote composes:
+per-host compose-valN.yaml, volumes under /home/papaduck/arc-fleet (val3 fast variants:
+/mnt/blockchain.ssd/arc-fleet), networks recreated per host with DYNAMIC subnets and NO static
+container IPs (remote docker pools collide, e.g. ginnythui wiki owns 172.21/16); pay ELs MUST run
+host-access as PRIMARY network + connect internal after (internal-primary silently breaks port
+publishing AND the CL never reaches them). CL<->EL stays machine-local (IPC).
+
+Machine gotchas (all cost real time): papaduck docker couldn't publish ports (iptables DNAT missing
+kernel module after kernel upgrade) -> REBOOT fixes; alien2 wifi truncates GB-scale ssh/tar pipes ->
+chunked base64 (8MB pieces, per-chunk sha+retry) or taildrop (needs operator); docker auto-creates
+root-owned mount dirs -> every later user-extract silently fails (chown -R in clean step now);
+alien2 wifi power-save = 101ms idle RTT -> keepalive ping (nohup ping -i 0.3 gw) -> 7ms; remote
+cleanup MUST use explicit container names (three different silent failures with $(docker ps) subshells
+inside tailscale ssh strings).
+
+CL changes: value-sync env overrides ARC_VALUE_SYNC_BATCH_SIZE / ARC_VALUE_SYNC_TIMEOUT_SECS
+(hardcoded 10 blocks x 1s timeout livelocked lagging validators; fleet runs 3/15s via gen-fleet env
+injection; validated: 1151-block wifi catch-up in 5min). ARC_PAYMENT_GENESIS_FILE_PATH (per-lane
+V4/V5 fork detection) lives on the gravity branch build. FINDING #7 (OPEN): pay-EL OOM that loses
+unpersisted blocks while CL tip is ahead -> value-sync can't backfill (<tip) and ProcessSyncedValue
+treats newPayload=Syncing as FATAL -> CL crash-loop. OPS HEAL (scripted in revive-val.sh): manual
+engine_forkchoiceUpdatedV3(canonical head) -> reth p2p backfills from gossip peers (2148 blks/2.5min)
+-> restart CL. CODE FIX PENDING: treat Syncing as retryable in process_synced_value.
+
+Builder deadline: quake scenario had 2000ms per lane; CL gives proposer 3s for BOTH lanes -> 2+2>3
+guarantees timeout on a contended host (papaduck-as-desktop: every-4th-height 4s stall, measured
+gaps [4,0,1,0...]; round-robin means a slow proposer taxes EVERYONE ~3.5x - tolerated != unaffected).
+Now 500ms everywhere (soak4.toml el.config + all launchers); deadline bounds packing, NOT cadence.
+
+DISK PERSISTENCE IS FIRST-CLASS: reth_consensus_engine_persistence_save_blocks_duration histogram;
+persistence is async but caps SUSTAINABLE cadence <= 1/persist-per-block (buffer bounded, then
+backpressure). fsync(4k dsync x100) per machine: alien2 0.67ms, ginny 1.38, ginnythui 1.44,
+papaduck-home 30.9ms(!) -> papaduck /mnt/blockchain.ssd 1.5ms. v3 persist 3704ms/blk on home disk ->
+67ms on NVMe (55x). Full 4761-tx pay blocks persist ~212ms/blk. Dashboard shows persist per validator.
+
+Spam delivery: each ws send awaits ack -> remote/wifi targets gate the loop: 4-target 1.5k tx/s vs
+LOCAL-only 5-8k+ (gossip fans out; spam-fleet.sh defaults local now; spam-fleet-fanout.sh keeps the
+old behavior). Full blocks need delivered >= 4761 x cadence; a HEALTHY chain (3-4 blk/s) needs 15-19k
+tx/s to fill — full blocks are a symptom of slowness (or the coupling demo via guzzler).
+
+MEASURE-2H (2026-07-15 20:35-22:35, all-fixes fleet, 10M preseed, pay blocks FULL 4761tx the whole
+window, 6009 blocks): per-blk PAY exec 64.4 / root 12.0 / persist 211.8 ms; EVM(~5tx guzzler) exec
+16.0 / root 13.4 / persist 121 ms. Per-tx: PAY 13.5us exec / 2.5us root / 44us persist vs EVM ~3.2ms /
+~2.7ms / ~24ms (240x / ~1000x / ~540x). val4 partial (mid-window OOM+revive). Results:
+/tmp/fleet2h-results.txt; harness fleet/measure-2h.sh.
+
+Fleet scripts (experiments/dual-el/fleet/): demo-fleet.sh (4-machine 10M ~40min), demo-fleet-fast.sh
+(10M + val3 on /mnt/blockchain.ssd), demo-fleet-empty.sh (~5min clean), demo-fleet-empty-fastssd.sh,
+demo-fleet2.sh (2-machine), spam-fleet.sh / spam-fleet-fanout.sh (start|stop|status; env rates),
+revive-val.sh [N] (single-validator revival incl. finding-#7 heal), measure-2h.sh, gen-fleet.py /
+gen-remote-val4.py (compose surgery), pilot.sh. All starts self-verify + print fallback; loads always
+separate. Dashboard fleet mode: DUALEL_FLEET=<json {valN: ts-ip}> (unset = single-machine); rows:
+per-val root/exec/PERSIST now+avg-run, landed TPS, block rate; exec-now had been lifetime-avg since
+inception (fixed), stale values expire after 45s idle.
+
+Other branches: `gravity-payment-lane` PARKED (gravity-reth = O(total-state) per block on standard
+Engine API paths, perf requires their consensus; FINDINGS.md there); erigon probe passed the engine
+smoke (needs Prague system-contract predeploys in genesis; chainId 1337 collides with its named
+bor-devnet chain — don't pass --networkid) but was abandoned after a box crash. TODO: cherry-pick
+demo-bloat fail-loud preseed (09d02dd) to dual-el-payment-lane; presentation deck (paper repo
+presentation/slides.tex) is demo-driven and carries all these numbers.
