@@ -23,14 +23,16 @@ use strum_macros::EnumString;
 #[derive(Clone)]
 pub(crate) struct AccountBuilder {
     mnemonic: String,
+    offset: usize,
 }
 
 impl AccountBuilder {
-    pub fn new(mnemonic: String) -> Self {
-        Self { mnemonic }
+    pub fn new(mnemonic: String, offset: usize) -> Self {
+        Self { mnemonic, offset }
     }
 
     pub fn build(&self, index: usize) -> Result<LocalSigner<SigningKey>> {
+        let index = index + self.offset;
         let builder = MnemonicBuilder::<English>::default()
             .phrase(&self.mnemonic)
             .derivation_path(format!("m/44'/60'/1'/0/{}", index))

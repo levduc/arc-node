@@ -59,6 +59,12 @@ pub struct SpammerArgs {
     /// argument of the `setup` command.
     #[clap(short = 'a', long, default_value_t = defaults::MAX_NUM_ACCOUNTS, global = true)]
     pub max_num_accounts: usize,
+    /// Offset added to every account index (derivation m/44'/60'/1'/0/{offset+i}).
+    ///
+    /// Lets multiple spammer instances (e.g. one per machine) use DISJOINT account
+    /// ranges of the same prefunded genesis: instance k uses --account-offset k*N -a N.
+    #[clap(long, default_value_t = 0, global = true)]
+    pub account_offset: usize,
     /// How to partition the account space among generators (linear or
     /// exponential)
     ///
@@ -349,6 +355,7 @@ impl SpammerArgs {
             num_generators: self.num_generators,
             partition_mode: self.partition_mode,
             max_num_accounts: self.max_num_accounts,
+            account_offset: self.account_offset,
             preinit_accounts: self.preinit_accounts,
             query_latest_nonce: self.query_latest_nonce,
             max_num_txs: self.num_txs,

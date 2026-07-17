@@ -300,7 +300,7 @@ impl Spammer {
             ranges
         );
 
-        let account_builder = AccountBuilder::new(TEST_MNEMONIC.to_string());
+        let account_builder = AccountBuilder::new(TEST_MNEMONIC.to_string(), config.account_offset);
 
         let mut tx_generators = Vec::new();
         let mut tx_senders = Vec::new();
@@ -407,7 +407,7 @@ impl Spammer {
             ranges
         );
 
-        let account_builder = AccountBuilder::new(TEST_MNEMONIC.to_string());
+        let account_builder = AccountBuilder::new(TEST_MNEMONIC.to_string(), config.account_offset);
 
         let mut tx_senders = Vec::new();
         for (i, (start, end)) in ranges.into_iter().enumerate() {

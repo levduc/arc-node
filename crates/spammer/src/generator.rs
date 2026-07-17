@@ -947,7 +947,7 @@ mod tests {
         tx_sender: Option<Sender<TxEnvelope>>,
         max_txs_per_account: u64,
     ) -> TxGenerator {
-        let account_builder = AccountBuilder::new(TEST_MNEMONIC.to_string());
+        let account_builder = AccountBuilder::new(TEST_MNEMONIC.to_string(), 0);
         TxGenerator::new(
             0,
             start..end,
@@ -973,7 +973,7 @@ mod tests {
 
     #[tokio::test]
     async fn tx_generator_distributes_across_signers() -> Result<()> {
-        let account_builder = AccountBuilder::new(TEST_MNEMONIC.to_string());
+        let account_builder = AccountBuilder::new(TEST_MNEMONIC.to_string(), 0);
 
         #[rustfmt::skip]
         let test_cases = vec![
@@ -1065,7 +1065,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_tx_legacy_produces_legacy_envelope() -> Result<()> {
-        let account_builder = AccountBuilder::new(TEST_MNEMONIC.to_string());
+        let account_builder = AccountBuilder::new(TEST_MNEMONIC.to_string(), 0);
         let mut generator = TxGenerator::new(
             0,
             0..1,

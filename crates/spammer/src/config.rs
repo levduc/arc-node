@@ -297,6 +297,7 @@ pub struct Config {
     pub partition_mode: PartitionMode,
     /// Maximum number of accounts to sign transactions
     pub max_num_accounts: usize,
+    pub account_offset: usize,
     /// Whether to pre-initialize accounts with their signing keys and latest nonces
     pub preinit_accounts: bool,
     /// Whether to query the latest nonce from the node (for faster account initialization)
