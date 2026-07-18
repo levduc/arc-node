@@ -182,3 +182,24 @@ the earlier 1.5-2 week estimate; the engine + dep layer (the parts feared hardes
   into_parts(), call parallel_execute_block(self.evm.cfg_env(), self.evm.block(), txs, <dbref of
   self.evm.db()>), then commit grevm bundle + build receipts (the receipt build from
   Vec<ExecutionResult> vs Arc's per-tx-state ReceiptBuilderCtx is the last real unknown).
+
+## HARD WALL located precisely (2026-07-18) — and the path around it
+Propagating `DatabaseRef` to ArcBlockExecutor's impl blocks compiles there, but fails at
+`create_executor` (evm.rs:1828). Root cause: **alloy-evm's `BlockExecutorFactory` trait fixes
+`DB: StateDB`** — both `fn create_executor<DB: StateDB, I>` and the associated
+`type Executor<'a, DB: StateDB, I>` declare exactly `StateDB` (Database + DatabaseCommit), NO
+DatabaseRef. So an executor made by this factory cannot generically require `DatabaseRef + Send +
+Sync` (what grevm needs), even though the concrete node DB satisfies it. This is a TRAIT-boundary
+wall, not a missing-bound-somewhere.
+
+Confirmed conclusion: grevm CANNOT be wired inside the alloy `BlockExecutor`/`BlockExecutorFactory`
+path. gravity reached the same conclusion and built a SEPARATE `ParallelExecutor` trait +
+`parallel_executor(db) -> Box<dyn ParallelExecutor>` constructed from the raw db at the NODE's
+block-execution selection point (evm-node/payload+validation wiring), bypassing the alloy factory.
+For Arc that is the required path and it DOES touch node wiring (crates/evm-node + execution-payload),
+i.e. it cannot be confined to crates/evm behind a pure executor override.
+
+Net: the seam + engine + differential correctness + the DatabaseRef-is-satisfiable finding all
+stand and are committed. The live wiring requires the gravity-style separate-executor path at node
+level — the genuinely multi-day, shared-node-wiring change. Stopping the in-executor approach here
+with the tree green (reverted to the serial seam).
