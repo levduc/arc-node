@@ -1,0 +1,20 @@
+[package]
+name = "arc-payment-commitment"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alloy-primitives = { workspace = true }
+reth-trie = { workspace = true }
+jmt = { workspace = true }
+rayon = { workspace = true }
+tiny-keccak = { workspace = true }
+sha2 = { workspace = true }
+anyhow = "1"
+
+[features]
+default = ["std"]
+std = ["alloy-primitives/std"]
+
+[dev-dependencies]
+reth-primitives-traits = { workspace = true }
