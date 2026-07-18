@@ -10,7 +10,7 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"; cd "$REPO"
 BIN="$REPO/target/release/arc-node-execution"
 SPAM="$REPO/target/release/spammer"
-GEN="$REPO/assets/localdev/genesis.json"
+GEN="${GEN:-/tmp/jmt-h2h/genesis-prague.json}"
 RUN=/tmp/jmt-h2h; mkdir -p "$RUN"
 JWT="$RUN/jwt.hex"; [ -f "$JWT" ] || openssl rand -hex 32 > "$JWT"
 # lane: name http ws auth metrics p2p  (MPT then JMT)
