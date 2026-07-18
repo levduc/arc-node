@@ -71,3 +71,39 @@ fn block_stm_is_deterministic() {
     let gas = |rs: &[ER]| rs.iter().map(|r| r.gas_used()).collect::<Vec<_>>();
     assert_eq!(gas(&a), gas(&b), "two parallel runs must agree per-tx");
 }
+
+/// DIFFERENTIAL: the same block executed in PARALLEL (Block-STM) and SEQUENTIALLY must leave
+/// identical final state for every account. This is the consensus-correctness property.
+#[test]
+fn block_stm_matches_sequential() {
+    use arc_evm::parallel::sequential_execute_block;
+    use revm::DatabaseRef;
+
+    let n = 300u64;
+    // mix disjoint + shared-recipient (contention) so the DAG/STM actually has conflicts to resolve
+    let txs: Vec<TxEnv> = (0..n).map(|i| {
+        let to = if i % 5 == 0 { 7 } else { n + i }; // every 5th pays a shared hot account
+        transfer_tx(i, to, 100, 1)
+    }).collect();
+    let cfg = || { let mut c = CfgEnv::new().with_chain_id(1); c.disable_nonce_check = true; c.disable_base_fee = true; c };
+    let blk = || BlockEnv { gas_limit: 30_000_000, basefee: 0, ..Default::default() };
+
+    let (rp, sp) = parallel_execute_block(cfg(), blk(), txs.clone(), seeded_db(n * 2)).unwrap();
+    let (rs, ss) = sequential_execute_block(cfg(), blk(), txs, seeded_db(n * 2)).unwrap();
+
+    // per-tx gas identical
+    let gp: Vec<u64> = rp.iter().map(|r| r.gas_used()).collect();
+    let gs: Vec<u64> = rs.iter().map(|r| r.gas_used()).collect();
+    assert_eq!(gp, gs, "per-tx gas must match between parallel and sequential");
+
+    // final balances/nonces identical for every touched account (incl. the hot recipient 7)
+    for i in 0..(n * 2) {
+        let a = addr(i);
+        let bp = sp.basic_ref(a).unwrap();
+        let bs = ss.basic_ref(a).unwrap();
+        let (bpb, bpn) = bp.as_ref().map(|x| (x.balance, x.nonce)).unwrap_or_default();
+        let (bsb, bsn) = bs.as_ref().map(|x| (x.balance, x.nonce)).unwrap_or_default();
+        assert_eq!(bpb, bsb, "balance mismatch at account {i} (parallel vs sequential)");
+        assert_eq!(bpn, bsn, "nonce mismatch at account {i}");
+    }
+}

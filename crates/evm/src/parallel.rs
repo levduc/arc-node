@@ -48,3 +48,22 @@ where
     scheduler.parallel_execute(None)?;
     Ok(scheduler.take_result_and_state())
 }
+
+/// Sequential execution of the same block via grevm's own fallback path. Used to
+/// differentially validate the parallel result (parallel MUST equal sequential — the
+/// Block-STM correctness property, and our consensus-correctness proof).
+pub fn sequential_execute_block<DB>(
+    cfg: CfgEnv,
+    block: BlockEnv,
+    txs: Vec<TxEnv>,
+    db: DB,
+) -> Result<(Vec<ExecutionResult>, ParallelState<DB>), grevm::GrevmError<DB::Error>>
+where
+    DB: DatabaseRef + Send + Sync,
+    DB::Error: Clone + Send + Sync + 'static,
+{
+    let state = ParallelState::new(db, true, false);
+    let scheduler = Scheduler::new(cfg, block, Arc::new(txs), state, false, None);
+    scheduler.fallback_sequential()?;
+    Ok(scheduler.take_result_and_state())
+}
