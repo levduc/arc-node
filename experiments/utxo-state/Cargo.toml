@@ -33,3 +33,7 @@ path = "src/bin/jmt_bench.rs"
 [[bin]]
 name = "lean_state"
 path = "src/bin/lean_state.rs"
+
+[[bin]]
+name = "blockstm"
+path = "src/bin/blockstm.rs"

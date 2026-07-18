@@ -85,3 +85,44 @@ primary target here is the payment lane**, with the EVM lane's contract traffic 
 - Differential validation: 1-2 days with existing harness.
 Total: **~1.5-2 weeks to a validated, flag-gated parallel executor** — vs the 6+ weeks the
 reth-2.x port took, because the revm boundary is already aligned.
+
+## MEASURED — grevm-style Block-STM prototype (implemented, `blockstm` bin)
+
+Built the deterministic core of grevm's design (hint-derived dependency DAG → level-synchronous
+parallel apply, conflict-free by construction; + deferred-fee-recipient) and measured it on the
+payment lane's actual workloads. 10M accounts, 9,500 tx/block, 16 threads:
+
+**When per-tx work is real (state read modeled at ~1µs/account — matches lean_state's 25ms serial
+execute phase):**
+| workload | serial | Block-STM | speedup | note |
+|---|---|---|---|---|
+| disjoint transfers | 20.6 ms | 2.32 ms | **8.9×** | best case, near-linear |
+| **pool(10k) — our real spam pattern** | 21.4 ms | 2.51 ms | **8.5×** | the demo workload |
+| hot-recipient (all → 1 acct) | 19.7 ms | 20.4 ms | **1.0×** | DAG depth = 9500 (serial chain); STM cannot help — matches our `contention` finding |
+
+**When transfers are arithmetic-only (state already in RAM, ~free):** serial 0.02 ms vs parallel
+1.2 ms — **Block-STM is net overhead**. Parallelism only pays when the contended work is expensive.
+
+Correctness: deferred-parallel reproduces serial balances AND fee total on every workload (the
+determinism consensus needs).
+
+### Honest notes
+- The 8.5× on `pool(10k)` is the load-bearing result: that IS the payment lane's real pattern, and
+  at 10k TPS the execute phase (lean_state: 25 ms serial) is big enough for it to matter — Block-STM
+  takes it to ~3 ms. Combined with sharded-JMT root (~11 ms), execute stops being the bottleneck;
+  persistence (191–311 ms) becomes the sole remaining lever.
+- Deferred vs naive fee-recipient measured near-identical HERE because the prototype uses atomic
+  balances — a single hot atomic isn't a conflict. In grevm's *true* MVCC-STM it is (every tx would
+  read/write the recipient version → cascade re-execution), which is exactly why grevm's
+  NoRewardHandler defers it. Our prototype validates the DAG+parallel win; the deferral trick's
+  necessity is inherited from grevm's design, not re-measured here.
+- This is a standalone prototype (like lean_state / jmt_bench), NOT wired into the payment EL. It
+  proves the technique + quantifies the win on our workload before the consensus-critical graft.
+
+### Bottom line for the payment lane
+Block-STM is a real ~8.5× win on the lane's execute phase at 10k-TPS scale — worth doing — but the
+payment lane's dominant cost is **persistence**, then **root**, then execute. Priority order for the
+lean lane: (1) persistence (batch fsync / faster disk — measured 55× swing home-disk vs NVMe),
+(2) sharded-JMT or reth sparse-trie root (~11 ms), (3) Block-STM execute (~3 ms). grevm matters most
+on the EVM lane (diverse contracts) and as the builder accelerator; on the payment lane it's the
+third lever, not the first.
