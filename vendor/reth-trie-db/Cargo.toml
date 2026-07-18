@@ -1,0 +1,85 @@
+[package]
+name = "reth-trie-db"
+version = "2.3.0"
+edition = "2021"
+rust-version = "1.86"
+license = "MIT OR Apache-2.0"
+homepage = "https://x"
+repository = "https://x"
+description = "Database integration with merkle trie implementation"
+
+
+[dependencies]
+# reth
+reth-primitives-traits = { version = "0.4.1", default-features = false, features = ["std"] }
+reth-execution-errors = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", default-features = false }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", default-features = false, features = ["db-api"] }
+reth-storage-errors = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
+reth-stages-types = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", optional = true }
+
+# alloy
+alloy-primitives = { version = "1.6.0", default-features = false, features = ["map-foldhash", "keccak-cache-global", "asm-keccak"] }
+
+# misc
+parking_lot = "0.12"
+
+# metrics
+metrics = { version = "0.24.0", optional = true }
+
+# tracing
+tracing = { version = "0.1.0", default-features = false }
+
+[dev-dependencies]
+# reth
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", default-features = false }
+reth-primitives-traits = { version = "0.4.1", default-features = false, features = ["test-utils", "arbitrary"] }
+reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", default-features = false, features = ["test-utils"] }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", features = ["test-utils"] }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", features = ["test-utils", "arbitrary"] }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", default-features = false, features = ["test-utils"] }
+
+alloy-consensus = { version = "~2.0.5", default-features = false }
+alloy-rlp = { version = "0.3.15", default-features = false, features = ["core-net"] }
+revm = { version = "40.0.3", default-features = false }
+revm-database = { version = "15.0.2", default-features = false }
+
+# trie
+triehash = "0.8"
+
+# misc
+proptest = "1.7"
+proptest-arbitrary-interop = "*"
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+similar-asserts = "*"
+
+[features]
+metrics = ["reth-trie/metrics", "dep:reth-metrics", "dep:metrics"]
+serde = [
+    "similar-asserts/serde",
+    "alloy-consensus/serde",
+    "alloy-primitives/serde",
+    "parking_lot/serde",
+    "reth-stages-types/serde",
+    "reth-storage-api/serde",
+    "reth-trie/serde",
+    "reth-trie-common/serde",
+    "reth-primitives-traits/serde",
+    "revm-database/serde",
+    "revm/serde",
+]
+test-utils = [
+    "reth-trie-common/test-utils",
+    "reth-primitives-traits/test-utils",
+    "reth-chainspec/test-utils",
+    "reth-db/test-utils",
+    "reth-db-api/test-utils",
+    "reth-provider/test-utils",
+    "reth-stages-types/test-utils",
+    "reth-trie/test-utils",
+]
+
+[workspace]

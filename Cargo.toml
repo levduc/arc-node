@@ -362,3 +362,6 @@ strip = false
 # This version of `ark-relations` includes a fix for the issue,
 # as it bumped `tracing-subscriber` to v0.3.0.
 ark-relations = { git = "https://github.com/arkworks-rs/snark.git", rev = "9c528529763f1a0a2e0cba83528f93d32247d621" }
+
+[patch."https://github.com/paradigmxyz/reth"]
+reth-trie-db = { path = "vendor/reth-trie-db" }
