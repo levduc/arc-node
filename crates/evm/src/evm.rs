@@ -2062,17 +2062,20 @@ mod tests {
         if hardfork_flags.is_active(ArcHardfork::Zero7) {
             instruction.insert_instruction(
                 SELFDESTRUCT,
-                revm_interpreter::Instruction::new(arc_network_selfdestruct_zero7, 5000),
+                revm_interpreter::Instruction::new(arc_network_selfdestruct_zero7),
+                5000,
             );
         } else if hardfork_flags.is_active(ArcHardfork::Zero5) {
             instruction.insert_instruction(
                 SELFDESTRUCT,
-                revm_interpreter::Instruction::new(arc_network_selfdestruct_zero5, 5000),
+                revm_interpreter::Instruction::new(arc_network_selfdestruct_zero5),
+                5000,
             );
         } else {
             instruction.insert_instruction(
                 SELFDESTRUCT,
-                revm_interpreter::Instruction::new(arc_network_selfdestruct_zero4, 5000),
+                revm_interpreter::Instruction::new(arc_network_selfdestruct_zero4),
+                5000,
             );
         }
 
@@ -4070,12 +4073,12 @@ mod tests {
             if hardfork_flags.is_active(ArcHardfork::Zero7) {
                 instruction.insert_instruction(
                     SELFDESTRUCT,
-                    revm_interpreter::Instruction::new(arc_network_selfdestruct_zero7, 5000),
+                    revm_interpreter::Instruction::new(arc_network_selfdestruct_zero7),
                 );
             } else if hardfork_flags.is_active(ArcHardfork::Zero5) {
                 instruction.insert_instruction(
                     SELFDESTRUCT,
-                    revm_interpreter::Instruction::new(arc_network_selfdestruct_zero5, 5000),
+                    revm_interpreter::Instruction::new(arc_network_selfdestruct_zero5),
                 );
             }
 
@@ -4430,12 +4433,12 @@ mod tests {
             if hardfork_flags.is_active(ArcHardfork::Zero7) {
                 instruction.insert_instruction(
                     SELFDESTRUCT,
-                    revm_interpreter::Instruction::new(arc_network_selfdestruct_zero7, 5000),
+                    revm_interpreter::Instruction::new(arc_network_selfdestruct_zero7),
                 );
             } else if hardfork_flags.is_active(ArcHardfork::Zero5) {
                 instruction.insert_instruction(
                     SELFDESTRUCT,
-                    revm_interpreter::Instruction::new(arc_network_selfdestruct_zero5, 5000),
+                    revm_interpreter::Instruction::new(arc_network_selfdestruct_zero5),
                 );
             }
 
@@ -5660,12 +5663,12 @@ mod tests {
             if hardfork_flags.is_active(ArcHardfork::Zero7) {
                 instruction.insert_instruction(
                     SELFDESTRUCT,
-                    revm_interpreter::Instruction::new(arc_network_selfdestruct_zero7, 5000),
+                    revm_interpreter::Instruction::new(arc_network_selfdestruct_zero7),
                 );
             } else if hardfork_flags.is_active(ArcHardfork::Zero5) {
                 instruction.insert_instruction(
                     SELFDESTRUCT,
-                    revm_interpreter::Instruction::new(arc_network_selfdestruct_zero5, 5000),
+                    revm_interpreter::Instruction::new(arc_network_selfdestruct_zero5),
                 );
             }
 

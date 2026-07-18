@@ -27,6 +27,7 @@
 pub mod assembler;
 pub mod evm;
 pub mod executor;
+pub mod parallel;
 pub mod frame_result;
 pub mod handler;
 mod log;
