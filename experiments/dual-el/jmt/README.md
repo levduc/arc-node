@@ -40,3 +40,19 @@ Bare-metal harness (headtohead.sh): two host ELs, identical mock-CL + transfer l
   exactly once per committed block via reth's write_trie_updates hook (which carries the block number).
   = the "multi-validator idempotency" follow-up already flagged. Until then reth PRODUCES a valid JMT-rooted block
   (block 1 validated) but cannot sustain a live chain under speculative building.
+
+## Full fusion (incremental, O(k log n)) attempt — the reth-provider wall (2026-07-18)
+The correct incremental JMT (read-only speculative overlay + advance base only at canonical commit)
+needs a commit hook with the account changes + a mutable tx. That hook is `write_hashed_state`
+(HashedStateWriter) — implemented in **reth-provider** (35k LOC, 64 deps), NOT in the already-vendored
+reth-trie-db. Vendoring reth-provider via [patch] hit cargo dependency-resolution complexity: ~15 of
+its sibling reth crates are git-only (reth-codecs, reth-chain-state, reth-execution-types,
+reth-nippy-jar, reth-node-types, reth-*-types, …) and don't unify when the crate is patched
+standalone the way reth-trie-db (whose deps were all in Arc's workspace) did. Resolvable via the
+workspace-member route (add those ~15 as Arc workspace deps + make reth-provider a member), but that
+is genuinely tedious multi-day plumbing and higher-risk (reth-provider is central). Backed out to keep
+the tree green (reth-trie-db JMT patch intact). THIS is the concrete reason "replace MPT with JMT" is
+hard: the incremental/persistent path forces vendoring reth's storage SUBSYSTEM (provider+persistence),
+crate by crate — which converges with just building the lean EL where JMT is native.
+STATUS: reth 2.3 produces + self-validates JMT-rooted blocks via the STATELESS root (sustaining,
+0 mismatches). The O(k log n) incremental version is blocked on the reth-provider vendoring slog.
