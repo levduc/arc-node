@@ -6645,9 +6645,9 @@ dependencies = [
 
 [[package]]
 name = "jmt"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf2a10370b45cd850e64993ccd81d25ea2d4b5b0d0312546e7489fed82064f2e"
+checksum = "b37ade62ca224945201e0c6d65e7a389ada90217895f7aa281470212ce4dddb0"
 dependencies = [
  "anyhow",
  "borsh",
@@ -12847,8 +12847,14 @@ name = "reth-trie-db"
 version = "2.3.0"
 dependencies = [
  "alloy-primitives",
+ "anyhow",
+ "arc-payment-commitment",
+ "borsh",
+ "jmt",
  "metrics",
+ "once_cell",
  "parking_lot",
+ "redb",
  "reth-db-api",
  "reth-execution-errors",
  "reth-metrics",

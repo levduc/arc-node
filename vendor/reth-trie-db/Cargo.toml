@@ -10,6 +10,12 @@ description = "Database integration with merkle trie implementation"
 
 
 [dependencies]
+arc-payment-commitment = { path = "../../crates/arc-payment-commitment" }
+jmt = "0.12"
+borsh = "1"
+anyhow = "1"
+redb = "2"
+once_cell = "1"
 # reth
 reth-primitives-traits = { version = "0.4.1", default-features = false, features = ["std"] }
 reth-execution-errors = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
