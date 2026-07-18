@@ -2481,6 +2481,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "assert_matches"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
+
+[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7586,6 +7592,7 @@ dependencies = [
  "libc",
  "libz-sys",
  "lz4-sys",
+ "tikv-jemalloc-sys",
  "zstd-sys",
 ]
 
@@ -12039,7 +12046,6 @@ dependencies = [
 [[package]]
 name = "reth-provider"
 version = "2.3.0"
-source = "git+https://github.com/paradigmxyz/reth?tag=v2.3.0#9384bc53d8c0c77e59cac83fdaaf3b372c6d2216"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928 0.4.5",
@@ -12047,11 +12053,13 @@ dependencies = [
  "alloy-genesis",
  "alloy-primitives",
  "alloy-rpc-types-engine",
+ "assert_matches",
  "eyre",
  "itertools 0.14.0",
  "metrics",
  "notify",
  "parking_lot",
+ "rand 0.8.6",
  "rayon",
  "reth-chain-state",
  "reth-chainspec",
@@ -12073,15 +12081,20 @@ dependencies = [
  "reth-storage-api",
  "reth-storage-errors",
  "reth-tasks",
+ "reth-testing-utils",
  "reth-tokio-util",
+ "reth-tracing",
  "reth-trie",
  "reth-trie-db",
  "revm-database",
+ "revm-database-interface",
  "revm-state",
  "rocksdb",
  "smallvec",
  "strum 0.27.2",
+ "tempfile",
  "tokio",
+ "tokio-stream",
  "tracing",
 ]
 
