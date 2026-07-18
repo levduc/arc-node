@@ -126,3 +126,45 @@ lean lane: (1) persistence (batch fsync / faster disk — measured 55× swing ho
 (2) sharded-JMT or reth sparse-trie root (~11 ms), (3) Block-STM execute (~3 ms). grevm matters most
 on the EVM lane (diverse contracts) and as the builder accelerator; on the payment lane it's the
 third lever, not the first.
+
+## INTEGRATION STATUS (overnight 2026-07-16, branch gravity-payment-lane)
+
+Stages 1-2 DONE, committed, tree green. Stage 3 (live wiring) blocked on a documented
+architectural wall — NOT a grevm defect.
+
+### Done + tested (commits: grevm-add, block-stm-green 5678e7a, differential d3de0b4)
+- grevm added; **dependency layer resolves + compiles clean** — revm 40.0.3 / alloy-evm 0.36
+  already match grevm's exact pins. The feared multi-week dep wall DOES NOT EXIST.
+- `crates/evm/src/parallel.rs`: `parallel_execute_block()` + `sequential_execute_block()`
+  wrapping grevm's `Scheduler` over Arc's revm-40 types. `parallel_enabled()` reads
+  `ARC_PARALLEL_EVM`.
+- `crates/evm/tests/blockstm.rs` (integration test — compiles the lib normally, sidesteps the
+  pre-existing bit-rotted `evm.rs` #[cfg(test)] module): **3/3 GREEN** —
+  executes 200 Arc transfers (all succeed), deterministic across runs, and DIFFERENTIAL
+  parallel==sequential on a mixed disjoint+hot-recipient block (identical per-tx gas AND final
+  balances/nonces every account = the consensus-correctness property).
+
+### Stage 3 blocker (the live payment EL actually using grevm) — architectural, precise
+grevm needs an **owned `DB: DatabaseRef + Send + Sync`** (ParallelState<DB> takes it by value).
+Arc's `ArcBlockExecutor` runs inside alloy-evm's tx-by-tx `BlockExecutor`, which holds the state
+as `&mut State<DB>` *inside* the constructed `Evm`. Three concrete gaps:
+1. **DB extraction**: can't hand grevm an owned DatabaseRef from behind `self.evm.db_mut()`
+   (`&mut State<DB>`). `State<DB>: DatabaseRef` only when `DB: DatabaseRef`, and it's borrowed
+   by the Evm anyway. Overriding `BlockExecutor::execute_block` (which DOES receive the whole
+   tx iterator) still can't produce the owned DatabaseRef grevm requires.
+2. **Receipts**: Arc's `receipt_builder.build_receipt` wants a per-tx `&EvmState` delta; grevm
+   returns `Vec<ExecutionResult>` + one combined `BundleState`, not per-tx state deltas — so
+   receipts must be rebuilt from `ExecutionResult` alone.
+3. **Arc fee accounting**: per-tx `tx_gas_used`→EMA/base-fee accounting and pre-tx gas checks
+   are interleaved with serial execution; must be reconstructed post-hoc from grevm results.
+
+### The correct path (gravity's architecture) — multi-day, consensus-critical
+gravity solved exactly this with a SEPARATE executor path, not an override:
+`fn parallel_executor(db: DB) -> Box<dyn ParallelExecutor>` constructed from the **raw db before
+Evm wrapping** (`GrevmExecutor::new(chain_spec, cfg, db)` → `ParallelState<DB>`), selected at the
+node's block-execution wiring. For Arc that means: (a) a new `ArcParallelExecutor` built from the
+raw `DatabaseRef`; (b) rebuild receipts + Arc fee accounting from grevm results; (c) route the
+payment-lane's block execution (payload build + validation) to it behind `--arc.parallel-evm`;
+(d) differential-replay on a live testnet. `parallel_execute_block()` (done, tested) is the engine
+this path calls. Estimate: the receipts/fee reconstruction + wiring + validation is the bulk of
+the earlier 1.5-2 week estimate; the engine + dep layer (the parts feared hardest) are DONE.
