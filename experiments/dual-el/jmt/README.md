@@ -26,3 +26,17 @@ Single node, Engine API (fcU+attrs -> getPayloadV4 -> newPayloadV4), empty block
 - Only the sync provider root path is patched; the parallel sparse-trie task is bypassed via flags.
   A production build would also patch/replace that path (or make JMT the parallel task).
 - Storage tries unsupported (payment accounts have none) — accounts-only commitment.
+
+## Live 2h head-to-head attempt (2026-07-18) — MPT ran, JMT stalled at block 2 (correctness, not perf)
+Bare-metal harness (headtohead.sh): two host ELs, identical mock-CL + transfer load, only ARC_PAYMENT_ROOT differs.
+- MPT lane: 334 blocks in ~90s, avg state_root 1.55 ms (live reth, small empty-chain state, sync overlay path).
+- JMT lane: stalled at block 1. Root cause (measured): reth's payload builder calls overlay_root_with_updates
+  SPECULATIVELY ~11x per block (1734 candidate builds in ~150s on the MPT lane). Our first-cut JMT store MUTATES
+  a shared global tree + advances a version on EVERY call, so by validation time the tree is polluted by discarded
+  candidate blocks -> committed block's root != re-executed root -> "Re-executed state root does not match" -> invalid.
+- This is a CORRECTNESS bug, not a perf result: overlay_root_with_updates MUST be a PURE function (reth's MPT is —
+  it reads the immutable DB trie + applies the overlay in-memory, persisting only on block commit). The fix:
+  (1) overlay computes read-only from a persisted base (no speculative mutation); (2) advance/persist the base
+  exactly once per committed block via reth's write_trie_updates hook (which carries the block number).
+  = the "multi-validator idempotency" follow-up already flagged. Until then reth PRODUCES a valid JMT-rooted block
+  (block 1 validated) but cannot sustain a live chain under speculative building.
