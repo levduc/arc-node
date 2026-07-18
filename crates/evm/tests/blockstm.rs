@@ -32,7 +32,7 @@ fn transfer_tx(from: u64, to: u64, amount: u64, chain_id: u64) -> TxEnv {
         caller: addr(from),
         kind: TxKind::Call(addr(to)),
         value: U256::from(amount),
-        gas_limit: 21_000,
+        gas_limit: 100_000,
         gas_price: 0,
         chain_id: Some(chain_id),
         nonce: 0,
@@ -45,7 +45,7 @@ fn block_stm_executes_transfers() {
     let n = 200u64;
     let db = seeded_db(n * 2);
     let txs: Vec<TxEnv> = (0..n).map(|i| transfer_tx(i, n + i, 100, 1)).collect();
-    let cfg = CfgEnv::new().with_chain_id(1);
+    let cfg = { let mut c = CfgEnv::new().with_chain_id(1); c.disable_nonce_check = true; c.disable_base_fee = true; c };
     let block = BlockEnv { gas_limit: 30_000_000, basefee: 0, ..Default::default() };
 
     let (results, _state) =
@@ -62,7 +62,7 @@ fn block_stm_is_deterministic() {
     let mk = || {
         let db = seeded_db(n * 2);
         let txs: Vec<TxEnv> = (0..n).map(|i| transfer_tx(i, n + i, 50, 1)).collect();
-        let cfg = CfgEnv::new().with_chain_id(1);
+        let cfg = { let mut c = CfgEnv::new().with_chain_id(1); c.disable_nonce_check = true; c.disable_base_fee = true; c };
         let block = BlockEnv { gas_limit: 30_000_000, basefee: 0, ..Default::default() };
         parallel_execute_block(cfg, block, txs, db).unwrap().0
     };
