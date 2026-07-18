@@ -577,6 +577,25 @@ where
     fn evm(&self) -> &Self::Evm {
         &self.evm
     }
+
+    /// Whole-block entry point. When `ARC_PARALLEL_EVM` is set (payment lane only), the
+    /// dedicated Block-STM path is used; otherwise byte-identical to the default serial loop.
+    /// The flag gate means the EVM lane and every existing caller are entirely unaffected.
+    fn execute_block(
+        mut self,
+        transactions: impl IntoIterator<Item = impl ExecutableTx<Self>>,
+    ) -> Result<BlockExecutionResult<Self::Receipt>, BlockExecutionError>
+    where
+        Self: Sized,
+    {
+        // Step 1: seam established; parallel branch is filled in a later step. For now the
+        // flag path and the default path are identical serial execution (no behavior change).
+        self.apply_pre_execution_changes()?;
+        for tx in transactions {
+            self.execute_transaction(tx)?;
+        }
+        self.finish().map(|(_, result)| result)
+    }
 }
 
 #[cfg(test)]
