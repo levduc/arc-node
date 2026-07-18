@@ -35,16 +35,20 @@ workload).
 
 | structure | scale | 4,761 updates/block | per-update |
 |---|---|---|---|
-| **jmt crate, out-of-the-box (single-threaded)** | 1M accts | **65 ms/block** | 13.7 µs |
-| **jmt crate, out-of-the-box** | 10M accts | *(run in progress — expect ~75-90 ms/block from depth growth)* | ~16-19 µs |
-| reth MPT, live payment lane (parallel sparse-trie task, keccak) | 10M accts | **2.6–12 ms/block** | **~0.5–2.5 µs** |
+| jmt out-of-the-box (single-threaded) | 1M accts | 65 ms/block | 13.7 µs |
+| jmt out-of-the-box (single-threaded) | 10M accts | **80.9 ms/block** | 17.0 µs |
+| **jmt SHARDED x16 forest (rayon, root=keccak(16 shard roots))** | 10M accts | **10.84 ms/block (p95 12.9)** | **2.3 µs** |
+| reth MPT, live payment lane (parallel sparse-trie task, keccak) | 10M accts | 2.6–12 ms/block | ~0.5–2.5 µs |
 | our dense in-RAM Merkle (paper App. E `merkle_acc`) | 25M leaves | — | ~11 µs |
 
-**Honest headline: the naive JMT is ~6× SLOWER than reth's tuned MPT machinery.** The
-"JMT beats MPT" intuition comes from comparing JMT against *naive* MPT implementations;
-reth 2.x's parallel sparse-trie + prefix-set machinery is anything but naive. The jmt crate's
-`put_value_set` is single-threaded; Aptos gets its throughput from sharding/pipelining above
-the tree, and gravity-reth from a 16-way parallel rewrite — the structure alone buys nothing.
+**Honest headline, two parts:** (1) naive JMT is ~7× SLOWER than reth's tuned MPT machinery —
+the "JMT beats MPT" intuition only holds against naive MPTs. (2) **A 16-way sharded JMT forest
+(each shard an independent JMT by first key-nibble; lane root = keccak of the 16 shard roots)
+reaches 10.84 ms/block — PARITY with reth's parallel sparse-trie on identical hardware and
+workload** — implemented in ~80 lines (`jmt_bench --sharded`). Sharding is embarrassingly
+deterministic and proof-friendly (shard proof + 16-root preimage).
+(Context: Aptos gets its production throughput from sharding/pipelining above the tree, and
+gravity-reth from a 16-way parallel rewrite — the structure alone buys nothing; parallelism does.)
 
 ## What JMT DOES buy (and what it costs)
 
@@ -66,16 +70,23 @@ Costs:
   (TreeReader/Writer over a new table) — a focused but consensus-critical patch to our fork,
   same blast-radius class as the gravity nested-trie experience.
 
-## Recommendation
+## Recommendation — FOR THE PAYMENT LANE (per project direction)
 
-1. **Do NOT swap the live lane's MPT for stock jmt** — it would be a measured regression at
-   today's scale. reth's sparse-trie cache is the state of the art we already ship.
-2. **Adopt JMT as the commitment for the FUTURE minimal payment EL** (the from-scratch lane the
-   paper points to): there, simplicity + versioning + proofs outweigh raw speed, and a
-   parallelized `put_value_set` (16-way by key-prefix, gravity-style, over independent subtrees)
-   is a tractable optimization that should land it in the low-single-digit ms/block range.
-3. **Next experiments** (cheap, high-info):
-   a. parallel batch update prototype over jmt (rayon by first key nibble) — does 65 ms → <8 ms?
-   b. MDBX-backed TreeReader/Writer + cold-start benchmark (the beyond-RAM regime the paper
-      cares about — where reth MPT collapsed to 27.8 ms/blk on real disk state).
-   c. index-keyed KeyHash for preseeded accounts (locality experiment, JMT edition).
+1. Stock jmt swap on the live lane: NO (measured regression). **Sharded-x16 JMT forest: YES,
+   viable** — parity speed today (10.84 vs 2.6-12 ms) with three structural wins reth MPT
+   lacks: native versioned roots (historical state without changesets/unwinds), KV-native node
+   storage (trivial MDBX table; no trie-table zoo — recall the gravity failure mode), and
+   ics23 proofs incl. non-membership (feeds the agent-registry/channel direction).
+2. Integration path into the payment EL (our fork): new node flag `--arc.payment-root=jmt16`;
+   swap the three root sites (provider state_root*, engine-tree root path, trie-updates persist)
+   for the sharded forest; JMT node batches into one new MDBX table; genesis init writes the
+   10M preseed via 16 parallel put_value_sets (measured build: minutes). Consensus-legal because
+   the lane's root only needs cross-validator determinism. Differential harness exists.
+3. **Next experiments** (in order):
+   a. [DONE — 10.84 ms] sharded parallel forest prototype.
+   b. MDBX-backed TreeReader/Writer + cold-start benchmark — the beyond-RAM regime where reth
+      MPT collapsed to 27.8 ms/blk on real disk state; JMT's sequential-version node layout
+      should shine exactly there. THIS is the decisive experiment.
+   c. index-keyed KeyHash for preseeded accounts (locality win, JMT edition).
+   d. combine with grevm (block-stm-for-arc.md): parallel exec + sharded root =
+      the full parallel payment-lane pipeline.

@@ -50,20 +50,30 @@ Ours maps to:
 5. Validation: differential replay (same fixture through serial + parallel executor, byte-identical
    receipts/state root) — the harness from the reth-2.0 port validation exists.
 
-## Expected gains — grounded in OUR measurements (be honest)
+## Expected gains — PAYMENT LANE FIRST (revised for the 10k-TPS regime)
+
+The original analysis (below, kept for honesty) said "payment lane moot" — that was anchored to
+the 1,500 tx/s era. **At the current target regime (200M gas, ~9,500 transfers/block, 10k+ TPS)
+the math flips:**
+
+- Measured (fleet 2h run): payment exec = **64.4 ms/block at 4,761 txs** (13.5 µs/tx, one core).
+- At 9,500-tx blocks: **~130–300 ms/block of serial execution — the entire 250 ms cadence budget.**
+- And it is paid TWICE per height (proposer build + validator re-execute), on every validator.
+
+Payment-lane transfers are grevm's best case: disjoint sender/recipient pairs → near-empty DAG →
+near-linear scaling. The ONE hot account in a pure-transfer block is the fee recipient — and
+grevm's miner-reward deferral (NoRewardHandler + lazy commit) exists precisely for that.
+Expected: 64 ms → ~8–12 ms at 4,761 txs; ~130–300 ms → ~20–40 ms at 9,500 txs on 8–16 cores.
+**That converts execution from cadence-killer back to rounding error at 10k TPS — grevm's
+primary target here is the payment lane**, with the EVM lane's contract traffic as the bonus.
 
 | lane / workload | today (measured) | Block-STM effect |
 |---|---|---|
-| payment lane, native transfers | exec ≈ 13.5-33 µs/tx; exec is ~10-25% of block wall time (root+persist dominate) | independent transfers parallelize near-linearly, BUT Amdahl: shaving 13.5µs→~3µs/tx cuts block time ≤15%. **Modest.** |
-| EVM lane, guzzler (hot contract+counter) | strictly serial dependency chain (measured in `contention`) | **zero** — Block-STM cannot parallelize a serial chain; grevm handles it via key_tx (graceful, not faster) |
-| EVM lane, diverse contract mix (realistic dApp traffic) | not measured on our stack; gravity claims 4x at 100k accts | the real win: this is where grevm's DAG+STM shines. Expect 2-5x exec on multi-contract workloads |
-| proposer build path | build = one serial execution pass | same speedup applies to building — improves max cadence under full blocks |
-
-Conclusion: grevm is worth integrating **for the EVM lane** (general contract traffic) and as the
-builder accelerator; for the payment lane's native transfers it is nearly moot — our lane is
-signature/root/persistence-bound, exactly as the paper's App. E measured. Priorities stay:
-commitment (see jmt-state-commitment.md) > persistence > parallel EVM, for the payment lane;
-the reverse for the EVM lane.
+| payment lane @1.5k TPS | exec 13.5-33 µs/tx, minor share | modest (~15% block time) |
+| **payment lane @10k TPS (200M blocks)** | **exec ≈ cadence budget (130-300 ms/blk serial)** | **the unlock: ~8-16x on disjoint transfers + fee-recipient deferral** |
+| EVM lane, guzzler (hot contract) | strictly serial chain (measured) | zero — cannot parallelize a dependency chain |
+| EVM lane, diverse contracts | unmeasured on our stack | 2-5x plausible (gravity's claim) |
+| proposer build path | serial pass per block | same speedup — directly raises max cadence |
 
 ## Effort estimate
 

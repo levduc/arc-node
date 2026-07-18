@@ -66,7 +66,82 @@ fn acct_value(i: u64, balance: u128) -> OwnedValue {
     v
 }
 
+/// Sharded mode: a forest of 16 independent JMTs partitioned by the first nibble of the
+/// KeyHash; per-block updates run in parallel (rayon), lane root = keccak(16 shard roots).
+/// This is the gravity-nested-trie trick applied to JMT — deterministic and provable
+/// (proof = shard proof + 16-root preimage).
+fn run_sharded(n: u64, per_block: u64, blocks: u64) -> anyhow::Result<()> {
+    use rayon::prelude::*;
+    let stores: Vec<MemStore> = (0..16).map(|_| MemStore::default()).collect();
+    println!("[sharded x16] building {n} accounts...");
+    let t0 = Instant::now();
+    let mut versions = [0u64; 16];
+    let chunk = 400_000u64;
+    let mut i = 0u64;
+    while i < n {
+        let hi = (i + chunk).min(n);
+        let mut per_shard: Vec<Vec<(KeyHash, Option<OwnedValue>)>> = (0..16).map(|_| Vec::new()).collect();
+        for j in i..hi {
+            let k = acct_key(j);
+            per_shard[(k.0[0] >> 4) as usize].push((k, Some(acct_value(j, 10u128.pow(18)))));
+        }
+        let vsnap = versions;
+        let batches: Vec<_> = stores.par_iter().zip(per_shard.into_par_iter()).zip(vsnap.par_iter())
+            .map(|((store, batch), ver)| {
+                if batch.is_empty() { return Ok(None); }
+                let tree = JellyfishMerkleTree::<_, sha2::Sha256>::new(store);
+                let (_r, tub) = tree.put_value_set(batch, *ver)?;
+                store.write_node_batch(&tub.node_batch)?;
+                Ok::<_, anyhow::Error>(Some(()))
+            }).collect::<Result<Vec<_>, _>>()?;
+        for (s_idx, b) in batches.iter().enumerate() { if b.is_some() { versions[s_idx] += 1; } }
+        i = hi;
+    }
+    println!("[sharded] build done: {:.1}s", t0.elapsed().as_secs_f64());
+
+    println!("[sharded] measuring {blocks} blocks x {per_block} updates...");
+    let mut times = Vec::new();
+    let mut cursor = 0u64;
+    for b in 0..blocks {
+        let mut per_shard: Vec<Vec<(KeyHash, Option<OwnedValue>)>> = (0..16).map(|_| Vec::new()).collect();
+        for k in 0..per_block {
+            let idx = (cursor + k) % n;
+            let kh = acct_key(idx);
+            per_shard[(kh.0[0] >> 4) as usize].push((kh, Some(acct_value(idx, 2 * 10u128.pow(18) + b as u128))));
+        }
+        cursor = (cursor + per_block) % n;
+        let vsnap = versions;
+        let t = Instant::now();
+        let roots: Vec<_> = stores.par_iter().zip(per_shard.into_par_iter()).zip(vsnap.par_iter())
+            .map(|((store, batch), ver)| {
+                let tree = JellyfishMerkleTree::<_, sha2::Sha256>::new(store);
+                let (root, tub) = tree.put_value_set(batch, *ver)?;
+                store.write_node_batch(&tub.node_batch)?;
+                Ok::<_, anyhow::Error>(root)
+            }).collect::<Result<Vec<_>, _>>()?;
+        // lane root = hash of the 16 shard roots
+        use tiny_keccak::{Hasher as _, Keccak};
+        let mut hasher = Keccak::v256();
+        for r in &roots { hasher.update(&r.0); }
+        let mut out = [0u8; 32]; hasher.finalize(&mut out);
+        let dt = t.elapsed().as_secs_f64() * 1000.0;
+        for v in versions.iter_mut() { *v += 1; }
+        times.push(dt);
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let avg: f64 = times.iter().sum::<f64>() / times.len() as f64;
+    println!("[sharded x16] JMT @{}M, {} upd/blk: avg {:.2} ms/block p50 {:.2} p95 {:.2} ({:.1} µs/upd)",
+             n / 1_000_000, per_block, avg, times[times.len()/2],
+             times[(times.len() as f64 * 0.95) as usize], avg * 1000.0 / per_block as f64);
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
+    if std::env::args().any(|a| a == "--sharded") {
+        let args: Vec<u64> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
+        return run_sharded(*args.first().unwrap_or(&10_000_000),
+                           *args.get(1).unwrap_or(&4761), *args.get(2).unwrap_or(&30));
+    }
     let args: Vec<u64> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
     let n: u64 = *args.first().unwrap_or(&10_000_000);
     let per_block: u64 = *args.get(1).unwrap_or(&4761);
