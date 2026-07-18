@@ -8,10 +8,13 @@ name = "utxo-bench"
 path = "src/main.rs"
 
 [dependencies]
+jmt = "0.12"
+anyhow = "1"
+tiny-keccak = { version = "2.0", features = ["keccak"] }
 alloy-primitives = "1.6"
 alloy-trie = "0.9.5"
 curve25519-dalek-ng = { version = "4.1", features = ["u64_backend"] }
-sha2 = "0.9"
+sha2 = "0.10"
 k256 = { version = "0.13", features = ["ecdsa"] }
 rayon = "1"
 
@@ -20,3 +23,7 @@ opt-level = 3
 
 # standalone: detach from the arc-node workspace (and its reth fork patch)
 [workspace]
+
+[[bin]]
+name = "jmt_bench"
+path = "src/bin/jmt_bench.rs"
