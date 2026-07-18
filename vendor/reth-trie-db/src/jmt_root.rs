@@ -71,20 +71,16 @@ impl TreeWriter for RedbShard {
     }
 }
 
-struct JmtState {
-    tree: ShardedJmt<RedbShard>,
-    version: Version,
-}
-static JMT: OnceCell<Mutex<JmtState>> = OnceCell::new();
+static JMT: OnceCell<Mutex<ShardedJmt<RedbShard>>> = OnceCell::new();
 
-fn jmt() -> &'static Mutex<JmtState> {
+fn jmt() -> &'static Mutex<ShardedJmt<RedbShard>> {
     JMT.get_or_init(|| {
         let base = std::env::var("ARC_JMT_STORE_PATH").unwrap_or_else(|_| "jmt-store".into());
         std::fs::create_dir_all(&base).ok();
         let shards = (0..SHARDS)
             .map(|i| RedbShard::open(std::path::Path::new(&base).join(format!("shard{i:02}.redb"))))
             .collect();
-        Mutex::new(JmtState { tree: ShardedJmt::new(shards), version: 0 })
+        Mutex::new(ShardedJmt::new(shards))
     })
 }
 
@@ -93,17 +89,20 @@ pub fn jmt_enabled() -> bool {
     std::env::var("ARC_PAYMENT_ROOT").map(|v| v == "jmt").unwrap_or(false)
 }
 
-/// Compute the JMT lane root over the block's changed accounts.
-pub fn jmt_overlay_root(post_state: &HashedPostStateSorted) -> B256 {
-    let mut st = jmt().lock().unwrap();
-    let version = st.version;
-    let writes = post_state.accounts().iter().map(|(hashed_addr, maybe_acct)| {
+/// Compute the JMT lane root over the block's changed accounts, versioned by the block being
+/// built (`block_number`, = parent+1). This is IDEMPOTENT: reth calls overlay_root ~11x per block
+/// while speculatively refining the payload, but every call for the same block uses the same JMT
+/// version, so re-computes and the final build vs the validation agree. The JMT root itself is
+/// version-independent (a function of the leaf set), so persisting speculative candidates at the
+/// same version is safe last-writer-wins — the validated block's writeset persists last, giving
+/// block N+1 the correct cumulative base at version N.
+pub fn jmt_overlay_root(post_state: &HashedPostStateSorted, block_number: u64) -> B256 {
+    let mut tree = jmt().lock().unwrap();
+    let writes: Vec<_> = post_state.accounts().iter().map(|(hashed_addr, maybe_acct)| {
         let rec = maybe_acct
             .as_ref()
             .map(|a| encode_account(a.nonce, B256::from(a.balance.to_be_bytes())));
         (*hashed_addr, rec)
-    });
-    let root = st.tree.commit(writes, version).expect("jmt commit");
-    st.version += 1;
-    root
+    }).collect();
+    tree.commit(writes, block_number).expect("jmt commit")
 }

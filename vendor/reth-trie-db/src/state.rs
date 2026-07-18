@@ -2,6 +2,7 @@ use crate::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
 use alloy_primitives::{keccak256, map::B256Map, BlockNumber, B256};
 use reth_db_api::{
     models::{AccountBeforeTx, BlockNumberAddress},
+    cursor::DbCursorRO,
     transaction::DbTx,
 };
 use reth_execution_errors::StateRootError;
@@ -221,7 +222,14 @@ impl<'a, TX: DbTx, A: crate::TrieTableAdapter> DatabaseStateRoot<'a, TX>
         post_state: &HashedPostStateSorted,
     ) -> Result<(B256, TrieUpdates), StateRootError> {
         if crate::jmt_root::jmt_enabled() {
-            let root = crate::jmt_root::jmt_overlay_root(post_state);
+            // parent block number = tip in CanonicalHeaders; the block being rooted is parent+1.
+            let parent = tx
+                .cursor_read::<reth_db_api::tables::CanonicalHeaders>()
+                .ok()
+                .and_then(|mut c| c.last().ok().flatten())
+                .map(|(n, _)| n)
+                .unwrap_or(0);
+            let root = crate::jmt_root::jmt_overlay_root(post_state, parent + 1);
             return Ok((root, TrieUpdates::default()));
         }
         let prefix_sets = post_state.construct_prefix_sets().freeze();
