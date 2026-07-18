@@ -168,3 +168,17 @@ payment-lane's block execution (payload build + validation) to it behind `--arc.
 (d) differential-replay on a live testnet. `parallel_execute_block()` (done, tested) is the engine
 this path calls. Estimate: the receipts/fee reconstruction + wiring + validation is the bulk of
 the earlier 1.5-2 week estimate; the engine + dep layer (the parts feared hardest) are DONE.
+
+## WIRING PROGRESS (2026-07-18, live-EL integration attempt)
+- execute_block override SEAM committed (serial-only, behavior-identical, flag-gated). 3/3 tests green.
+- PROBE: adding `+ DatabaseRef` to the executor's DB bound does NOT break external callers
+  (the concrete payment-EL DB IS a DatabaseRef — the crux is satisfiable!). It breaks only
+  INTERNAL method resolution: compute_gas_values / compute_gas_values_legacy /
+  validate_extra_data_base_fee live in the sibling impl block (executor.rs:206) with the looser
+  `DB: StateDB` bound. FIX = propagate `DB: StateDB + DatabaseRef` to BOTH impl blocks that carry
+  `E`: line 206 (`impl ArcBlockExecutor`) and line 351 (`impl BlockExecutor`). Block at 120 is
+  Spec-only, untouched. This is bounded (2 impl headers), not a wall.
+- REMAINING after bound propagation: fill execute_block parallel branch — build Vec<TxEnv> from
+  into_parts(), call parallel_execute_block(self.evm.cfg_env(), self.evm.block(), txs, <dbref of
+  self.evm.db()>), then commit grevm bundle + build receipts (the receipt build from
+  Vec<ExecutionResult> vs Arc's per-tx-state ReceiptBuilderCtx is the last real unknown).
