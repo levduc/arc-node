@@ -21,6 +21,7 @@ arbitrary = [
 integration = ["arc-precompiles/integration"]
 
 [dependencies]
+grevm = { workspace = true }
 # alloy
 alloy-consensus = { workspace = true, features = ["serde"] }
 alloy-eips.workspace = true
