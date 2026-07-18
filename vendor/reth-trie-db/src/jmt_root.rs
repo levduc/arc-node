@@ -13,10 +13,8 @@ use alloy_primitives::B256;
 use arc_payment_commitment::{encode_account, ShardedJmt, SHARDS};
 use jmt::storage::{LeafNode, Node, NodeBatch, NodeKey, TreeReader, TreeWriter};
 use jmt::{KeyHash, OwnedValue, Version};
-use once_cell::sync::OnceCell;
 use redb::{Database, ReadableTable, TableDefinition};
 use reth_trie_common::HashedPostStateSorted;
-use std::sync::Mutex;
 
 const NODES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("jmt_nodes");
 const VALUES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("accounts_versioned");
@@ -71,38 +69,28 @@ impl TreeWriter for RedbShard {
     }
 }
 
-static JMT: OnceCell<Mutex<ShardedJmt<RedbShard>>> = OnceCell::new();
-
-fn jmt() -> &'static Mutex<ShardedJmt<RedbShard>> {
-    JMT.get_or_init(|| {
-        let base = std::env::var("ARC_JMT_STORE_PATH").unwrap_or_else(|_| "jmt-store".into());
-        std::fs::create_dir_all(&base).ok();
-        let shards = (0..SHARDS)
-            .map(|i| RedbShard::open(std::path::Path::new(&base).join(format!("shard{i:02}.redb"))))
-            .collect();
-        Mutex::new(ShardedJmt::new(shards))
-    })
-}
-
 /// True when the payment lane should commit with a JMT root instead of the MPT.
 pub fn jmt_enabled() -> bool {
     std::env::var("ARC_PAYMENT_ROOT").map(|v| v == "jmt").unwrap_or(false)
 }
 
-/// Compute the JMT lane root over the block's changed accounts, versioned by the block being
-/// built (`block_number`, = parent+1). This is IDEMPOTENT: reth calls overlay_root ~11x per block
-/// while speculatively refining the payload, but every call for the same block uses the same JMT
-/// version, so re-computes and the final build vs the validation agree. The JMT root itself is
-/// version-independent (a function of the leaf set), so persisting speculative candidates at the
-/// same version is safe last-writer-wins — the validated block's writeset persists last, giving
-/// block N+1 the correct cumulative base at version N.
-pub fn jmt_overlay_root(post_state: &HashedPostStateSorted, block_number: u64) -> B256 {
-    let mut tree = jmt().lock().unwrap();
-    let writes: Vec<_> = post_state.accounts().iter().map(|(hashed_addr, maybe_acct)| {
-        let rec = maybe_acct
-            .as_ref()
-            .map(|a| encode_account(a.nonce, B256::from(a.balance.to_be_bytes())));
-        (*hashed_addr, rec)
-    }).collect();
-    tree.commit(writes, block_number).expect("jmt commit")
+/// Stateless JMT lane root: build a FRESH 16-shard JMT over the FULL account set and return
+/// its root. Because it is a pure function of the account set handed in (which the caller derives
+/// from `tx` + this block's overlay), it is identical across reth's build / validate / witness
+/// contexts — fixing the context-dependent-base bug of the earlier incremental store.
+/// Cost is O(state) per call (naive); the incremental sharded store (parity speed) needs a
+/// commit-lifecycle and is the documented follow-up.
+pub fn jmt_stateless_root(writes: Vec<(B256, Option<OwnedValue>)>) -> B256 {
+    let n = writes.len();
+    let tree = arc_payment_commitment::in_memory();
+    let root = tree.commit(writes, 0).expect("jmt stateless commit");
+    if std::env::var("ARC_JMT_TRACE").is_ok() {
+        eprintln!("JMT accounts={} root={:#x}", n, root);
+    }
+    root
+}
+
+/// Encode a hashed-account record (nonce, balance) for the JMT leaf.
+pub fn encode_acct(nonce: u64, balance_be: [u8; 32]) -> OwnedValue {
+    encode_account(nonce, B256::from(balance_be))
 }

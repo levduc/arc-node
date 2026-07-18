@@ -22,6 +22,36 @@ use std::{
 use tracing::{debug, instrument};
 
 /// Extends [`StateRoot`] with operations specific for working with a database transaction.
+
+/// Build the JMT lane root over the FULL post-block account state: read every account from
+/// `HashedAccounts` (the parent state) and overlay `post_state`'s changes, then hash a fresh JMT.
+/// Pure function of (tx state, post_state) -> identical in build/validate/witness.
+fn jmt_full_root<TX: DbTx>(
+    tx: &TX,
+    post_state: &HashedPostStateSorted,
+) -> Result<B256, StateRootError> {
+    use std::collections::HashMap;
+    use reth_db_api::cursor::DbCursorRO;
+    let mut full: HashMap<B256, reth_primitives_traits::Account> = HashMap::new();
+    let mut cur = tx.cursor_read::<reth_db_api::tables::HashedAccounts>()?;
+    let mut entry = cur.first()?;
+    while let Some((k, v)) = entry {
+        full.insert(k, v);
+        entry = cur.next()?;
+    }
+    for (k, maybe) in post_state.accounts() {
+        match maybe {
+            Some(a) => { full.insert(*k, *a); }
+            None => { full.remove(k); }
+        }
+    }
+    let writes: Vec<(B256, Option<jmt::OwnedValue>)> = full
+        .into_iter()
+        .map(|(k, a)| (k, Some(crate::jmt_root::encode_acct(a.nonce, a.balance.to_be_bytes::<32>()))))
+        .collect();
+    Ok(crate::jmt_root::jmt_stateless_root(writes))
+}
+
 pub trait DatabaseStateRoot<'a, TX>: Sized {
     /// Create a new [`StateRoot`] instance.
     fn from_tx(tx: &'a TX) -> Self;
@@ -208,6 +238,7 @@ impl<'a, TX: DbTx, A: crate::TrieTableAdapter> DatabaseStateRoot<'a, TX>
         tx: &'a TX,
         post_state: &HashedPostStateSorted,
     ) -> Result<B256, StateRootError> {
+        if crate::jmt_root::jmt_enabled() { return jmt_full_root(tx, post_state); }
         let prefix_sets = post_state.construct_prefix_sets().freeze();
         StateRoot::new(
             DatabaseTrieCursorFactory::<_, A>::new(tx),
@@ -221,17 +252,7 @@ impl<'a, TX: DbTx, A: crate::TrieTableAdapter> DatabaseStateRoot<'a, TX>
         tx: &'a TX,
         post_state: &HashedPostStateSorted,
     ) -> Result<(B256, TrieUpdates), StateRootError> {
-        if crate::jmt_root::jmt_enabled() {
-            // parent block number = tip in CanonicalHeaders; the block being rooted is parent+1.
-            let parent = tx
-                .cursor_read::<reth_db_api::tables::CanonicalHeaders>()
-                .ok()
-                .and_then(|mut c| c.last().ok().flatten())
-                .map(|(n, _)| n)
-                .unwrap_or(0);
-            let root = crate::jmt_root::jmt_overlay_root(post_state, parent + 1);
-            return Ok((root, TrieUpdates::default()));
-        }
+        if crate::jmt_root::jmt_enabled() { return Ok((jmt_full_root(tx, post_state)?, TrieUpdates::default())); }
         let prefix_sets = post_state.construct_prefix_sets().freeze();
         StateRoot::new(
             DatabaseTrieCursorFactory::<_, A>::new(tx),
@@ -242,6 +263,7 @@ impl<'a, TX: DbTx, A: crate::TrieTableAdapter> DatabaseStateRoot<'a, TX>
     }
 
     fn overlay_root_from_nodes(tx: &'a TX, input: TrieInputSorted) -> Result<B256, StateRootError> {
+        if crate::jmt_root::jmt_enabled() { return jmt_full_root(tx, input.state.as_ref()); }
         StateRoot::new(
             InMemoryTrieCursorFactory::new(
                 DatabaseTrieCursorFactory::<_, A>::new(tx),
@@ -260,6 +282,7 @@ impl<'a, TX: DbTx, A: crate::TrieTableAdapter> DatabaseStateRoot<'a, TX>
         tx: &'a TX,
         input: TrieInputSorted,
     ) -> Result<(B256, TrieUpdates), StateRootError> {
+        if crate::jmt_root::jmt_enabled() { return Ok((jmt_full_root(tx, input.state.as_ref())?, TrieUpdates::default())); }
         StateRoot::new(
             InMemoryTrieCursorFactory::new(
                 DatabaseTrieCursorFactory::<_, A>::new(tx),
