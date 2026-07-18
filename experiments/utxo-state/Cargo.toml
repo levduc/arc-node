@@ -20,3 +20,7 @@ opt-level = 3
 
 # standalone: detach from the arc-node workspace (and its reth fork patch)
 [workspace]
+
+[[bin]]
+name = "blockstm"
+path = "src/bin/blockstm.rs"
