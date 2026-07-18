@@ -23,33 +23,27 @@ use tracing::{debug, instrument};
 
 /// Extends [`StateRoot`] with operations specific for working with a database transaction.
 
-/// Build the JMT lane root over the FULL post-block account state: read every account from
-/// `HashedAccounts` (the parent state) and overlay `post_state`'s changes, then hash a fresh JMT.
-/// Pure function of (tx state, post_state) -> identical in build/validate/witness.
+/// Incremental JMT lane root: apply ONLY this block's changed accounts (`post_state`) on top of
+/// the persistent committed base, WITHOUT persisting. O(k log n) in the k changed accounts.
+/// Read-only + version-independent => identical across reth's ~11 speculative builds, validation,
+/// and witness re-execution (all read the same committed base). The base is advanced exactly once
+/// per canonical block by `write_hashed_state` -> `arc_payment_commitment::persistent::commit`.
 fn jmt_full_root<TX: DbTx>(
-    tx: &TX,
+    _tx: &TX,
     post_state: &HashedPostStateSorted,
 ) -> Result<B256, StateRootError> {
-    use std::collections::HashMap;
-    use reth_db_api::cursor::DbCursorRO;
-    let mut full: HashMap<B256, reth_primitives_traits::Account> = HashMap::new();
-    let mut cur = tx.cursor_read::<reth_db_api::tables::HashedAccounts>()?;
-    let mut entry = cur.first()?;
-    while let Some((k, v)) = entry {
-        full.insert(k, v);
-        entry = cur.next()?;
-    }
-    for (k, maybe) in post_state.accounts() {
-        match maybe {
-            Some(a) => { full.insert(*k, *a); }
-            None => { full.remove(k); }
-        }
-    }
-    let writes: Vec<(B256, Option<jmt::OwnedValue>)> = full
-        .into_iter()
-        .map(|(k, a)| (k, Some(crate::jmt_root::encode_acct(a.nonce, a.balance.to_be_bytes::<32>()))))
+    let changes: Vec<(B256, Option<jmt::OwnedValue>)> = post_state
+        .accounts()
+        .iter()
+        .map(|(k, maybe)| {
+            (*k, maybe.map(|a| crate::jmt_root::encode_acct(a.nonce, a.balance.to_be_bytes::<32>())))
+        })
         .collect();
-    Ok(crate::jmt_root::jmt_stateless_root(writes))
+    let root = arc_payment_commitment::persistent::readonly_root(&changes);
+    if std::env::var("ARC_JMT_TRACE").is_ok() {
+        eprintln!("JMT readonly changes={} root={:#x}", changes.len(), root);
+    }
+    Ok(root)
 }
 
 pub trait DatabaseStateRoot<'a, TX>: Sized {

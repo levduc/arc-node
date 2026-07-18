@@ -192,3 +192,64 @@ mod tests {
         assert_ne!(r0, r1);
     }
 }
+
+pub mod persistent;
+
+/// redb-backed JMT node store (one shard). Used by the persistent incremental JMT.
+pub struct RedbNodeStore {
+    db: redb::Database,
+}
+impl RedbNodeStore {
+    const NODES: redb::TableDefinition<'static, &'static [u8], &'static [u8]> =
+        redb::TableDefinition::new("jmt_nodes");
+    const VALUES: redb::TableDefinition<'static, &'static [u8], &'static [u8]> =
+        redb::TableDefinition::new("accounts_versioned");
+    pub fn open(path: std::path::PathBuf) -> Self {
+        let db = redb::Database::create(path).expect("open jmt shard");
+        let w = db.begin_write().unwrap();
+        w.open_table(Self::NODES).unwrap();
+        w.open_table(Self::VALUES).unwrap();
+        w.commit().unwrap();
+        Self { db }
+    }
+}
+impl jmt::storage::TreeReader for RedbNodeStore {
+    fn get_node_option(&self, key: &jmt::storage::NodeKey) -> anyhow::Result<Option<jmt::storage::Node>> {
+        use redb::ReadableTable;
+        let r = self.db.begin_read()?;
+        let t = r.open_table(Self::NODES)?;
+        Ok(t.get(borsh::to_vec(key)?.as_slice())?
+            .map(|v| borsh::from_slice::<jmt::storage::Node>(v.value()).unwrap()))
+    }
+    fn get_value_option(&self, ver: jmt::Version, kh: jmt::KeyHash)
+        -> anyhow::Result<Option<jmt::OwnedValue>> {
+        use redb::ReadableTable;
+        let r = self.db.begin_read()?;
+        let t = r.open_table(Self::VALUES)?;
+        let mut lo = kh.0.to_vec(); lo.extend_from_slice(&0u64.to_be_bytes());
+        let mut hi = kh.0.to_vec(); hi.extend_from_slice(&ver.to_be_bytes());
+        Ok(t.range(lo.as_slice()..=hi.as_slice())?.next_back().transpose()?
+            .and_then(|(_, v)| borsh::from_slice::<Option<jmt::OwnedValue>>(v.value()).unwrap()))
+    }
+    fn get_rightmost_leaf(&self) -> anyhow::Result<Option<(jmt::storage::NodeKey, jmt::storage::LeafNode)>> {
+        Ok(None)
+    }
+}
+impl jmt::storage::TreeWriter for RedbNodeStore {
+    fn write_node_batch(&self, batch: &jmt::storage::NodeBatch) -> anyhow::Result<()> {
+        let w = self.db.begin_write()?;
+        {
+            let mut nt = w.open_table(Self::NODES)?;
+            for (k, v) in batch.nodes() {
+                nt.insert(borsh::to_vec(k)?.as_slice(), borsh::to_vec(v)?.as_slice())?;
+            }
+            let mut vt = w.open_table(Self::VALUES)?;
+            for ((ver, kh), val) in batch.values() {
+                let mut key = kh.0.to_vec(); key.extend_from_slice(&ver.to_be_bytes());
+                vt.insert(key.as_slice(), borsh::to_vec(val)?.as_slice())?;
+            }
+        }
+        w.commit()?;
+        Ok(())
+    }
+}

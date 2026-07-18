@@ -54,11 +54,27 @@ case "${1:-}" in
     mockcl mpt 7545 7551
     mockcl jmt 7645 7651
     sleep 8
-    echo "==> identical transfer load ($RATE/s each)"
+    FRESHFLAG=""; [ "${FRESH:-1}" = 1 ] && FRESHFLAG="--fresh-recipients"  # grow state (default on)
+    echo "==> identical transfer load ($RATE/s each) fresh='$FRESHFLAG'"
     rm -f "$RUN/spam.stop"
-    ( while [ ! -f "$RUN/spam.stop" ]; do "$SPAM" ws --targets ws://127.0.0.1:7546 -r "$RATE" -t 600 -g 8 -a 1000 -l --mix transfer=100 >"$RUN/spam-mpt.log" 2>&1; sleep 1; done ) & echo $! >"$RUN/pid-spam-mpt"
-    ( while [ ! -f "$RUN/spam.stop" ]; do "$SPAM" ws --targets ws://127.0.0.1:7646 -r "$RATE" -t 600 -g 8 -a 1000 -l --mix transfer=100 >"$RUN/spam-jmt.log" 2>&1; sleep 1; done ) & echo $! >"$RUN/pid-spam-jmt"
-    echo "==> running ${DUR}s. Monitor: $0 report"
+    ( while [ ! -f "$RUN/spam.stop" ]; do "$SPAM" ws --targets ws://127.0.0.1:7546 -r "$RATE" -t 600 -g 8 -a 1000 -l $FRESHFLAG --mix transfer=100 >"$RUN/spam-mpt.log" 2>&1; sleep 1; done ) & echo $! >"$RUN/pid-spam-mpt"
+    ( while [ ! -f "$RUN/spam.stop" ]; do "$SPAM" ws --targets ws://127.0.0.1:7646 -r "$RATE" -t 600 -g 8 -a 1000 -l $FRESHFLAG --mix transfer=100 >"$RUN/spam-jmt.log" 2>&1; sleep 1; done ) & echo $! >"$RUN/pid-spam-jmt"
+    # time-series sampler: windowed root latency per lane every 30s -> series.csv (proves flat vs growing)
+    echo "epoch,lane,head,cum_root_ms,win_root_ms" > "$RUN/series.csv"
+    ( ps=(0 0); pc=(0 0)
+      while [ ! -f "$RUN/spam.stop" ]; do
+        i=0
+        for L in "MPT 7001 7545" "JMT 7002 7645"; do set -- $L
+          h=$(curl -s -m3 -X POST http://127.0.0.1:$3 -H 'content-type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' 2>/dev/null | python3 -c "import sys,json;print(int(json.load(sys.stdin)['result'],16))" 2>/dev/null)
+          read s c < <(curl -s -m3 http://127.0.0.1:$2/metrics 2>/dev/null | awk '/^reth_sync_block_validation_state_root_histogram_sum/{s=$2}/^reth_sync_block_validation_state_root_histogram_count/{c=$2}END{print s+0, c+0}')
+          cum=$(python3 -c "print(f'{($s/$c*1000) if $c else 0:.4f}')")
+          win=$(python3 -c "ds=$s-${ps[$i]}; dc=$c-${pc[$i]}; print(f'{(ds/dc*1000) if dc>0 else 0:.4f}')")
+          echo "$(date +%s),$1,${h:-0},$cum,$win" >> "$RUN/series.csv"
+          ps[$i]=$s; pc[$i]=$c; i=$((i+1))
+        done
+        sleep 30
+      done ) & echo $! >"$RUN/pid-sampler"
+    echo "==> running ${DUR}s. Monitor: $0 report | series: $RUN/series.csv"
     echo "$(date +%s) $DUR" > "$RUN/started"
     ;;
   report)

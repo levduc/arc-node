@@ -10,6 +10,9 @@ description = "Reth storage provider."
 
 
 [dependencies]
+# arc payment lane JMT commitment (advance the persistent JMT base at write_hashed_state)
+arc-payment-commitment = { path = "../../crates/arc-payment-commitment" }
+jmt.workspace = true
 # reth
 reth-chainspec.workspace = true
 reth-execution-types.workspace = true
