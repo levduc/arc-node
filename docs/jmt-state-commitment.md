@@ -50,6 +50,33 @@ deterministic and proof-friendly (shard proof + 16-root preimage).
 (Context: Aptos gets its production throughput from sharding/pipelining above the tree, and
 gravity-reth from a 16-way parallel rewrite — the structure alone buys nothing; parallelism does.)
 
+## The lean-state engine — IMPLEMENTED AND TESTED (`lean_state`)
+
+`experiments/utxo-state/src/bin/lean_state.rs` (~350 loc): the paper's unified store+commitment,
+disk-backed. 16 shards, one redb file each, holding BOTH the JMT nodes and the versioned account
+records (the JMT value store IS the account store — no PlainState/trie split). Pipeline per block:
+parallel secp256k1 verify -> deterministic execution -> 16-way parallel versioned JMT update with
+DURABLE commits -> lane root = keccak(16 shard roots).
+
+Self-tests (`--selftest`, passing): cross-instance root determinism (the consensus property),
+root progression, balance conservation, historical-version queries.
+
+Full-pipeline benchmark @10M accounts on disk, 4,761 signed transfers/block, 30 blocks
+(shared box, alongside other load — p95 reflects disk contention):
+
+| phase | ms/block | notes |
+|---|---|---|
+| sig-verify (parallel k256) | 44.5 | 9.3 µs/tx; libsecp256k1 would halve this |
+| execute (balance/nonce) | 25.6 | redb reads; RAM-cache would cut most of it |
+| commit+persist (JMT x16 + fsync) | 191-311 | run-to-run disk variance; reth's persist alone = 211.8 measured |
+| **TOTAL (fully durable)** | **~380 (p50 231)** | **80 µs/tx end-to-end ≈ 12.5k TPS single node** |
+
+Context: the live lane's equivalent phases (reth, same blocks) ≈ exec 64.4 + root 12 + persist
+211.8 ≈ 288 ms — the ~350-line prototype lands in the SAME class as tuned reth on its first
+outing, while adding native versioning and one-table storage. Build: 10M accounts to disk in 66 s.
+Known gaps: 17 GB on-disk (versioned-node accumulation — needs stale-node GC / larger build
+batches vs reth's 0.7 GB), no RAM cache on the read path, fsync-per-shard could batch.
+
 ## What JMT DOES buy (and what it costs)
 
 Wins (structural, real):

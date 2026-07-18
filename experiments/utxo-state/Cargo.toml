@@ -10,6 +10,8 @@ path = "src/main.rs"
 [dependencies]
 jmt = "0.12"
 anyhow = "1"
+redb = "2"
+borsh = "1"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 alloy-primitives = "1.6"
 alloy-trie = "0.9.5"
@@ -27,3 +29,7 @@ opt-level = 3
 [[bin]]
 name = "jmt_bench"
 path = "src/bin/jmt_bench.rs"
+
+[[bin]]
+name = "lean_state"
+path = "src/bin/lean_state.rs"
