@@ -3,6 +3,10 @@ resolver = "2"
 
 members = [
     "vendor/reth-provider",
+    # A workspace MEMBER, not just a [patch] target: cargo-chef's `cook` stage only reconstructs
+    # skeletons for members, so a patch-only path dep makes the Docker build fail with
+    # "failed to read /app/vendor/reth-trie-db/Cargo.toml".
+    "vendor/reth-trie-db",
     "crates/*",
     "crates/test/checks",
     "crates/test/framework",
@@ -189,7 +193,10 @@ ractor = { version = "0.15.10", default-features = false, features = ["async-tra
 rand = { version = "0.8.5", features = ["std_rng", "small_rng"] }
 # rand 8 for secp256k1
 redb               = "2.6.0"
-grevm = { path = "/home/papaduck/grevm", default-features = false }
+# git (not a host path): an absolute path dep is unreachable inside the Docker build context,
+# which blocked building the execution image. rev f130ef4 is the exact commit the local checkout
+# was on, verified clean and contained in origin/main, so this is byte-identical.
+grevm = { git = "https://github.com/galxe/grevm.git", rev = "f130ef4", default-features = false }
 reth-trie = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", default-features = false }
 jmt = "0.12"
 rayon = "1.10"

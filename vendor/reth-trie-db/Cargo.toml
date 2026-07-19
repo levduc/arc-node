@@ -91,4 +91,6 @@ test-utils = [
     "reth-trie/test-utils",
 ]
 
-[workspace]
+# [workspace] removed: this crate is now a MEMBER of the arc-node workspace so
+# cargo-chef can reconstruct its skeleton during the Docker build. Its deps are all
+# explicit versions (no workspace inheritance), so membership changes nothing else.
