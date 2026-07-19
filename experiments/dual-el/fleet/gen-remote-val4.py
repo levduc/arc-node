@@ -15,10 +15,17 @@ Reads .quake/soak4/compose.yaml and produces:
 Peer enode KEYS are preserved verbatim; only IP:port endpoints are rewritten.
 """
 import re, sys, yaml, copy
+import os
 
 LOCAL_TS = "100.124.148.61"   # ginny-alienware
 REMOTE_TS = "100.70.62.92"    # papaduck
-LOCAL_BASE = "/home/papaduck/arc-node-paymentlane/.quake/soak4"
+# Derive from THIS file's location, not a hardcoded worktree. The path was pinned to
+# /home/papaduck/arc-node-paymentlane, so running from any other worktree (e.g. the salt
+# branch checkout) silently found no compose.yaml, generated no compose-valN.yaml, and every
+# downstream fleet step failed with "no such file or directory".
+LOCAL_BASE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    ".quake", "soak4")
 REMOTE_BASE = "/home/papaduck/arc-fleet/soak4"
 COMPOSE = f"{LOCAL_BASE}/compose.yaml"
 

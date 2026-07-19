@@ -126,12 +126,18 @@ start(){
   for i in 1 2 3 4; do rm -rf "$LBASE/validator$i/reth-pay"; mkdir -p "$LBASE/validator$i/reth-pay"; done
 
   echo "==> [3/9] fleet compose surgery (tailscale peer rewrite)"
-  python3 experiments/dual-el/fleet/gen-fleet.py
+  # Fail fast: this silently produced nothing when gen-fleet.py had a hardcoded worktree path,
+  # and every downstream step then failed with confusing "no such file" errors on the remotes.
+  python3 experiments/dual-el/fleet/gen-fleet.py || { echo "!! gen-fleet.py failed"; exit 1; }
+  for n in 2 3 4; do
+    [ -f "$LBASE/compose-val$n.yaml" ] || { echo "!! missing $LBASE/compose-val$n.yaml"; exit 1; }
+  done
 
   echo "==> [4/9] ship trees to remotes (parallel)"
   for n in 2 3 4; do
     ( tar -C "$LBASE" -czf - assets "validator$n" compose-val$n.yaml | TSS_TMO=900 tss "${RHOST[$n]}" "tar -C $RBASE -xzf -" \
-      && echo "  shipped val$n -> ${RHOST[$n]}" ) &
+      && TSS_TMO=30 tss "${RHOST[$n]}" "test -f $RBASE/compose-val$n.yaml" \
+      && echo "  shipped val$n -> ${RHOST[$n]}" || echo "  !! SHIP FAILED val$n -> ${RHOST[$n]}" ) &
   done; wait
 
   echo "==> [5/9] start validator1 locally + val2-4 remotely"

@@ -6,11 +6,17 @@ tailscale host. Reads .quake/soak4/compose.yaml (fresh from quake), writes:
     peers -> tailscale, EL P2P published as 3030N:30303
 All EVM ELs (local + remote) publish 3030N:30303 so every pair can dial over the tailnet.
 """
-import copy, yaml
+import copy, yaml, os
 
 LOCAL_TS = "100.124.148.61"
 HOSTS = {1: LOCAL_TS, 2: "100.85.150.119", 3: "100.70.62.92", 4: "100.86.97.40"}
-LOCAL_BASE = "/home/papaduck/arc-node-paymentlane/.quake/soak4"
+# Derive from THIS file's location, not a hardcoded worktree. The path was pinned to
+# /home/papaduck/arc-node-paymentlane, so running from any other worktree (e.g. the salt
+# branch checkout) silently found no compose.yaml, generated no compose-valN.yaml, and every
+# downstream fleet step failed with "no such file or directory".
+LOCAL_BASE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    ".quake", "soak4")
 REMOTE_BASE = "/home/papaduck/arc-fleet/soak4"
 COMPOSE = f"{LOCAL_BASE}/compose.yaml"
 CL_IP = lambda n: f"172.21.1.{n-1}"
