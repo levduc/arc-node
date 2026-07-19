@@ -32,6 +32,26 @@ fn jmt_full_root<TX: DbTx>(
     _tx: &TX,
     post_state: &HashedPostStateSorted,
 ) -> Result<B256, StateRootError> {
+    // Locality-keyed dense Merkle (contiguous node array, no key-value store).
+    if arc_payment_commitment::dense::enabled() {
+        let changes: Vec<(B256, Option<Vec<u8>>)> = post_state
+            .accounts()
+            .iter()
+            .map(|(k, maybe)| {
+                (*k, maybe.map(|a| {
+                    arc_payment_commitment::dense::encode_account_leaf(
+                        a.nonce,
+                        B256::from(a.balance.to_be_bytes::<32>()),
+                    )
+                }))
+            })
+            .collect();
+        let root = arc_payment_commitment::dense::readonly_root(&changes);
+        if std::env::var("ARC_JMT_TRACE").is_ok() {
+            eprintln!("DENSE readonly changes={} root={:#x}", changes.len(), root);
+        }
+        return Ok(root);
+    }
     let changes: Vec<(B256, Option<jmt::OwnedValue>)> = post_state
         .accounts()
         .iter()
@@ -232,7 +252,7 @@ impl<'a, TX: DbTx, A: crate::TrieTableAdapter> DatabaseStateRoot<'a, TX>
         tx: &'a TX,
         post_state: &HashedPostStateSorted,
     ) -> Result<B256, StateRootError> {
-        if crate::jmt_root::jmt_enabled() { return jmt_full_root(tx, post_state); }
+        if crate::jmt_root::alt_enabled() { return jmt_full_root(tx, post_state); }
         let prefix_sets = post_state.construct_prefix_sets().freeze();
         StateRoot::new(
             DatabaseTrieCursorFactory::<_, A>::new(tx),
@@ -246,7 +266,7 @@ impl<'a, TX: DbTx, A: crate::TrieTableAdapter> DatabaseStateRoot<'a, TX>
         tx: &'a TX,
         post_state: &HashedPostStateSorted,
     ) -> Result<(B256, TrieUpdates), StateRootError> {
-        if crate::jmt_root::jmt_enabled() { return Ok((jmt_full_root(tx, post_state)?, TrieUpdates::default())); }
+        if crate::jmt_root::alt_enabled() { return Ok((jmt_full_root(tx, post_state)?, TrieUpdates::default())); }
         let prefix_sets = post_state.construct_prefix_sets().freeze();
         StateRoot::new(
             DatabaseTrieCursorFactory::<_, A>::new(tx),
@@ -257,7 +277,7 @@ impl<'a, TX: DbTx, A: crate::TrieTableAdapter> DatabaseStateRoot<'a, TX>
     }
 
     fn overlay_root_from_nodes(tx: &'a TX, input: TrieInputSorted) -> Result<B256, StateRootError> {
-        if crate::jmt_root::jmt_enabled() { return jmt_full_root(tx, input.state.as_ref()); }
+        if crate::jmt_root::alt_enabled() { return jmt_full_root(tx, input.state.as_ref()); }
         StateRoot::new(
             InMemoryTrieCursorFactory::new(
                 DatabaseTrieCursorFactory::<_, A>::new(tx),
@@ -276,7 +296,7 @@ impl<'a, TX: DbTx, A: crate::TrieTableAdapter> DatabaseStateRoot<'a, TX>
         tx: &'a TX,
         input: TrieInputSorted,
     ) -> Result<(B256, TrieUpdates), StateRootError> {
-        if crate::jmt_root::jmt_enabled() { return Ok((jmt_full_root(tx, input.state.as_ref())?, TrieUpdates::default())); }
+        if crate::jmt_root::alt_enabled() { return Ok((jmt_full_root(tx, input.state.as_ref())?, TrieUpdates::default())); }
         StateRoot::new(
             InMemoryTrieCursorFactory::new(
                 DatabaseTrieCursorFactory::<_, A>::new(tx),

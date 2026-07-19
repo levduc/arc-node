@@ -94,3 +94,8 @@ pub fn jmt_stateless_root(writes: Vec<(B256, Option<OwnedValue>)>) -> B256 {
 pub fn encode_acct(nonce: u64, balance_be: [u8; 32]) -> OwnedValue {
     encode_account(nonce, B256::from(balance_be))
 }
+
+/// True when ANY alternative payment-lane commitment replaces the MPT (jmt | dense).
+pub fn alt_enabled() -> bool {
+    jmt_enabled() || arc_payment_commitment::dense::enabled()
+}

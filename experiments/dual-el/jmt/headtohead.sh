@@ -24,7 +24,9 @@ boot(){ # boot <name> <http> <ws> <auth> <met> <p2p> <jmt?>
   local dd="$RUN/data-$n"; rm -rf "$dd" "$RUN/store-$n"
   "$BIN" init --datadir "$dd" --chain "$GEN" >"$RUN/init-$n.log" 2>&1
   local env=""
-  [ "$isjmt" = 1 ] && env="ARC_PAYMENT_ROOT=jmt ARC_JMT_STORE_PATH=$RUN/store-$n"
+  # ALT selects the alternative commitment on lane 2: jmt (sharded Jellyfish MT, redb store)
+  # or dense (fixed-depth Merkle, one contiguous node array, no key-value store).
+  [ "$isjmt" = 1 ] && env="ARC_PAYMENT_ROOT=${ALT:-jmt} ARC_JMT_STORE_PATH=$RUN/store-$n"
   env $env "$BIN" node --datadir "$dd" --chain "$GEN" \
     --http --http.addr 127.0.0.1 --http.port "$http" --http.api eth,net,web3,debug \
     --ws --ws.addr 127.0.0.1 --ws.port "$ws" --ws.api eth,net,web3,txpool \

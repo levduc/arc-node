@@ -2720,6 +2720,24 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> StateWriter
             }
         }
 
+        // Arc payment lane: advance the dense-Merkle committed tree by this block's account
+        // changes (contiguous node array — no key-value store, no per-node writes).
+        if arc_payment_commitment::dense::enabled() {
+            let changes: Vec<(alloy_primitives::B256, Option<Vec<u8>>)> = hashed_state
+                .accounts()
+                .iter()
+                .map(|(k, m)| {
+                    (*k, m.map(|a| {
+                        arc_payment_commitment::dense::encode_account_leaf(
+                            a.nonce,
+                            alloy_primitives::B256::from(a.balance.to_be_bytes::<32>()),
+                        )
+                    }))
+                })
+                .collect();
+            arc_payment_commitment::dense::commit(&changes);
+        }
+
         // Arc payment lane: advance the persistent JMT base by this block's account changes.
         // This is the SOLE writer — 1:1 with persisted blocks, in order — so the JMT `committed`
         // version tracks the persisted DB tip that the overlay `readonly_root` reads from.
