@@ -9,7 +9,24 @@ PORT = 8080
 CAST = os.path.expanduser("~/.foundry/bin/cast")
 # representative validator datadirs (all validators hold ~identical state)
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DDIR = os.path.join(_REPO, ".quake", "soak4", "validator2")
+# ---- fleet mode: DUALEL_FLEET=/path/to/json with {"val2": "100.x.y.z", ...} maps a validator's
+# ports to another host (multi-machine testnet). Unset => single-machine behavior unchanged. ----
+FLEET = {}
+_fp = os.environ.get("DUALEL_FLEET")
+if _fp:
+    try: FLEET = json.load(open(_fp))
+    except Exception: FLEET = {}
+def _val_of_port(port):
+    try: port = int(port)
+    except (TypeError, ValueError): return None
+    for base in (8545, 8546, 19545, 19546, 9001, 19001):
+        i = port - base
+        if 0 <= i <= 300 and i % 100 == 0: return f"val{i//100 + 1}"
+    return None
+def _host(port):
+    return FLEET.get(_val_of_port(port) or "", "127.0.0.1")
+
+DDIR = os.path.join(_REPO, ".quake", "soak4", "validator1" if FLEET else "validator2")
 _series = collections.deque(maxlen=240)  # (elapsed_s, evm_mb, pay_mb)
 _t0 = time.time()
 
@@ -54,6 +71,28 @@ _exec = {"evm": {}, "pay": {}}
 _exec_series = collections.deque(maxlen=240)  # (t, evm_root_ms, pay_root_ms, evm_rd_mbs, pay_rd_mbs)
 _mprev = {"evm": {}, "pay": {}}
 _hr = collections.deque(maxlen=40)  # (t, consensus height) for block-rate
+_tps = {"evm": {"last": None, "win": collections.deque()},
+        "pay": {"last": None, "win": collections.deque()}}  # rolling (t, txs) per lane
+
+def _feed_tps(lane, port, now):
+    st = _tps[lane]
+    h = head(port)
+    if h is None: return
+    last = st["last"]
+    if last is None or h < last:            # first sample or chain reset
+        st["last"] = h; st["win"].clear(); return
+    for n in range(max(last + 1, h - 29), h + 1):   # cap catch-up to 30 blocks/tick
+        c = rpc(port, "eth_getBlockTransactionCountByNumber", [hex(n)])
+        if c is not None:
+            st["win"].append((now, int(c, 16)))
+    st["last"] = h
+    while st["win"] and now - st["win"][0][0] > 60: st["win"].popleft()
+
+def _tps_value(lane, now):
+    w = _tps[lane]["win"]
+    if len(w) < 2: return None
+    span = max(now - w[0][0], 3.0)
+    return round(sum(x[1] for x in w) / span, 1)
 
 def _docker_out(args):
     try:
@@ -62,16 +101,23 @@ def _docker_out(args):
         return ""
 
 def _discover_metrics():
-    """Host port of each lane's reth metrics endpoint + cgroup path, for validator2."""
+    """Metrics sources per lane. Fleet mode: deterministic per-validator ports (9001/19001 +
+    100*(n-1)) scraped via each validator's host; cgroups come from the LOCAL validator.
+    Single-machine: docker-port discovery on validator2 (original behavior)."""
     cfg = {}
-    for lane, cname in (("evm", "validator2_el"), ("pay", "validator2_el_pay")):
-        port = None
-        out = _docker_out(["port", cname, "9001/tcp"])  # e.g. 0.0.0.0:9101
-        for tok in out.split():
-            if ":" in tok:
-                port = tok.rsplit(":", 1)[-1]
+    local_val = "validator1" if FLEET else "validator2"
+    for lane, base, cname in (("evm", 9001, f"{local_val}_el"), ("pay", 19001, f"{local_val}_el_pay")):
+        if FLEET:
+            ports = {n: base + 100 * (n - 1) for n in (1, 2, 3, 4)}
+        else:
+            port = None
+            out = _docker_out(["port", cname, "9001/tcp"])
+            for tok in out.split():
+                if ":" in tok:
+                    port = tok.rsplit(":", 1)[-1]
+            ports = {2: int(port)} if port else {}
         cid = _docker_out(["inspect", "-f", "{{.Id}}", cname])
-        cfg[lane] = {"port": port, "cid": cid}
+        cfg[lane] = {"ports": ports, "cid": cid}
     return cfg
 
 def _prom_state_root_ms(text, prev):
@@ -127,34 +173,91 @@ def _exec_loop():
     cfg = {}
     while True:
         try:
-            if not cfg or any(not cfg[l]["port"] for l in cfg):
+            if not cfg or any(not cfg[l].get("ports") for l in cfg):
                 cfg = _discover_metrics()
             now = round(time.time() - _t0, 1)
             for lane in ("evm", "pay"):
-                port, cid = cfg.get(lane, {}).get("port"), cfg.get(lane, {}).get("cid")
+                ports, cid = cfg.get(lane, {}).get("ports") or {}, cfg.get(lane, {}).get("cid")
                 st = _exec[lane]
-                if port:
+                roots, execs, roots_avg, execs_avg, persists = {}, {}, {}, {}, {}
+                for n, port in ports.items():
+                    key = f"{lane}{n}"
+                    prev = _mprev.setdefault(key, {})
                     try:
-                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=3) as r:
+                        with urllib.request.urlopen(f"http://{_host(port)}:{port}/metrics", timeout=3) as r:
                             text = r.read().decode()
                     except Exception:
-                        text = ""
-                    if text:
-                        ms, _mprev[lane] = _prom_state_root_ms(text, _mprev[lane])
-                        if ms is not None:
-                            st["root_ms"] = ms
-                            _mprev[lane]["last_ms"] = ms
-                        ep = _mprev[lane].setdefault("exec", {})
-                        es = ec = None
-                        for ln in text.splitlines():
-                            if ln.startswith("reth_sync_execution_execution_histogram_sum "):
-                                es = float(ln.split()[1])
-                            elif ln.startswith("reth_sync_execution_execution_histogram_count "):
-                                ec = float(ln.split()[1])
-                        if es is not None and ec is not None:
-                            if ec > ep.get("c", 0):
-                                st["exec_ms"] = round((es - ep.get("s", 0.0)) / (ec - ep.get("c", 0)) * 1000.0, 2)
-                            ep["s"], ep["c"] = es, ec
+                        continue
+                    carry = {k: prev[k] for k in ("exec", "persist", "last_ms", "root_t") if k in prev}
+                    ms, _mprev[key] = _prom_state_root_ms(text, prev)
+                    _mprev[key].update(carry)   # _prom_state_root_ms returns a fresh dict; keep exec baseline + hold state
+                    prev = _mprev[key]
+                    if ms is not None:
+                        roots[n] = ms
+                        prev["last_ms"] = ms
+                        prev["root_t"] = now
+                    elif prev.get("last_ms") is not None and now - prev.get("root_t", 0) <= 45:
+                        roots[n] = prev["last_ms"]
+                    ep = prev.setdefault("exec", {})
+                    es = ec = rs = rc = ps_ = pc_ = None
+                    for ln in text.splitlines():
+                        if ln.startswith("reth_sync_execution_execution_histogram_sum "):
+                            es = float(ln.split()[1])
+                        elif ln.startswith("reth_sync_execution_execution_histogram_count "):
+                            ec = float(ln.split()[1])
+                        elif ln.startswith("reth_sync_block_validation_state_root_histogram_sum "):
+                            rs = float(ln.split()[1])
+                        elif ln.startswith("reth_sync_block_validation_state_root_histogram_count "):
+                            rc = float(ln.split()[1])
+                        elif ln.startswith("reth_consensus_engine_persistence_save_blocks_duration_seconds_sum "):
+                            ps_ = float(ln.split()[1])
+                        elif ln.startswith("reth_consensus_engine_persistence_save_blocks_duration_seconds_count "):
+                            pc_ = float(ln.split()[1])
+                    if rs is not None and rc:
+                        roots_avg[n] = round(rs / rc * 1000.0, 2)
+                    if es is not None and ec:
+                        execs_avg[n] = round(es / ec * 1000.0, 2)
+                    pp = prev.setdefault("persist", {})
+                    if ps_ is not None and pc_ is not None:
+                        if "c" in pp and pc_ > pp["c"]:
+                            pp["last"] = round((ps_ - pp["s"]) / (pc_ - pp["c"]) * 1000.0, 2)
+                            pp["t"] = now
+                        pp["s"], pp["c"] = ps_, pc_
+                    if pp.get("last") is not None and now - pp.get("t", 0) <= 45:
+                        persists[n] = pp["last"]
+                    if es is not None and ec is not None:
+                        if "c" in ep and ec > ep["c"]:   # need a prior baseline: first sample is not a delta
+                            ep["last"] = round((es - ep["s"]) / (ec - ep["c"]) * 1000.0, 2)
+                            ep["t"] = now
+                        ep["s"], ep["c"] = es, ec
+                    if ep.get("last") is not None and now - ep.get("t", 0) <= 45:
+                        execs[n] = ep["last"]
+                if not roots:
+                    st["root_ms"] = None; st["root_by_val"] = None
+                if not execs:
+                    st["exec_ms"] = None; st["exec_by_val"] = None
+                if persists:
+                    vals = list(persists.values())
+                    st["persist_ms"] = round(sum(vals) / len(vals), 2)
+                    st["persist_by_val"] = " · ".join(f"v{n} {persists.get(n, '—')}" for n in sorted(ports))
+                else:
+                    st["persist_ms"] = None; st["persist_by_val"] = None
+                if roots:
+                    vals = list(roots.values())
+                    st["root_ms"] = round(sum(vals) / len(vals), 2)
+                    st["root_by_val"] = " · ".join(f"v{n} {roots.get(n, '—')}" for n in sorted(ports))
+                if execs:
+                    vals = list(execs.values())
+                    st["exec_ms"] = round(sum(vals) / len(vals), 2)
+                    st["exec_by_val"] = " · ".join(f"v{n} {execs.get(n, '—')}" for n in sorted(ports))
+                if roots_avg:
+                    vals = list(roots_avg.values())
+                    st["root_avg_ms"] = round(sum(vals) / len(vals), 2)
+                    st["root_avg_by_val"] = " · ".join(f"v{n} {roots_avg.get(n, '—')}" for n in sorted(ports))
+                if execs_avg:
+                    vals = list(execs_avg.values())
+                    st["exec_avg_ms"] = round(sum(vals) / len(vals), 2)
+                    st["exec_avg_by_val"] = " · ".join(f"v{n} {execs_avg.get(n, '—')}" for n in sorted(ports))
                 if cid:
                     for mp in (f"/sys/fs/cgroup/system.slice/docker-{cid}.scope/memory.current",
                                f"/sys/fs/cgroup/docker/{cid}/memory.current"):
@@ -175,6 +278,10 @@ def _exec_loop():
                 hh = head(EVM["val2"])
                 if hh:
                     _hr.append((now, hh))
+                _feed_tps("evm", EVM["val2"], now)
+                _feed_tps("pay", PAY["val2"], now)
+                _exec["evm"]["tps"] = _tps_value("evm", now)
+                _exec["pay"]["tps"] = _tps_value("pay", now)
             except Exception:
                 pass
             _exec_series.append((now,
@@ -240,11 +347,12 @@ def growth():
             "pay_state_rate": rate_kb_per_min(3), "pay_hist_rate": rate_kb_per_min(4), **ua}
 EVM = {"val1": 8545, "val2": 8645, "val3": 8745, "val4": 8845}
 PAY = {"val1": 19545, "val2": 19645, "val3": 19745, "val4": 19845}
+
 POOL = ThreadPoolExecutor(max_workers=16)
 
 def rpc(port, method, params):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
-    req = urllib.request.Request(f"http://127.0.0.1:{port}", data=body,
+    req = urllib.request.Request(f"http://{_host(port)}:{port}", data=body,
                                  headers={"content-type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=1.5) as r:
@@ -483,13 +591,27 @@ h1 b{color:var(--pay)}
  <div class=xgrid>
   <div class="xstat evm"><div class=gl>EVM lane</div>
    <div class=xrow><span class=gk>state root</span><span class=gv id=xEvmRoot>&mdash;</span><span class=gu>ms avg</span></div>
+   <div class=xrow><span class=gk></span><span class=gu id=xEvmRootBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>execution</span><span class=gv id=xEvmExec>&mdash;</span><span class=gu>ms avg</span></div>
+   <div class=xrow><span class=gk></span><span class=gu id=xEvmExecBy style="font-size:10px"></span></div>
+   <div class=xrow><span class=gk>persistence</span><span class=gv id=xEvmPersist>&mdash;</span><span class=gu>ms/blk</span></div>
+   <div class=xrow><span class=gk></span><span class=gu id=xEvmPersistBy style="font-size:10px"></span></div>
+   <div class=xrow><span class=gk>throughput</span><span class=gv id=xEvmTps>&mdash;</span><span class=gu>tx/s</span></div>
+   <div class=xrow><span class=gk>root avg (run)</span><span class=gv id=xEvmRootAvg>&mdash;</span><span class=gu>ms</span></div>
+   <div class=xrow><span class=gk>exec avg (run)</span><span class=gv id=xEvmExecAvg>&mdash;</span><span class=gu>ms</span></div>
    <div class=xrow><span class=gk>disk read</span><span class=gv id=xEvmRd>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>disk write</span><span class=gv id=xEvmWr>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>RAM (EL)</span><span class=gv id=xEvmMem>&mdash;</span><span class=gu>GB</span></div></div>
   <div class="xstat pay"><div class=gl>Payment lane</div>
    <div class=xrow><span class=gk>state root</span><span class=gv id=xPayRoot>&mdash;</span><span class=gu>ms avg</span></div>
+   <div class=xrow><span class=gk></span><span class=gu id=xPayRootBy style="font-size:10px"></span></div>
    <div class=xrow><span class=gk>execution</span><span class=gv id=xPayExec>&mdash;</span><span class=gu>ms avg</span></div>
+   <div class=xrow><span class=gk></span><span class=gu id=xPayExecBy style="font-size:10px"></span></div>
+   <div class=xrow><span class=gk>persistence</span><span class=gv id=xPayPersist>&mdash;</span><span class=gu>ms/blk</span></div>
+   <div class=xrow><span class=gk></span><span class=gu id=xPayPersistBy style="font-size:10px"></span></div>
+   <div class=xrow><span class=gk>throughput</span><span class=gv id=xPayTps>&mdash;</span><span class=gu>tx/s</span></div>
+   <div class=xrow><span class=gk>root avg (run)</span><span class=gv id=xPayRootAvg>&mdash;</span><span class=gu>ms</span></div>
+   <div class=xrow><span class=gk>exec avg (run)</span><span class=gv id=xPayExecAvg>&mdash;</span><span class=gu>ms</span></div>
    <div class=xrow><span class=gk>disk read</span><span class=gv id=xPayRd>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>disk write</span><span class=gv id=xPayWr>&mdash;</span><span class=gu>MB/s</span></div>
    <div class=xrow><span class=gk>RAM (EL)</span><span class=gv id=xPayMem>&mdash;</span><span class=gu>GB</span></div></div>
@@ -551,8 +673,15 @@ function drawGrowth(g){
 function drawExec(x){
  if(!x)return;
  const set=(id,v)=>{document.getElementById(id).textContent=(v==null?'—':v);};
- set('xEvmRoot',x.evm.root_ms);set('xPayRoot',x.pay.root_ms);
- set('xEvmExec',x.evm.exec_ms);set('xPayExec',x.pay.exec_ms);
+ function xset(id,avg,by){var el=document.getElementById(id);if(!el)return;
+   el.textContent=(avg==null?'—':avg)+(by?'':'');el.title=by||'';
+   var bid=document.getElementById(id+'By');if(bid)bid.textContent=by||'';}
+ xset('xEvmRoot',x.evm.root_ms,x.evm.root_by_val);xset('xPayRoot',x.pay.root_ms,x.pay.root_by_val);
+ xset('xEvmExec',x.evm.exec_ms,x.evm.exec_by_val);xset('xPayExec',x.pay.exec_ms,x.pay.exec_by_val);
+ set('xEvmTps',x.evm.tps);set('xPayTps',x.pay.tps);
+ xset('xEvmPersist',x.evm.persist_ms,x.evm.persist_by_val);xset('xPayPersist',x.pay.persist_ms,x.pay.persist_by_val);
+ xset('xEvmRootAvg',x.evm.root_avg_ms,x.evm.root_avg_by_val);xset('xPayRootAvg',x.pay.root_avg_ms,x.pay.root_avg_by_val);
+ xset('xEvmExecAvg',x.evm.exec_avg_ms,x.evm.exec_avg_by_val);xset('xPayExecAvg',x.pay.exec_avg_ms,x.pay.exec_avg_by_val);
  document.getElementById('xRate').textContent=(x.blk_s!=null?('block production: '+x.blk_s+' blk/s'):'—');
  set('xEvmRd',x.evm.rd_mb_s);set('xPayRd',x.pay.rd_mb_s);
  set('xEvmWr',x.evm.wr_mb_s);set('xPayWr',x.pay.wr_mb_s);
