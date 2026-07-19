@@ -34,7 +34,16 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO"
 SCEN=soak4; RUN=/tmp/dualel-fleet-salt; mkdir -p "$RUN"
-LBASE="$REPO/.quake/$SCEN"; RBASE=/home/papaduck/arc-fleet/$SCEN
+LBASE="$REPO/.quake/$SCEN"
+# Per-host data roots. validator3 (papaduck) lands on its FAST NVMe: measured fsync 19.6ms on its
+# home disk vs 1.7ms on /mnt/blockchain.ssd (11.5x), which showed up as ~468ms/block persistence
+# for v3 on BOTH lanes -- a disk effect, not a commitment effect. FASTSSD=0 to use home disks.
+declare -A RPARENT=( [2]=/home/papaduck/arc-fleet [3]=/home/papaduck/arc-fleet [4]=/home/papaduck/arc-fleet )
+declare -A RB=( [2]=/home/papaduck/arc-fleet/$SCEN [3]=/home/papaduck/arc-fleet/$SCEN [4]=/home/papaduck/arc-fleet/$SCEN )
+if [ "${FASTSSD:-1}" = 1 ]; then
+  RPARENT[3]=/mnt/blockchain.ssd/arc-fleet
+  RB[3]=/mnt/blockchain.ssd/arc-fleet/$SCEN
+fi
 LOCAL_TS=100.124.148.61
 IMG="${IMG:-arc_execution_salt:latest}"
 declare -A RHOST=( [2]=ginnythui [3]=papaduck [4]=papaduck-alien2 )
@@ -114,7 +123,7 @@ start(){
   pkill -x spammer 2>/dev/null; rm -f "$RUN/spam.stop"
   ids=$(docker ps -aq --filter name=validator); [ -n "$ids" ] && docker rm -f $ids >/dev/null
   docker run --rm -v "$REPO/.quake":/q --user root alpine rm -rf /q/$SCEN
-  for n in 2 3 4; do tss "${RHOST[$n]}" "docker rm -f \$(docker ps -aq --filter name=validator) 2>/dev/null; rm -rf $RBASE 2>/dev/null || docker run --rm -v /home/papaduck/arc-fleet:/f --user root alpine rm -rf /f/$SCEN; mkdir -p $RBASE; docker run --rm -v /home/papaduck/arc-fleet:/f --user root alpine chown -R \$(id -u):\$(id -g) /f; true" || true; done
+  for n in 2 3 4; do tss "${RHOST[$n]}" "docker rm -f \$(docker ps -aq --filter name=validator) 2>/dev/null; rm -rf ${RB[$n]} 2>/dev/null || docker run --rm -v ${RPARENT[$n]}:/f --user root alpine rm -rf /f/$SCEN; mkdir -p ${RB[$n]}; docker run --rm -v ${RPARENT[$n]}:/f --user root alpine chown -R \$(id -u):\$(id -g) /f; true" || true; done
 
   echo "==> [1/9] generate testnet locally (quake)"
   target/release/quake -f "crates/quake/scenarios/${SCEN}.toml" start -e 1000 --monitoring false --force >"$RUN/quake.log" 2>&1 || true
@@ -135,18 +144,22 @@ start(){
 
   echo "==> [4/9] ship trees to remotes (parallel)"
   for n in 2 3 4; do
-    ( tar -C "$LBASE" -czf - assets "validator$n" compose-val$n.yaml | TSS_TMO=900 tss "${RHOST[$n]}" "tar -C $RBASE -xzf -" \
-      && TSS_TMO=30 tss "${RHOST[$n]}" "test -f $RBASE/compose-val$n.yaml" \
-      && echo "  shipped val$n -> ${RHOST[$n]}" || echo "  !! SHIP FAILED val$n -> ${RHOST[$n]}" ) &
+    ( tar -C "$LBASE" -czf - assets "validator$n" compose-val$n.yaml | TSS_TMO=900 tss "${RHOST[$n]}" "tar -C ${RB[$n]} -xzf -" \
+      && TSS_TMO=30 tss "${RHOST[$n]}" "test -f ${RB[$n]}/compose-val$n.yaml" \
+      && echo "  shipped val$n -> ${RHOST[$n]} (${RB[$n]})" || echo "  !! SHIP FAILED val$n -> ${RHOST[$n]}" ) &
   done; wait
+  # gen-fleet.py writes home-disk paths into every compose; repoint val3's to the fast mount
+  if [ "${FASTSSD:-1}" = 1 ]; then
+    tss papaduck "sed -i 's|/home/papaduck/arc-fleet|/mnt/blockchain.ssd/arc-fleet|g' ${RB[3]}/compose-val3.yaml && echo '  val3 compose repointed to NVMe:' \$(grep -c blockchain.ssd ${RB[3]}/compose-val3.yaml) 'paths'"
+  fi
 
   echo "==> [5/9] start validator1 locally + val2-4 remotely"
   docker compose -f "$LBASE/compose.yaml" up -d validator1_cl validator1_el
-  for n in 2 3 4; do tss "${RHOST[$n]}" "docker compose -f $RBASE/compose-val$n.yaml up -d"; done
+  for n in 2 3 4; do tss "${RHOST[$n]}" "docker compose -f ${RB[$n]}/compose-val$n.yaml up -d"; done
 
   echo "==> [6/9] payment ELs with SALT (sequential — genesis parse RAM)"
   eval "$(payment_el_cmd 1 "$LBASE")"
-  for n in 2 3 4; do tss "${RHOST[$n]}" "$(payment_el_cmd $n "$RBASE")"; done
+  for n in 2 3 4; do tss "${RHOST[$n]}" "$(payment_el_cmd $n "${RB[$n]}")"; done
   for n in 1 2 3 4; do
     host=127.0.0.1; [ $n -ge 2 ] && host=${RTS[$n]}
     for t in $(seq 1 60); do curl -s -m3 -X POST "http://$host:$(PAY_PORT $n)" -H 'content-type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' | grep -q result && break; sleep 10; done
