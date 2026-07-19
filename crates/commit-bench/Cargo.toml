@@ -1,0 +1,22 @@
+[package]
+name = "commit-bench"
+version = "0.1.0"
+edition = "2021"
+
+# Separate crate, NOT a bin inside arc-payment-commitment: reth-trie-db already depends on
+# arc-payment-commitment (that is where the SALT/JMT/dense overlay hooks live), so adding a
+# reth-trie-db dependency there would be a cycle.
+
+[dependencies]
+arc-payment-commitment = { path = "../arc-payment-commitment", features = ["salt-commitment"] }
+alloy-primitives = { workspace = true }
+reth-db = { workspace = true, features = ["mdbx"] }
+reth-db-api.workspace = true
+reth-trie.workspace = true
+reth-trie-db.workspace = true
+reth-primitives-traits.workspace = true
+eyre = "0.6"
+
+[[bin]]
+name = "commit-bench"
+path = "src/main.rs"

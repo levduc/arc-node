@@ -3944,6 +3944,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "commit-bench"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "arc-payment-commitment",
+ "eyre",
+ "reth-db",
+ "reth-db-api",
+ "reth-primitives-traits",
+ "reth-trie",
+ "reth-trie-db",
+]
+
+[[package]]
 name = "compact_str"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

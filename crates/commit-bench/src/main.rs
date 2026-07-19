@@ -1,0 +1,231 @@
+//! Controlled MPT-vs-SALT benchmark over an IDENTICAL account set, at arbitrary scale.
+//!
+//! WHY THIS EXISTS
+//! The live fleet can only reach state that fits in RAM, and there the MPT always wins: measured
+//! 2.79x (250k accounts) and 2.40x (5M). Extrapolating MPT's ~21%-per-20x growth, trie size alone
+//! would need ~10^6 x more state to close that gap -- inside the page-cached regime the MPT simply
+//! wins. A crossover requires the STEP CHANGE when trie lookups start missing cache and become disk
+//! seeks. This harness reaches that regime directly.
+//!
+//! It also avoids the two things that made the live comparison impossible at scale:
+//!   - the real 169 GB Arc snapshot is full EVM state (contracts + storage); our SALT integration
+//!     commits (nonce, balance) only, so it cannot represent that state at all. Here BOTH sides see
+//!     the same accounts-only set, so the storage gap is not a confound.
+//!   - genesis preseeding pins the whole alloc in unevictable RSS (~250 B/account), which fights
+//!     any attempt to cap memory. Here the MPT's state lives in MDBX on disk, where the OS can
+//!     evict it, which is the entire point.
+//!
+//! METHOD
+//!   1. Populate a real MDBX `HashedAccounts` table with N accounts (reth's own table/codec).
+//!   2. Per "block": pick k accounts, bump their balances, and time BOTH
+//!        - MPT : reth's `StateRoot::overlay_root` over that MDBX tx -- the exact code path a
+//!                payment EL runs, disk-backed and subject to page-cache eviction.
+//!        - SALT: `salt_commitment::readonly_root` over the same k changes.
+//!   3. Report per-block cost vs N, so the crossover (if any) is visible.
+//!
+//! Run cold (the regime that matters) by dropping caches between phases, or under a cgroup:
+//!   systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=0 \
+//!     target/release/commit-bench --accounts 200000000 --changed 200 --blocks 50
+//!
+//! HONEST SCOPE: this measures the COMMITMENT step only (root computation), not execution or
+//! persistence. Those were controlled and near-identical on the live fleet (exec 3.34/3.00,
+//! persist 49.1/47.8), which is why isolating the root here is legitimate. SALT is still favoured
+//! by committing a narrower leaf and persisting no nodes -- see FAIR-COMPARE.md.
+use alloy_primitives::{B256, U256};
+use reth_db::{mdbx::DatabaseArguments, ClientVersion, DatabaseEnv};
+use reth_db_api::{cursor::DbCursorRW, database::Database, transaction::{DbTx, DbTxMut}};
+use std::time::Instant;
+
+fn arg(name: &str, default: u64) -> u64 {
+    let a: Vec<String> = std::env::args().collect();
+    a.iter()
+        .position(|x| x == name)
+        .and_then(|i| a.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Deterministic hashed address for account i (stands in for keccak(addr)).
+fn key(i: u64) -> B256 {
+    let mut b = [0u8; 32];
+    b[..8].copy_from_slice(&i.to_be_bytes());
+    // spread across the keyspace so the trie is realistically wide, not a dense prefix run
+    let h = i.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    b[8..16].copy_from_slice(&h.to_be_bytes());
+    B256::from(b)
+}
+
+fn main() -> eyre::Result<()> {
+    let n_accounts = arg("--accounts", 5_000_000);
+    let k_changed = arg("--changed", 200);
+    let n_blocks = arg("--blocks", 30);
+    let dir = std::env::var("BENCH_DIR").unwrap_or_else(|_| "/tmp/commit-bench-db".into());
+
+    println!("accounts={n_accounts} changed/block={k_changed} blocks={n_blocks} db={dir}");
+    std::fs::create_dir_all(&dir)?;
+    let db = reth_db::init_db(&dir, DatabaseArguments::new(ClientVersion::default()))?;
+
+    // ---- populate: N accounts into reth's real HashedAccounts table ----
+    let t0 = Instant::now();
+    let mut written = 0u64;
+    const BATCH: u64 = 200_000;
+    while written < n_accounts {
+        let tx = db.tx_mut()?;
+        {
+            let mut cur = tx.cursor_write::<reth_db_api::tables::HashedAccounts>()?;
+            let end = (written + BATCH).min(n_accounts);
+            for i in written..end {
+                cur.append(
+                    key(i),
+                    &reth_primitives_traits::Account {
+                        nonce: 1,
+                        balance: U256::from(1_000_000u64),
+                        bytecode_hash: None,
+                    },
+                )?;
+            }
+            written = end;
+        }
+        tx.commit()?;
+        if written % 2_000_000 == 0 {
+            println!("  populated {written}/{n_accounts} ({:.0?})", t0.elapsed());
+        }
+    }
+    println!("populated {n_accounts} accounts in {:.1?}", t0.elapsed());
+    println!(
+        "  on-disk: {:.2} GB  (compare against the memory cap to know if you are past RAM)",
+        fs_size(&dir) as f64 / 1e9
+    );
+
+    // ---- build the MPT's intermediate trie nodes, then SEED SALT with the same N accounts ----
+    // Without this both sides measure the wrong thing: reth's overlay_root with an EMPTY
+    // AccountsTrie rebuilds the whole trie every block (O(N) from scratch, measured 815 ms at 1M
+    // vs 3.23 ms at 5M on the live fleet -- the tell that it was wrong), and SALT would hold only
+    // the k keys it was asked to commit rather than all N. Both must hold N and update k.
+    let t = Instant::now();
+    {
+        let tx = db.tx()?;
+        let sr = <reth_trie::StateRoot<
+            reth_trie_db::DatabaseTrieCursorFactory<_, reth_trie_db::LegacyKeyAdapter>,
+            reth_trie_db::DatabaseHashedCursorFactory<_>,
+        > as reth_trie_db::DatabaseStateRoot<_>>::from_tx(&tx);
+        let (_root, updates) = sr.root_with_updates()?;
+        drop(tx);
+        let tx = db.tx_mut()?;
+        {
+            let mut cur = tx.cursor_write::<reth_db_api::tables::AccountsTrie>()?;
+            let mut nodes: Vec<(reth_trie::Nibbles, _)> = updates
+                .account_nodes_ref()
+                .iter()
+                .map(|(p, n)| (*p, n.clone()))
+                .collect();
+            nodes.sort_by(|a, b| a.0.cmp(&b.0));
+            for (path, node) in &nodes {
+                cur.upsert(reth_trie::StoredNibbles(*path), node)?;
+            }
+        }
+        tx.commit()?;
+    }
+    println!("built MPT intermediate trie nodes in {:.1?}", t.elapsed());
+
+    let t = Instant::now();
+    arc_payment_commitment::salt_commitment::ensure_seeded(|| {
+        (0..n_accounts)
+            .map(|i| {
+                (
+                    key(i),
+                    Some(arc_payment_commitment::salt_commitment::encode_account_leaf(
+                        1,
+                        B256::from(U256::from(1_000_000u64).to_be_bytes::<32>()),
+                    )),
+                )
+            })
+            .collect()
+    });
+    println!("seeded SALT with {n_accounts} accounts in {:.1?}", t.elapsed());
+
+    // NOTE: append() requires ascending keys, so accounts are inserted in sorted order. That is
+    // the FRIENDLIEST possible layout for the MPT -- a real chain scatters writes over time and
+    // fragments the store (measured: same ~5M accounts cost the MPT 8.62 ms grown organically vs
+    // 3.23 ms bulk-loaded). So any MPT number here is a LOWER BOUND on its real cost.
+
+    println!("\n{:>6} {:>14} {:>14}   {}", "block", "MPT root ms", "SALT root ms", "ratio");
+    let mut mpt = Vec::new();
+    let mut salt = Vec::new();
+    for b in 0..n_blocks {
+        // same k accounts change for both structures
+        let changes: Vec<(B256, reth_primitives_traits::Account)> = (0..k_changed)
+            .map(|j| {
+                let i = (b * k_changed + j) % n_accounts;
+                (
+                    key(i),
+                    reth_primitives_traits::Account {
+                        nonce: 2 + b,
+                        balance: U256::from(1_000_000u64 + b),
+                        bytecode_hash: None,
+                    },
+                )
+            })
+            .collect();
+
+        // ---- MPT: reth's own overlay_root over the MDBX tx (disk-backed) ----
+        let mut post = reth_trie::HashedPostState::default();
+        for (k, a) in &changes {
+            post.accounts.insert(*k, Some(*a));
+        }
+        let sorted = post.into_sorted();
+        let tx = db.tx()?;
+        let t = Instant::now();
+        let _root = <reth_trie::StateRoot<
+            reth_trie_db::DatabaseTrieCursorFactory<_, reth_trie_db::LegacyKeyAdapter>,
+            reth_trie_db::DatabaseHashedCursorFactory<_>,
+        > as reth_trie_db::DatabaseStateRoot<_>>::overlay_root(&tx, &sorted)?;
+        let mpt_ms = t.elapsed().as_secs_f64() * 1000.0;
+        drop(tx);
+
+        // ---- SALT: same k changes ----
+        let salt_changes: Vec<(B256, Option<Vec<u8>>)> = changes
+            .iter()
+            .map(|(k, a)| {
+                (
+                    *k,
+                    Some(arc_payment_commitment::salt_commitment::encode_account_leaf(
+                        a.nonce,
+                        B256::from(a.balance.to_be_bytes::<32>()),
+                    )),
+                )
+            })
+            .collect();
+        let t = Instant::now();
+        let _ = arc_payment_commitment::salt_commitment::readonly_root(&salt_changes);
+        let salt_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+        mpt.push(mpt_ms);
+        salt.push(salt_ms);
+        if b < 5 || b % 10 == 0 {
+            println!("{b:>6} {mpt_ms:>14.3} {salt_ms:>14.3}   {:.2}x", salt_ms / mpt_ms.max(1e-9));
+        }
+    }
+
+    let med = |v: &mut Vec<f64>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    };
+    let (m, s) = (med(&mut mpt), med(&mut salt));
+    println!("\n=== {n_accounts} accounts, {k_changed} changed/block ===");
+    println!("MPT  median {m:.3} ms");
+    println!("SALT median {s:.3} ms");
+    if s < m {
+        println!("=> SALT faster by {:.2}x  <-- CROSSOVER", m / s);
+    } else {
+        println!("=> MPT faster by {:.2}x", s / m);
+    }
+    println!("\nBoth structures hold all {n_accounts} accounts and update {k_changed}/block.");
+    Ok(())
+}
+
+fn fs_size(p: &str) -> u64 {
+    std::fs::read_dir(p)
+        .map(|rd| rd.filter_map(|e| e.ok()).filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum())
+        .unwrap_or(0)
+}

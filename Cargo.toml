@@ -8,6 +8,7 @@ members = [
     # "failed to read /app/vendor/reth-trie-db/Cargo.toml".
     "vendor/reth-trie-db",
     "crates/*",
+    "crates/commit-bench",
     "crates/test/checks",
     "crates/test/framework",
     "crates/test/integration",
