@@ -1,0 +1,53 @@
+# Execution image for the SALT payment-lane demo.
+#
+# Why a separate Dockerfile instead of deployments/Dockerfile.execution:
+# that one uses cargo-chef for dependency-layer caching, and cargo-chef's `cook` stage replaces
+# WORKSPACE MEMBERS with empty stub crates. This tree [patch]es upstream reth to our vendored
+# reth-provider / reth-trie-db, so upstream crates (reth-prune, reth-downloaders, ...) depend on
+# those members. Stubbed to empty libs, they fail to compile (E0220: associated type not found).
+# cargo-chef cannot express "patched-to-a-workspace-member", so we build directly. Slower (no
+# dependency layer cache) but correct.
+#
+# Build:
+#   DOCKER_BUILDKIT=1 docker build -f deployments/Dockerfile.execution.salt \
+#     -t arc_execution_salt:latest .
+#
+# A host-built binary cannot be substituted into the stock image: host glibc is 2.39, the
+# arc_execution runtime is Debian 12 / glibc 2.36. Building here produces a 2.36-linked binary.
+
+FROM public.ecr.aws/docker/library/rust:1.93-bookworm AS builder
+
+COPY assets/apt/apt-retry.conf /etc/apt/apt.conf.d/apt-retry.conf
+COPY assets/apt/debian.sources /etc/apt/sources.list.d/debian.sources
+RUN rm -f /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends libclang-dev pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV CARGO_HOME=/usr/local/cargo
+# salt + grevm are git deps; fetch with the git CLI so credentials/redirects behave.
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
+
+WORKDIR /app
+COPY . .
+
+# --locked: the committed Cargo.lock pins salt, its bandersnatch/ark fork, and grevm f130ef4.
+RUN --mount=type=cache,id=salt-cargo-registry,sharing=locked,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=salt-cargo-git,sharing=locked,target=/usr/local/cargo/git \
+    --mount=type=cache,id=salt-cargo-target,sharing=locked,target=/app/target \
+    cargo build --release --bin arc-node-execution --locked && \
+    cp /app/target/release/arc-node-execution /tmp/arc-node-execution
+
+#######################
+# runtime
+#######################
+FROM public.ecr.aws/docker/library/debian:bookworm-slim AS runtime
+
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /tmp/arc-node-execution /usr/local/bin/arc-node-execution
+
+EXPOSE 8545 8546 8551 9001 6061 30303
+
+# launch-payment-els-salt.sh overrides this with /app/assets/entrypoint_el.sh (bind-mounted), so
+# the image only needs to carry the binary.
+ENTRYPOINT ["/usr/local/bin/arc-node-execution"]

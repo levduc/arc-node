@@ -10,8 +10,8 @@
 # shows an alternative state commitment running in a real BFT chain, not a microbenchmark.
 #
 # PREREQ: the SALT image must exist.
-#   DOCKER_BUILDKIT=1 docker build -f deployments/Dockerfile.execution --target dev-runtime \
-#     --build-context certs=deployments/certs -t arc_execution_salt:latest .
+#   DOCKER_BUILDKIT=1 docker build -f deployments/Dockerfile.execution.salt \
+#     -t arc_execution_salt:latest .
 # A host-built binary cannot be substituted: host glibc 2.39 vs the image's Debian 12 / 2.36.
 #
 # HONEST SCOPE — what this demo does and does not show:

@@ -2,7 +2,7 @@
 # Launch the 4 payment-lane ELs with SALT (MegaETH) as the state commitment instead of reth's MPT.
 #
 # Identical to launch-payment-els.sh except:
-#   - image  : arc_execution_salt:latest (built from deployments/Dockerfile.execution on this
+#   - image  : arc_execution_salt:latest (built from deployments/Dockerfile.execution.salt on this
 #              branch, so the binary has the SALT commitment wired into reth's two seams).
 #              A host-built binary CANNOT be dropped into the stock image: host glibc is 2.39,
 #              the arc_execution image is Debian 12 / glibc 2.36.
@@ -21,8 +21,8 @@ IMG="${IMG:-arc_execution_salt:latest}"
 
 docker image inspect "$IMG" >/dev/null 2>&1 || {
   echo "!! image $IMG not found. Build it first:"
-  echo "   DOCKER_BUILDKIT=1 docker build -f deployments/Dockerfile.execution --target dev-runtime \\"
-  echo "     --build-context certs=deployments/certs -t arc_execution_salt:latest ."
+  echo "   DOCKER_BUILDKIT=1 docker build -f deployments/Dockerfile.execution.salt \\"
+  echo "     -t arc_execution_salt:latest ."
   exit 1
 }
 [ -f "$ASSETS/payment-jwt.hex" ] || { echo "missing $ASSETS/payment-jwt.hex"; exit 1; }
