@@ -8,6 +8,11 @@ once_cell = "1"
 borsh = "1"
 redb = "2"
 memmap2 = "0.9"
+# SALT (MegaETH). No [patch] needed: banderwagon declares MegaETH's ark fork as a DIRECT git
+# dep, so its ark-* coexists with the crates.io ark-* that revm-precompile uses. Patching the
+# root would have swapped the crypto under Arc's EVM precompiles — this avoids that entirely.
+salt = { git = "https://github.com/megaeth-labs/salt", optional = true }
+hashbrown = { version = "0.16", optional = true }
 alloy-primitives = { workspace = true }
 reth-trie = { workspace = true }
 jmt = { workspace = true }
@@ -17,8 +22,13 @@ sha2 = { workspace = true }
 anyhow = "1"
 
 [features]
-default = ["std"]
+default = ["std", "salt-commitment"]
 std = ["alloy-primitives/std"]
+# SALT commitment lane (ARC_PAYMENT_ROOT=salt). Default-ON on this research branch: reth-trie-db
+# is a [patch] crate, not a workspace member, so CLI --features cannot target it and the cfg blocks
+# in the vendored seams would compile out. Cost is compiling MegaETH's ark fork + bandersnatch
+# always; it stays isolated from the crates.io ark that revm-precompile uses.
+salt-commitment = ["dep:salt", "dep:hashbrown"]
 
 [dev-dependencies]
 reth-primitives-traits = { workspace = true }

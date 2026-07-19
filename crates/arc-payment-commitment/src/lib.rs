@@ -195,6 +195,8 @@ mod tests {
 
 pub mod persistent;
 pub mod dense;
+#[cfg(feature = "salt-commitment")]
+pub mod salt_commitment;
 
 /// redb-backed JMT node store (one shard). Used by the persistent incremental JMT.
 pub struct RedbNodeStore {

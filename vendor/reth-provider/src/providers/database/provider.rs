@@ -2720,6 +2720,24 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypesForProvider> StateWriter
             }
         }
 
+        // Arc payment lane: advance the SALT committed base (state buckets + IPA commitment).
+        #[cfg(feature = "salt-commitment")]
+        if arc_payment_commitment::salt_commitment::enabled() {
+            let changes: Vec<(alloy_primitives::B256, Option<Vec<u8>>)> = hashed_state
+                .accounts()
+                .iter()
+                .map(|(k, m)| {
+                    (*k, m.map(|a| {
+                        arc_payment_commitment::salt_commitment::encode_account_leaf(
+                            a.nonce,
+                            alloy_primitives::B256::from(a.balance.to_be_bytes::<32>()),
+                        )
+                    }))
+                })
+                .collect();
+            arc_payment_commitment::salt_commitment::commit(&changes);
+        }
+
         // Arc payment lane: advance the dense-Merkle committed tree by this block's account
         // changes (contiguous node array — no key-value store, no per-node writes).
         if arc_payment_commitment::dense::enabled() {

@@ -97,5 +97,9 @@ pub fn encode_acct(nonce: u64, balance_be: [u8; 32]) -> OwnedValue {
 
 /// True when ANY alternative payment-lane commitment replaces the MPT (jmt | dense).
 pub fn alt_enabled() -> bool {
+    #[cfg(feature = "salt-commitment")]
+    if arc_payment_commitment::salt_commitment::enabled() {
+        return true;
+    }
     jmt_enabled() || arc_payment_commitment::dense::enabled()
 }

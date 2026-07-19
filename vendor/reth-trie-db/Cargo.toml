@@ -63,6 +63,9 @@ serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 similar-asserts = "*"
 
 [features]
+# default-ON so the salt seam compiles in; see arc-payment-commitment for why.
+default = ["salt-commitment"]
+salt-commitment = ["arc-payment-commitment/salt-commitment"]
 metrics = ["reth-trie/metrics", "dep:reth-metrics", "dep:metrics"]
 serde = [
     "similar-asserts/serde",

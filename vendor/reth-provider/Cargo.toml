@@ -91,6 +91,9 @@ tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 
 [features]
+# default-ON so the salt seam compiles in; see arc-payment-commitment for why.
+default = ["salt-commitment"]
+salt-commitment = ["arc-payment-commitment/salt-commitment"]
 jemalloc = ["rocksdb/jemalloc"]
 test-utils = [
     "reth-db/test-utils",

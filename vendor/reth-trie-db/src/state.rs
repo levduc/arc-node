@@ -32,6 +32,28 @@ fn jmt_full_root<TX: DbTx>(
     _tx: &TX,
     post_state: &HashedPostStateSorted,
 ) -> Result<B256, StateRootError> {
+    // SALT (MegaETH): two-tier SHI buckets under a 256-ary trie, IPA/Pedersen commitment.
+    #[cfg(feature = "salt-commitment")]
+    if arc_payment_commitment::salt_commitment::enabled() {
+        let changes: Vec<(B256, Option<Vec<u8>>)> = post_state
+            .accounts()
+            .iter()
+            .map(|(k, maybe)| {
+                (*k, maybe.map(|a| {
+                    arc_payment_commitment::salt_commitment::encode_account_leaf(
+                        a.nonce,
+                        B256::from(a.balance.to_be_bytes::<32>()),
+                    )
+                }))
+            })
+            .collect();
+        let root = arc_payment_commitment::salt_commitment::readonly_root(&changes);
+        if std::env::var("ARC_JMT_TRACE").is_ok() {
+            eprintln!("SALT readonly changes={} root={:#x}", changes.len(), root);
+        }
+        return Ok(root);
+    }
+
     // Locality-keyed dense Merkle (contiguous node array, no key-value store).
     if arc_payment_commitment::dense::enabled() {
         let changes: Vec<(B256, Option<Vec<u8>>)> = post_state
