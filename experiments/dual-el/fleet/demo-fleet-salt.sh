@@ -134,6 +134,38 @@ start(){
   cp assets/localdev/payment-jwt.hex "$LBASE/assets/" 2>/dev/null || true
   for i in 1 2 3 4; do rm -rf "$LBASE/validator$i/reth-pay"; mkdir -p "$LBASE/validator$i/reth-pay"; done
 
+  # PRESEED=N adds N accounts to the SHARED genesis so BOTH lanes start at the same large state.
+  # Preseeding only the payment lane (as demo-bloat.sh does) would make any MPT-vs-SALT comparison
+  # invalid, since block-root cost depends on trie size. Both EVM and payment datadirs are wiped so
+  # every EL re-inits from the preseeded genesis on boot.
+  #
+  # Cost, measured previously: reth holds the whole genesis alloc in RSS forever (~250 B/account),
+  # so 10M => ~2.7 GB per EL, i.e. ~5.4 GB per machine with two ELs (alien2 has 15 GB -- 10M is its
+  # practical ceiling). Genesis JSON is ~70 MB per 1M accounts and each EL re-parses it at every boot.
+  if [ "${PRESEED:-0}" != "0" ]; then
+    echo "    preseeding shared genesis with ${PRESEED} accounts…"
+    PRESEED_N="$PRESEED" python3 - <<'PYSEED'
+import json, os
+n = int(os.environ["PRESEED_N"])
+path = ".quake/soak4/assets/genesis.json"
+g = json.load(open(path))
+base = g.get("alloc", {})
+with open(path, "w") as out:
+    out.write(json.dumps({k: v for k, v in g.items() if k != "alloc"})[:-1] + ', "alloc": {')
+    first = True
+    for a, v in base.items():
+        out.write(("" if first else ",") + json.dumps(a) + ":" + json.dumps(v)); first = False
+    for i in range(n):
+        out.write(',"0x%040x":{"balance":"0xde0b6b3a7640000"}' % (0x2000000000 + i))
+    out.write("}}")
+print(f"    genesis now has {len(base)} original + {n} preseeded accounts")
+PYSEED
+    ls -la "$LBASE/assets/genesis.json" | awk '{printf "    genesis.json %.1f MB\n", $5/1048576}'
+    # wipe EVM datadirs too so they re-init from the preseeded genesis (payment already wiped)
+    for i in 1 2 3 4; do rm -rf "$LBASE/validator$i/reth"; mkdir -p "$LBASE/validator$i/reth"; done
+    echo "    both lanes' datadirs wiped -> both re-init at the same large state"
+  fi
+
   echo "==> [3/9] fleet compose surgery (tailscale peer rewrite)"
   # Fail fast: this silently produced nothing when gen-fleet.py had a hardcoded worktree path,
   # and every downstream step then failed with confusing "no such file" errors on the remotes.
