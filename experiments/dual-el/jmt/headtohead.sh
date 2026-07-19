@@ -30,7 +30,16 @@ boot(){ # boot <name> <http> <ws> <auth> <met> <p2p> <jmt?>
   # ALT selects the alternative commitment on lane 2: jmt (sharded Jellyfish MT, redb store)
   # or dense (fixed-depth Merkle, one contiguous node array, no key-value store).
   [ "$isjmt" = 1 ] && env="ARC_PAYMENT_ROOT=${ALT:-jmt} ARC_JMT_STORE_PATH=$RUN/store-$n ARC_DENSE_STORE_PATH=$RUN/dense-store-$n"
-  env $env "$BIN" node --datadir "$dd" --chain "$GEN" \
+  # MEMLIMIT (e.g. 2G) caps the EL via a cgroup-v2 scope so state must exceed RAM. Applied to
+  # BOTH lanes identically -- capping only one would compare capped-vs-uncapped, not commitments.
+  # Under the cap, mmap-backed stores (MDBX, dense nodes.bin) evict page cache and pay real disk
+  # I/O; anonymous-heap stores (SALT's MemStore) cannot evict and will OOM instead. That
+  # difference is itself the result.
+  local wrap=""
+  if [ -n "${MEMLIMIT:-}" ]; then
+    wrap="systemd-run --user --scope --collect --unit=arcel-$n -p MemoryMax=$MEMLIMIT -p MemorySwapMax=0 -q"
+  fi
+  $wrap env $env "$BIN" node --datadir "$dd" --chain "$GEN" \
     --http --http.addr 127.0.0.1 --http.port "$http" --http.api eth,net,web3,debug \
     --ws --ws.addr 127.0.0.1 --ws.port "$ws" --ws.api eth,net,web3,txpool \
     --authrpc.addr 127.0.0.1 --authrpc.port "$auth" --authrpc.jwtsecret "$JWT" \
