@@ -228,10 +228,16 @@ verify(){
   local tot=0
   for n in 1 2 3 4; do
     if [ $n = 1 ]; then c=$(docker logs validator1_el_pay 2>&1 | grep -ci "does not match")
-    else c=$(tss "${RHOST[$n]}" "docker logs validator${n}_el_pay 2>&1 | grep -ci 'does not match'" 2>/dev/null || echo "?"); fi
-    echo "  val$n state-root mismatches: ${c:-?}"
-    [ "${c:-0}" != "0" ] && [ "${c:-?}" != "?" ] && ok=0
-    [ "${c:-0}" != "?" ] && tot=$((tot+${c:-0}))
+    else c=$(tss "${RHOST[$n]}" "docker logs validator${n}_el_pay 2>&1 | grep -ci 'does not match'" 2>/dev/null); fi
+    # keep digits only: an unreachable host yields empty/garbage, which broke $(( )) arithmetic
+    c=$(printf '%s' "${c:-}" | tr -cd '0-9')
+    if [ -z "$c" ]; then
+      echo "  val$n state-root mismatches: UNREACHABLE"; ok=0
+    else
+      echo "  val$n state-root mismatches: $c"
+      [ "$c" != "0" ] && ok=0
+      tot=$((tot+c))
+    fi
   done
 
   echo "== SALT seed trace (proves the commitment covers genesis, not just touched accounts) =="
