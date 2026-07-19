@@ -45,3 +45,59 @@ locate the crossover on the fleet.
 
 So the true MPT-vs-SALT gap on a fresh chain is **at least** 2.79x in MPT's favour -- correcting any
 of the three would widen it, not narrow it.
+
+---
+
+# Second point: 5M preseeded accounts (same fleet, same method)
+
+`PRESEED=5000000` on the SHARED genesis (367.6 MB, 5,001,293 alloc), both lanes re-inited from it.
+SALT seeded all 5,001,293 accounts at first root. 55/55 samples symmetric, agreement held.
+
+|                     | EVM (MPT) | PAY (SALT) |            |
+|---------------------|-----------|------------|------------|
+| landed tps          | 321.7     | 321.4      |            |
+| txs / block         | 82.4      | 82.3       | validity   |
+| exec ms / block     | 3.340     | 3.000      | CONTROL    |
+| persist ms / block  | 49.11     | 47.76      | CONTROL    |
+| **root ms / block** | **3.230** | **7.760**  | COMMITMENT |
+
+## The curve so far
+
+| accounts | MPT root | SALT root | ratio |
+|---|---|---|---|
+| ~250k | 2.670 ms | 7.440 ms | MPT 2.79x |
+| 5M    | 3.230 ms | 7.760 ms | MPT 2.40x |
+| growth over 20x state | **+21%** | **+4.3%** | narrowing |
+
+MPT's cost grows ~5x faster than SALT's, and the gap narrows -- SALT's flat-cost property is real
+and measurable. But:
+
+## Trie size ALONE will never produce a crossover
+
+At ~21% MPT growth per 20x state, closing a 2.40x gap needs ~10^6 x more state (trillions of
+accounts). Inside the page-cached regime the MPT simply wins. A crossover requires the STEP CHANGE
+when lookups start missing cache and become disk seeks -- not a gradual curve. Anyone planning to
+"just preseed more" should read this row first.
+
+## METHODOLOGICAL FINDING: preseeded state != organically grown state
+
+At a comparable ~5M accounts:
+
+| how the state was reached | MPT root |
+|---|---|
+| organic growth (2 h single-machine run) | **8.62 ms** |
+| genesis preseed (this run) | **3.23 ms** |
+
+2.7x apart at the same account count. Preseed bulk-loads a contiguous, cache-friendly layout;
+organic growth applies millions of individual trie updates that scatter and fragment the store. So
+preseeding reaches a large state quickly but does NOT reproduce its cost profile, and it flatters
+the MPT specifically.
+
+Caveat: those two runs differ in hardware and config (single-machine bare metal vs 4-machine
+fleet), so treat the cross-run number as suggestive, not conclusive. The within-run growth rates
+are the trustworthy part.
+
+## What would actually settle it
+Organic growth to a genuinely RAM-exceeding state, or a cap tight enough to force eviction without
+OOMing on the genesis-resident alloc (~250 B/account, so preseed itself consumes the cap budget --
+another reason preseed and memory-capping fight each other).
