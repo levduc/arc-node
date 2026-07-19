@@ -35,6 +35,28 @@ fn jmt_full_root<TX: DbTx>(
     // SALT (MegaETH): two-tier SHI buckets under a 256-ary trie, IPA/Pedersen commitment.
     #[cfg(feature = "salt-commitment")]
     if arc_payment_commitment::salt_commitment::enabled() {
+        // CORRECTNESS: seed the committed base from the durable plain state before the first root.
+        // Genesis accounts are written to HashedAccounts at `init` and never pass through
+        // write_hashed_state, so without this the root commits only to accounts touched since
+        // startup. Called OUTSIDE the commitment lock (ensure_seeded acquires it itself).
+        arc_payment_commitment::salt_commitment::ensure_seeded(|| {
+            let mut out: Vec<(B256, Option<Vec<u8>>)> = Vec::new();
+            if let Ok(mut cur) = _tx.cursor_read::<reth_db_api::tables::HashedAccounts>() {
+                let mut entry = cur.first().ok().flatten();
+                while let Some((k, a)) = entry {
+                    out.push((
+                        k,
+                        Some(arc_payment_commitment::salt_commitment::encode_account_leaf(
+                            a.nonce,
+                            B256::from(a.balance.to_be_bytes::<32>()),
+                        )),
+                    ));
+                    entry = cur.next().ok().flatten();
+                }
+            }
+            out
+        });
+
         let changes: Vec<(B256, Option<Vec<u8>>)> = post_state
             .accounts()
             .iter()

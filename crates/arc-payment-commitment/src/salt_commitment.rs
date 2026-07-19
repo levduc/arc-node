@@ -40,6 +40,49 @@ fn store() -> &'static MemStore {
     STORE.get_or_init(MemStore::new)
 }
 
+/// Runs the one-time seed exactly once per process.
+static SEEDED: std::sync::Once = std::sync::Once::new();
+
+/// Seed the committed base from reth's durable plain state (`HashedAccounts`) before any root is
+/// computed. **This is a correctness requirement, not an optimization.**
+///
+/// Without it the commitment contains only accounts that have flowed through `write_hashed_state`
+/// since this process started. Genesis-funded accounts are written at `init` and never appear
+/// there, so the root would authenticate only *touched* accounts — a validator could not detect
+/// tampering with an untouched one. The chain still runs (build and validate agree, both being
+/// equally blind), which is exactly what makes the bug easy to miss.
+///
+/// It also gives durability without per-block disk writes: `HashedAccounts` is the authoritative,
+/// MDBX-durable plain state, so re-seeding from it on startup reconstructs the full commitment.
+/// That is why SALT's nodes do NOT need to be written to MDBX per block — doing so would recreate
+/// the store-bound cost that erased the JMT lane's structural win.
+///
+/// Determinism: the seed set is the entire table, and SALT's buckets are Strongly History
+/// Independent, so the resulting base is a pure function of the account set — independent of
+/// iteration order and identical on every validator.
+///
+/// Cost: O(state), once per process, on the first root computation. For a large restored state
+/// this is a one-time startup stall; a real client would run it during node init rather than
+/// lazily inside the first block validation.
+pub fn ensure_seeded<F>(load: F)
+where
+    F: FnOnce() -> Vec<(B256, Option<Vec<u8>>)>,
+{
+    SEEDED.call_once(|| {
+        let all = load();
+        if all.is_empty() {
+            return;
+        }
+        let n = all.len();
+        // `commit` takes LOCK itself; ensure_seeded is always called OUTSIDE the lock (never from
+        // within readonly_root/commit) so this cannot deadlock.
+        let root = commit(&all);
+        if std::env::var("ARC_JMT_TRACE").is_ok() {
+            eprintln!("SALT seeded {n} accounts from HashedAccounts, base root={root:#x}");
+        }
+    });
+}
+
 /// Encode an account leaf as (nonce, balance) — byte-identical to what the JMT and dense lanes
 /// commit, so per-key work stays comparable across the three experiments.
 pub fn encode_account_leaf(nonce: u64, balance: B256) -> Vec<u8> {
