@@ -14,6 +14,14 @@
 #     -t arc_execution_salt:latest .
 # A host-built binary cannot be substituted: host glibc 2.39 vs the image's Debian 12 / 2.36.
 #
+# PREREQ 2 (bites in a fresh git worktree): submodules. `git worktree add` does NOT initialise
+# them, so contracts/lib/* is empty and quake's genesis step dies in hardhat with
+# "FileNotFoundError: .../Ownable2StepUpgradeable.sol not found". Fix:
+#   git submodule update --init --recursive
+#
+# PREREQ 3: target/release/quake and target/release/spammer must exist in this tree (both are
+# commitment-independent, so they can be copied from another worktree's target/release/).
+#
 # HONEST SCOPE — what this demo does and does not show:
 #   DOES : SALT computing consensus-valid payment-lane state roots inside reth, agreed by all 4
 #          validators, live, under load, alongside an MPT-committed EVM lane.
