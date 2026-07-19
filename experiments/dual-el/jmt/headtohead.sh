@@ -16,6 +16,7 @@ JWT="$RUN/jwt.hex"; [ -f "$JWT" ] || openssl rand -hex 32 > "$JWT"
 # lane: name http ws auth metrics p2p  (MPT then JMT)
 MPT=(mpt 7545 7546 7551 7001 30501)
 JMT=(jmt 7645 7646 7651 7002 30502)
+ALTNAME=$(echo "${ALT:-jmt}" | tr "[:lower:]" "[:upper:]")  # lane-2 label in report/series
 RATE=${RATE:-800}     # transfers/sec into each lane
 BLOCK_MS=${BLOCK_MS:-250}
 
@@ -68,7 +69,7 @@ case "${1:-}" in
     ( ps=(0 0); pc=(0 0)
       while [ ! -f "$RUN/spam.stop" ]; do
         i=0
-        for L in "MPT 7001 7545" "JMT 7002 7645"; do set -- $L
+        for L in "MPT 7001 7545" "$ALTNAME 7002 7645"; do set -- $L
           h=$(curl -s -m3 -X POST http://127.0.0.1:$3 -H 'content-type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' 2>/dev/null | python3 -c "import sys,json;print(int(json.load(sys.stdin)['result'],16))" 2>/dev/null)
           read s c < <(curl -s -m3 http://127.0.0.1:$2/metrics 2>/dev/null | awk '/^reth_sync_block_validation_state_root_histogram_sum/{s=$2}/^reth_sync_block_validation_state_root_histogram_count/{c=$2}END{print s+0, c+0}')
           cum=$(python3 -c "print(f'{($s/$c*1000) if $c else 0:.4f}')")
@@ -82,7 +83,7 @@ case "${1:-}" in
     echo "$(date +%s) $DUR" > "$RUN/started"
     ;;
   report)
-    for L in "MPT 7001 7545" "JMT 7002 7645"; do set -- $L
+    for L in "MPT 7001 7545" "$ALTNAME 7002 7645"; do set -- $L
       h=$(curl -s -m3 -X POST http://127.0.0.1:$3 -H 'content-type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' | python3 -c "import sys,json;print(int(json.load(sys.stdin)['result'],16))" 2>/dev/null)
       curl -s -m3 http://127.0.0.1:$2/metrics 2>/dev/null | python3 -c "
 import sys

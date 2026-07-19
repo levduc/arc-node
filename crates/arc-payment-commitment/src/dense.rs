@@ -6,9 +6,16 @@
 //! binary Merkle whose nodes live in ONE contiguous mapping in heap layout (node i's children at
 //! 2i, 2i+1). Fetching a node is an array index, not a lookup; the hot upper levels are a small
 //! contiguous region every update touches, so they stay cache-resident. Persistence is a
-//! page-granular mmap msync (sequential dirty-page writeback) plus an append-only value log,
-//! rather than per-node key-value records — the MPT durably writes its trie nodes to MDBX every
-//! persistence batch, so this lane must persist too or the comparison is rigged.
+//! page-granular mmap writeback plus an append-only value log, rather than per-node key-value
+//! records — the MPT durably writes its trie nodes to MDBX every persistence batch, so this lane
+//! must persist too or the comparison is rigged (but on the same terms: async per block, fsync at
+//! a batch boundary — see `flush_async`/`sync`).
+//!
+//! MEASURED CORRECTION to the original premise: this layout does NOT buy sequential writeback.
+//! Leaf position comes from keccak(addr), so the ~k leaves a block touches dirty ~k SCATTERED
+//! 4KB pages. The array is contiguous in address space, not in the pages you write. What "dense"
+//! actually buys is (a) no key-value probe per node and (b) cache residency of the hot upper
+//! levels every update converges on.
 //!
 //! It trades memory for that: all 2^(D+1) nodes are allocated up front (D=23 -> 537 MB) even
 //! though only the populated leaves matter, whereas the MPT stores only nodes that exist.
@@ -102,10 +109,19 @@ impl Nodes {
             Self::Anon(v) => v[i] = h,
         }
     }
-    /// msync the byte ranges covering `indices` (coalesced, page-granular). This is the dense
-    /// store's whole persistence cost: the OS writes back dirty PAGES, sequentially, instead of
-    /// the per-node key-value writes a KV store performs.
-    fn flush(&self, indices: &[usize]) -> std::io::Result<()> {
+    /// Start writeback of the dirty pages covering `indices` (coalesced, page-granular).
+    ///
+    /// ASYNC on purpose. Reth's MPT persists through MDBX, which writes pages into the OS page
+    /// cache per block and only fsyncs when the *batch* transaction commits (reth's
+    /// persistence-threshold). Doing a synchronous msync here every block would charge the dense
+    /// lane a durability cost the MPT never pays, and would measure that policy rather than the
+    /// data structure. `sync()` below is the batch-boundary equivalent.
+    ///
+    /// NOTE (a real property of this layout, not a bug): leaf positions come from keccak(addr),
+    /// so the ~k touched leaves land in ~k SCATTERED 4KB pages. The node array is contiguous in
+    /// address space but the dirtied pages are random within it — "dense" buys cache locality on
+    /// the hot upper levels, NOT sequential writeback.
+    fn flush_async(&self, indices: &[usize]) -> std::io::Result<()> {
         let Self::Mapped { mmap, .. } = self else { return Ok(()) };
         if indices.is_empty() {
             return Ok(());
@@ -121,9 +137,17 @@ impl Nodes {
             }
         }
         for (s, e) in ranges {
-            mmap.flush_range(s, e - s)?;
+            mmap.flush_async_range(s, e - s)?;
         }
         Ok(())
+    }
+
+    /// Durability barrier at a batch boundary (the MDBX-commit equivalent).
+    fn sync(&self) -> std::io::Result<()> {
+        match self {
+            Self::Mapped { mmap, .. } => mmap.flush(),
+            Self::Anon(_) => Ok(()),
+        }
     }
 }
 
@@ -137,6 +161,8 @@ struct State {
     /// survive restart. Reth's MPT durably persists its trie nodes to MDBX on every persistence
     /// batch, so the dense lane must persist too — otherwise it would "win" only by not writing.
     vlog: Option<std::io::BufWriter<std::fs::File>>,
+    /// Blocks applied since the last durability barrier (see commit()).
+    since_sync: u64,
     depth: usize,
 }
 
@@ -168,6 +194,7 @@ fn state() -> &'static Mutex<State> {
             nodes: Nodes::Mapped { mmap, _file: file },
             slots: BTreeMap::new(),
             vlog,
+            since_sync: 0,
             depth: d,
         })
     })
@@ -255,7 +282,7 @@ pub fn commit(changes: &[(B256, Option<Vec<u8>>)]) -> B256 {
         }
     }
 
-    // Durable leaf values: append (addr, len, value) for each change, then fsync.
+    // Leaf values: append (addr, len, value) for each change into the buffered log.
     if let Some(w) = st.vlog.as_mut() {
         for (addr, val) in changes {
             let _ = w.write_all(&addr.0);
@@ -269,14 +296,24 @@ pub fn commit(changes: &[(B256, Option<Vec<u8>>)]) -> B256 {
                 }
             }
         }
-        let _ = w.flush();
-        if std::env::var("ARC_DENSE_FSYNC").map(|v| v != "0").unwrap_or(true) {
+        let _ = w.flush(); // to the OS page cache, like MDBX's per-block page writes
+    }
+
+    // Kick off writeback of the dirty node pages (async — see flush_async).
+    let _ = st.nodes.flush_async(&dirty);
+
+    // Durability barrier every N blocks, mirroring MDBX committing reth's persistence BATCH
+    // rather than every individual block. ARC_DENSE_SYNC_EVERY=1 to fsync per block.
+    st.since_sync += 1;
+    let every: u64 =
+        std::env::var("ARC_DENSE_SYNC_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(32);
+    if every > 0 && st.since_sync >= every {
+        st.since_sync = 0;
+        let _ = st.nodes.sync();
+        if let Some(w) = st.vlog.as_mut() {
             let _ = w.get_ref().sync_data();
         }
     }
-
-    // msync the dirty node pages.
-    let _ = st.nodes.flush(&dirty);
     root
 }
 
@@ -299,6 +336,7 @@ mod tests {
             nodes: Nodes::Anon(vec![[0u8; 32]; 1 << (d + 1)]),
             slots: BTreeMap::new(),
             vlog: None,
+            since_sync: 0,
             depth: d,
         }
     }
