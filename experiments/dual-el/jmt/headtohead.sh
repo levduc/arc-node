@@ -21,12 +21,14 @@ BLOCK_MS=${BLOCK_MS:-250}
 
 boot(){ # boot <name> <http> <ws> <auth> <met> <p2p> <jmt?>
   local n=$1 http=$2 ws=$3 auth=$4 met=$5 p2p=$6 isjmt=$7
-  local dd="$RUN/data-$n"; rm -rf "$dd" "$RUN/store-$n"
+  # wipe BOTH the reth datadir and the alt-commitment store — a stale dense nodes.bin/values.log
+  # or jmt redb would carry a previous run's tree onto a fresh chain and produce wrong roots.
+  local dd="$RUN/data-$n"; rm -rf "$dd" "$RUN/store-$n" "$RUN/dense-store-$n"
   "$BIN" init --datadir "$dd" --chain "$GEN" >"$RUN/init-$n.log" 2>&1
   local env=""
   # ALT selects the alternative commitment on lane 2: jmt (sharded Jellyfish MT, redb store)
   # or dense (fixed-depth Merkle, one contiguous node array, no key-value store).
-  [ "$isjmt" = 1 ] && env="ARC_PAYMENT_ROOT=${ALT:-jmt} ARC_JMT_STORE_PATH=$RUN/store-$n"
+  [ "$isjmt" = 1 ] && env="ARC_PAYMENT_ROOT=${ALT:-jmt} ARC_JMT_STORE_PATH=$RUN/store-$n ARC_DENSE_STORE_PATH=$RUN/dense-store-$n"
   env $env "$BIN" node --datadir "$dd" --chain "$GEN" \
     --http --http.addr 127.0.0.1 --http.port "$http" --http.api eth,net,web3,debug \
     --ws --ws.addr 127.0.0.1 --ws.port "$ws" --ws.api eth,net,web3,txpool \
