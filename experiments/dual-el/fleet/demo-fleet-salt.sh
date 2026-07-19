@@ -161,9 +161,18 @@ with open(path, "w") as out:
 print(f"    genesis now has {len(base)} original + {n} preseeded accounts")
 PYSEED
     ls -la "$LBASE/assets/genesis.json" | awk '{printf "    genesis.json %.1f MB\n", $5/1048576}'
-    # wipe EVM datadirs too so they re-init from the preseeded genesis (payment already wiped)
-    for i in 1 2 3 4; do rm -rf "$LBASE/validator$i/reth"; mkdir -p "$LBASE/validator$i/reth"; done
-    echo "    both lanes' datadirs wiped -> both re-init at the same large state"
+    # Wipe EVM datadirs so they re-init from the preseeded genesis. MUST go through a root
+    # container: docker creates the datadir's db/ subdir root-owned drwxr-xr-x, so a plain
+    # `rm -rf` as the host user cannot unlink files INSIDE it and silently leaves the old
+    # database in place. The EL then dies with "genesis hash in the storage does not match the
+    # specified chainspec", and (worse) step [4] ships that stale datadir to every remote.
+    docker run --rm -v "$REPO/.quake":/q --user root alpine sh -c \
+      'for i in 1 2 3 4; do rm -rf /q/'"$SCEN"'/validator$i/reth /q/'"$SCEN"'/validator$i/reth-pay; mkdir -p /q/'"$SCEN"'/validator$i/reth /q/'"$SCEN"'/validator$i/reth-pay; done'
+    docker run --rm -v "$REPO/.quake":/q --user root alpine chown -R "$(id -u):$(id -g)" /q/"$SCEN"
+    for i in 1 2 3 4; do
+      [ -e "$LBASE/validator$i/reth/db/mdbx.dat" ] && { echo "    !! validator$i EVM datadir NOT wiped"; exit 1; }
+    done
+    echo "    both lanes' datadirs wiped (verified) -> both re-init at the same large state"
   fi
 
   echo "==> [3/9] fleet compose surgery (tailscale peer rewrite)"
