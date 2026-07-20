@@ -55,7 +55,76 @@ fn key(i: u64) -> B256 {
     B256::from(b)
 }
 
+/// Measure reth's MPT root against an EXISTING datadir (e.g. the real Arc snapshot), read-only.
+///
+/// This is the only way to reach the regime that matters: the Arc testnet snapshot is a 168 GB
+/// mdbx.dat on a 78 GB machine, so the trie CANNOT be page-cached and every lookup is a real disk
+/// seek. Synthetic populate-then-measure cannot reproduce that -- it bulk-loads a contiguous,
+/// cache-friendly layout (measured: same ~5M accounts cost 3.23 ms bulk-loaded vs 8.62 ms grown
+/// organically).
+///
+/// Accounts are sampled by SEEKING to pseudo-random keys, so access is scattered across the
+/// keyspace the way real transaction load is -- not a sequential walk of one hot page.
+///
+/// SALT does not participate here: at the measured ~1.83 KB/account of the shipped MemStore, a
+/// state this size would need hundreds of GB of unevictable heap. That limitation is the finding,
+/// not an omission.
+fn existing(path: &str, k_changed: u64, n_blocks: u64) -> eyre::Result<()> {
+    use reth_db_api::cursor::DbCursorRO;
+    println!("opening EXISTING datadir read-only: {path}");
+    let db = reth_db::open_db_read_only(std::path::Path::new(path), Default::default())?;
+
+    // pseudo-random probe keys (xorshift, fixed seed => reproducible run to run)
+    let mut st: u64 = 0x243F_6A88_85A3_08D3;
+    let mut next = || { st ^= st << 13; st ^= st >> 7; st ^= st << 17; st };
+
+    println!("{:>6} {:>10} {:>16}", "block", "sampled", "MPT root ms");
+    let mut times = Vec::new();
+    for b in 0..n_blocks {
+        // sample k existing accounts by seeking to scattered keys
+        let tx = db.tx()?;
+        let mut changes = Vec::new();
+        {
+            let mut cur = tx.cursor_read::<reth_db_api::tables::HashedAccounts>()?;
+            for _ in 0..k_changed {
+                let mut probe = [0u8; 32];
+                for c in probe.chunks_mut(8) { c.copy_from_slice(&next().to_be_bytes()); }
+                if let Ok(Some((key, mut acct))) = cur.seek(B256::from(probe)) {
+                    acct.nonce += 1;
+                    acct.balance = acct.balance.saturating_add(U256::from(1u64));
+                    changes.push((key, acct));
+                }
+            }
+        }
+        let mut post = reth_trie::HashedPostState::default();
+        for (k, a) in &changes { post.accounts.insert(*k, Some(*a)); }
+        let sorted = post.into_sorted();
+
+        let t = Instant::now();
+        let _root = <reth_trie::StateRoot<
+            reth_trie_db::DatabaseTrieCursorFactory<_, reth_trie_db::LegacyKeyAdapter>,
+            reth_trie_db::DatabaseHashedCursorFactory<_>,
+        > as reth_trie_db::DatabaseStateRoot<_>>::overlay_root(&tx, &sorted)?;
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        drop(tx);
+        times.push(ms);
+        println!("{b:>6} {:>10} {ms:>16.3}", changes.len());
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let med = times[times.len() / 2];
+    println!("
+=== MPT on REAL Arc state, {k_changed} changed/block ===");
+    println!("first (coldest) {:.3} ms | median {:.3} ms | max {:.3} ms",
+             times.first().copied().unwrap_or(0.0), med, times.last().copied().unwrap_or(0.0));
+    println!("compare: 0.246 ms synthetic-cached 1M, 3.23 ms live fleet 5M preseeded");
+    Ok(())
+}
+
 fn main() -> eyre::Result<()> {
+    if let Some(i) = std::env::args().position(|a| a == "--existing") {
+        let path = std::env::args().nth(i + 1).expect("--existing <datadir>");
+        return existing(&path, arg("--changed", 200), arg("--blocks", 20));
+    }
     let n_accounts = arg("--accounts", 5_000_000);
     let k_changed = arg("--changed", 200);
     let n_blocks = arg("--blocks", 30);
