@@ -69,8 +69,81 @@ fn key(i: u64) -> B256 {
 /// SALT does not participate here: at the measured ~1.83 KB/account of the shipped MemStore, a
 /// state this size would need hundreds of GB of unevictable heap. That limitation is the finding,
 /// not an omission.
+/// Seed SALT from the REAL snapshot's HashedAccounts, in chunks, reporting RSS as it grows.
+/// Replaces an extrapolation ("SALT would need ~81 GB for 44.4M accounts, so it cannot fit") with
+/// an actual attempt. Either it fits -- and we can then measure SALT on real Arc state -- or it
+/// OOMs, which confirms the limit empirically instead of by arithmetic.
+fn seed_salt_from_snapshot(path: &str, limit: u64) -> eyre::Result<u64> {
+    use reth_db_api::cursor::DbCursorRO;
+    let db = reth_db::open_db_read_only(std::path::Path::new(path), Default::default())?;
+    let mut total = 0u64;
+    let t0 = Instant::now();
+    // MDBX aborts a read transaction held too long ("read transaction has been timed out",
+    // -96000) -- seeding 44M accounts takes minutes, so ONE long-lived tx cannot be used. Re-open
+    // a fresh tx per chunk and resume from the last key seen.
+    let mut resume: Option<B256> = None;
+    loop {
+        let tx = db.tx()?;
+        let mut cur = tx.cursor_read::<reth_db_api::tables::HashedAccounts>()?;
+        let mut entry = match resume {
+            None => cur.first()?,
+            Some(k) => {
+                let e = cur.seek(k)?;
+                // seek lands ON the resume key, which was already committed; step past it
+                if e.map(|(kk, _)| kk) == Some(k) { cur.next()? } else { e }
+            }
+        };
+        let mut batch: Vec<(B256, Option<Vec<u8>>)> = Vec::with_capacity(1_000_000);
+        let mut done = true;
+        while let Some((k, a)) = entry {
+            batch.push((
+                k,
+                Some(arc_payment_commitment::salt_commitment::encode_account_leaf(
+                    a.nonce,
+                    B256::from(a.balance.to_be_bytes::<32>()),
+                )),
+            ));
+            resume = Some(k);
+            if batch.len() == 1_000_000 {
+                done = false; // more may remain; close this tx and continue with a fresh one
+                break;
+            }
+            entry = cur.next()?;
+        }
+        drop(cur);
+        drop(tx);
+        if batch.is_empty() { break; }
+        let n = batch.len() as u64;
+        arc_payment_commitment::salt_commitment::commit(&batch);
+        total += n;
+        println!("  seeded {total:>10} accounts  rss={:.1} GB  elapsed={:.0?}", rss_gb(), t0.elapsed());
+        if done { break; }
+        if limit > 0 && total >= limit { break; }
+    }
+    println!("  SEEDED {total} accounts into SALT, rss={:.1} GB, {:.0?}", rss_gb(), t0.elapsed());
+    Ok(total)
+}
+
+fn rss_gb() -> f64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| {
+                l.split_whitespace().nth(1).and_then(|v| v.parse::<f64>().ok())
+            })
+        })
+        .map(|kb| kb / 1048576.0)
+        .unwrap_or(0.0)
+}
+
 fn existing(path: &str, k_changed: u64, n_blocks: u64) -> eyre::Result<()> {
     use reth_db_api::cursor::DbCursorRO;
+    // --with-salt: seed SALT from this same state first, so both structures hold it
+    if std::env::args().any(|a| a == "--with-salt") {
+        let limit = arg("--salt-limit", 0);
+        println!("seeding SALT from the real snapshot (limit={} 0=all)…", limit);
+        seed_salt_from_snapshot(path, limit)?;
+    }
     println!("opening EXISTING datadir read-only: {path}");
     let db = reth_db::open_db_read_only(std::path::Path::new(path), Default::default())?;
 
@@ -81,8 +154,10 @@ fn existing(path: &str, k_changed: u64, n_blocks: u64) -> eyre::Result<()> {
     let mut st: u64 = arg("--seed", 0x243F_6A88_85A3_08D3);
     let mut next = || { st ^= st << 13; st ^= st >> 7; st ^= st << 17; st };
 
-    println!("{:>6} {:>10} {:>16}", "block", "sampled", "MPT root ms");
+    let with_salt = std::env::args().any(|a| a == "--with-salt");
+    println!("{:>6} {:>10} {:>14} {:>14}", "block", "sampled", "MPT root ms", "SALT root ms");
     let mut times = Vec::new();
+    let mut salt_times: Vec<f64> = Vec::new();
     for b in 0..n_blocks {
         // sample k existing accounts by seeking to scattered keys
         let tx = db.tx()?;
@@ -111,7 +186,28 @@ fn existing(path: &str, k_changed: u64, n_blocks: u64) -> eyre::Result<()> {
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         drop(tx);
         times.push(ms);
-        println!("{b:>6} {:>10} {ms:>16.3}", changes.len());
+
+        // SALT over the SAME sampled accounts, on the SAME state (all 44.4M seeded above)
+        let mut salt_ms = f64::NAN;
+        if with_salt {
+            let salt_changes: Vec<(B256, Option<Vec<u8>>)> = changes
+                .iter()
+                .map(|(k, a)| {
+                    (
+                        *k,
+                        Some(arc_payment_commitment::salt_commitment::encode_account_leaf(
+                            a.nonce,
+                            B256::from(a.balance.to_be_bytes::<32>()),
+                        )),
+                    )
+                })
+                .collect();
+            let t = Instant::now();
+            let _ = arc_payment_commitment::salt_commitment::readonly_root(&salt_changes);
+            salt_ms = t.elapsed().as_secs_f64() * 1000.0;
+            salt_times.push(salt_ms);
+        }
+        println!("{b:>6} {:>10} {ms:>14.3} {salt_ms:>14.3}", changes.len());
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let med = times[times.len() / 2];
@@ -119,11 +215,34 @@ fn existing(path: &str, k_changed: u64, n_blocks: u64) -> eyre::Result<()> {
 === MPT on REAL Arc state, {k_changed} changed/block ===");
     println!("first (coldest) {:.3} ms | median {:.3} ms | max {:.3} ms",
              times.first().copied().unwrap_or(0.0), med, times.last().copied().unwrap_or(0.0));
+    if !salt_times.is_empty() {
+        salt_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let sm = salt_times[salt_times.len() / 2];
+        println!("SALT median {sm:.3} ms  (all 44.4M accounts resident)");
+        println!("=> SALT faster by {:.1}x on REAL Arc state", med / sm);
+    }
     println!("compare: 0.246 ms synthetic-cached 1M, 3.23 ms live fleet 5M preseeded");
     Ok(())
 }
 
 fn main() -> eyre::Result<()> {
+    // --count <datadir/db>: how many accounts are actually in this state? Read from MDBX table
+    // metadata (instant), not a walk. Needed before claiming SALT can or cannot hold it -- that
+    // claim was previously made on an ASSUMED account count, which is not good enough.
+    if let Some(i) = std::env::args().position(|a| a == "--count") {
+        let path = std::env::args().nth(i + 1).expect("--count <datadir/db>");
+        let db = reth_db::open_db_read_only(std::path::Path::new(&path), Default::default())?;
+        let tx = db.tx()?;
+        let accounts = tx.entries::<reth_db_api::tables::HashedAccounts>()?;
+        let storages = tx.entries::<reth_db_api::tables::HashedStorages>()?;
+        let acct_trie = tx.entries::<reth_db_api::tables::AccountsTrie>()?;
+        println!("HashedAccounts  {accounts:>14}");
+        println!("HashedStorages  {storages:>14}");
+        println!("AccountsTrie    {acct_trie:>14}");
+        println!("\nSALT MemStore at measured 1.83 KB/account:");
+        println!("  accounts only -> {:.1} GB", accounts as f64 * 1830.0 / 1e9);
+        return Ok(());
+    }
     if let Some(i) = std::env::args().position(|a| a == "--existing") {
         let path = std::env::args().nth(i + 1).expect("--existing <datadir>");
         return existing(&path, arg("--changed", 200), arg("--blocks", 20));
