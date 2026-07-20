@@ -17,12 +17,27 @@ PAY_RATE=${PAY_RATE:-6500}; POOL=${POOL:-0x2000000000:10000000}; GROW_RATE=${GRO
 EVM_TGTS=${EVM_TGTS:-"ws://127.0.0.1:8546"}
 PAY_TGTS=${PAY_TGTS:-"ws://127.0.0.1:19546"}
 
+# Sign each lane's txs with THAT lane's chainId. The spammer defaults to 1337, but the payment
+# lane can run a different chainId (e.g. the MetaMask demo uses 1338), and 1337-signed txs are
+# rejected with "invalid chain ID". Derive it from the lane's own RPC so this works for every demo
+# with no config. http port = ws port - 1 in this fleet (http 8545 / ws 8546). Falls back to 1337.
+lane_chainid(){ # <ws-target-csv>
+  local first="${1%%,*}"                       # first ws://host:port
+  local hp="${first#ws://}"; local host="${hp%%:*}"; local wsp="${hp##*:}"
+  local httpp=$((wsp-1))
+  curl -s -m5 -X POST "http://${host}:${httpp}" -H 'content-type: application/json' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' 2>/dev/null \
+    | python3 -c "import sys,json;print(int(json.load(sys.stdin)['result'],16))" 2>/dev/null || echo 1337
+}
+
 start(){
   [ -f "$RUN/spam.pid" ] && kill -0 "$(cat "$RUN/spam.pid")" 2>/dev/null && { echo "!! already running (pid $(cat "$RUN/spam.pid")) — './spam-fleet.sh stop' first"; exit 1; }
   rm -f "$STOP"
-  ( bloatloop(){ while [ ! -f "$STOP" ]; do target/release/spammer ws --targets "$EVM_TGTS" -r "$EVM_RATE" -t 600 -g 2 -a 200 -l --mix guzzler=100 --guzzler-fn-weights "storage-write=100@${SLOTS}" >"$RUN/spam_evm.log" 2>&1; sleep 1; done; }
-    payloop(){ while [ ! -f "$STOP" ]; do target/release/spammer ws --targets "$PAY_TGTS" -r "$PAY_RATE" -t 600 -g 20 -a 1000 -l --recipient-pool "$POOL" --mix transfer=100 >"$RUN/spam_pay.log" 2>&1; sleep 1; done; }
-    growloop(){ while [ ! -f "$STOP" ]; do target/release/spammer ws --targets "$PAY_TGTS" -r "$GROW_RATE" -t 600 -g 2 -a 200 -l --fresh-recipients --mix transfer=100 >"$RUN/spam_grow.log" 2>&1; sleep 1; done; }
+  EVM_CID=${EVM_CID:-$(lane_chainid "$EVM_TGTS")}; PAY_CID=${PAY_CID:-$(lane_chainid "$PAY_TGTS")}
+  echo "   signing: EVM lane chainId=$EVM_CID | payment lane chainId=$PAY_CID"
+  ( bloatloop(){ while [ ! -f "$STOP" ]; do target/release/spammer ws --targets "$EVM_TGTS" --chain-id "$EVM_CID" -r "$EVM_RATE" -t 600 -g 2 -a 200 -l --mix guzzler=100 --guzzler-fn-weights "storage-write=100@${SLOTS}" >"$RUN/spam_evm.log" 2>&1; sleep 1; done; }
+    payloop(){ while [ ! -f "$STOP" ]; do target/release/spammer ws --targets "$PAY_TGTS" --chain-id "$PAY_CID" -r "$PAY_RATE" -t 600 -g 20 -a 1000 -l --recipient-pool "$POOL" --mix transfer=100 >"$RUN/spam_pay.log" 2>&1; sleep 1; done; }
+    growloop(){ while [ ! -f "$STOP" ]; do target/release/spammer ws --targets "$PAY_TGTS" --chain-id "$PAY_CID" -r "$GROW_RATE" -t 600 -g 2 -a 200 -l --fresh-recipients --mix transfer=100 >"$RUN/spam_grow.log" 2>&1; sleep 1; done; }
     bloatloop & payloop & growloop & wait ) >/dev/null 2>&1 &
   echo $! >"$RUN/spam.pid"
   echo "✅ fleet spam started: evm ${EVM_RATE}tx/s guzzler@${SLOTS} | pay ${PAY_RATE}tx/s pool | grow ${GROW_RATE}tx/s"
