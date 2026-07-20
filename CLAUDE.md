@@ -312,3 +312,86 @@ KEY FINDINGS (all measured; trend log ~/dualel-bloat-trend.log):
 RECOMMENDED DEMO CONFIG: 10M preseed + fixed CL (509f404) + caps pay10/evm5/cl0.75 + batch_size fix
 before 4-validator demos. demo-empty.sh for clean-slate demos. Exec benchmark (empty vs 10M preseed,
 identical 1500tx/s transfers both lanes, 1h each): results land in /tmp/execcmp2-results.txt (2026-07-13).
+
+## Payment-lane state commitment: MPT vs JMT vs dense vs SALT (branch `salt-payment-lane`)
+
+Goal: find a better state commitment for the lean payment lane than reth's MPT. Four primitives
+implemented behind ONE pair of reth seams, selected at runtime by `ARC_PAYMENT_ROOT`:
+
+    overlay_root*        (vendor/reth-trie-db)  -> read-only root, pure, O(k log n)
+    write_hashed_state   (vendor/reth-provider) -> the sole writer, advances the committed base
+
+`crates/arc-payment-commitment/src/{persistent,dense,salt_commitment}.rs` + reth's own MPT.
+Why those two seams: reth calls the root ~11x per block speculatively, plus newPayload validation
+and witness re-execution. The root fn MUST be pure or build/validate disagree and the chain halts
+at block 2 (this happened; it is what killed the first JMT attempt).
+
+### THE HEADLINE
+**No primitive dominates. Whichever one avoids touching disk wins by 1-2 orders of magnitude, and
+the deciding variable is CACHE RESIDENCY -- not state size, trie depth, or arithmetic.**
+
+  in RAM   (fleet, 5M accts, equal load)   MPT 3.23ms  vs SALT 7.76ms   -> MPT 2.4x
+  past RAM (real 168GB Arc snapshot)       MPT 222.9ms vs SALT 11.0ms   -> SALT 20.2x
+  ... but that MPT figure is reth's SYNCHRONOUS overlay_root. Against its tuned pipeline
+  (27.8ms measured) SALT's edge is only ~2.5x. Quoting 20x compares optimised-SALT to
+  unoptimised-MPT.
+
+### PRIMITIVE COMPARISON (identical keys/changes/scale, `commit-bench --primitives`)
+N=10M, 200 changed/round:
+    JMT (redb)     6.40GB  median 5.448ms  p99  13.4ms  (2.5x)   survives an 8G cap
+    dense (mmap)   6.00GB  median 2.725ms  p99 127.1ms  (47x)    OOM-killed at 8G
+    SALT (heap)    2.77GB  median 3.195ms  p99 120.5ms  (38x)    OOM (unevictable)
+Medians within ~2x; the separation is TAIL LATENCY, which bounds block cadence.
+**JMT is the sleeper and the pick if shipping today**: keccak-only (no discrete-log assumption),
+tightest tail, the ONLY alternative that degrades instead of dying under memory pressure (redb keeps
+nodes AND values on disk). It lost the first head-to-head on its redb WRITE path -- tuning, not
+structure. dense is NOT evictable despite the mmap: its values live in a heap BTreeMap.
+
+### VERIFIED CORRECT, ON REAL HARDWARE
+- 4-machine tailscale fleet, SALT payment lane: all 4 validators computed the SAME payment-lane
+  stateRoot at every settled height, 0 mismatches, under load. Both lanes agree (EVM=MPT, PAY=SALT)
+  under one consensus certificate. `experiments/dual-el/fleet/demo-fleet-salt.sh`
+- SALT seeded from the REAL Arc snapshot: 44,429,999 accounts, 14.1GB, 444s (~0.32 KB/key).
+
+### GOTCHAS THAT COST REAL TIME (each one invalidated a measurement)
+1. **Foreign load generators.** Stale `spam-fleet.sh`/`headtohead.sh` respawn loops drove 6500 tx/s
+   into one lane vs 300 into the other -> 4761-vs-12 txs/block. `pkill` does NOT stop them; the
+   harnesses respawn children. Kill the PARENT. `fair-compare.sh preflight` now refuses to run if
+   any spammer exists.
+2. **Fixed PRNG seed** -> every run samples the SAME accounts -> run 2+ measures PAGE-CACHE HITS
+   (19.8ms, ZERO disk reads) not the structure. Always vary `--seed`.
+3. **Empty AccountsTrie** -> `overlay_root` rebuilds the whole trie from scratch, O(N) per block
+   (815ms at 1M). Build intermediate nodes first or the MPT number is meaningless.
+4. **Key generator with the index in the HIGH bytes** -> every key collides into dense's slot 0 and
+   `slot_digest` hashes all N per update. Looked exactly like an O(N) bug in dense. Use uniform keys.
+5. **Preseed != organic state.** Same ~5M accounts: MPT 3.23ms bulk-loaded vs 8.62ms grown by
+   transactions. Preseeding bulk-loads a contiguous cache-friendly layout and FLATTERS the MPT.
+6. **Preseed fights MEMLIMIT**: reth pins the whole genesis alloc in unevictable RSS
+   (~250 B/account), so the preseed eats the memory cap you were trying to squeeze.
+7. **`rm -rf` cannot wipe a reth datadir**: docker creates `db/` root-owned, so the wipe silently
+   fails and the EL dies with "genesis hash in the storage does not match". Wipe via a root
+   container, and VERIFY.
+8. **MDBX aborts long-lived read transactions** (-96000). Seeding 44M accounts takes ~7min, so
+   re-open a fresh tx per chunk and resume from the last key.
+9. **cargo-chef cannot cook a `[patch]`-to-workspace-member tree** -- it stubs members to empty
+   libs and the patched upstream crates then fail to compile. `deployments/Dockerfile.execution.salt`
+   builds directly instead.
+10. **`git worktree add` does not init submodules** -> hardhat genesis fails on missing OpenZeppelin.
+11. **Fleet scripts had a hardcoded worktree path** (`gen-fleet.py` -> arc-node-paymentlane), so
+    running from any other checkout silently produced no compose files.
+
+### STILL OPEN (blocks production use of any alternative)
+- **Contract storage is not committed** by JMT/dense/SALT -- Arc's state has 568,885,040 storage
+  slots they cannot represent. Either commit storage, or prohibit contracts on the lane AND ENFORCE
+  it, or the root authenticates only part of the state.
+- No reorg/unwind rollback for the alternative commitments.
+- `eth_getProof` still assumes the MPT (SALT has its own Witness API).
+- dense is GRINDABLE: 23-bit slot + flat bucket chaining, ~2^23 hashes lands an address in a chosen
+  slot, and cost is O(bucket) forever. The MPT is structurally immune (full 256-bit paths => cost
+  scales with DEPTH, not occupancy).
+- `salt-commitment` is default-ON across three crates because reth-trie-db is a `[patch]` crate that
+  `--features` cannot target. Needs real feature plumbing before main.
+
+Results + raw CSVs: `experiments/dual-el/fleet/results/`. Harnesses: `fair-compare.sh` (guard-railed
+live comparison), `commit-bench` (offline primitives + real-snapshot modes), `fleet-stats.py`.
+Snapshot lives on papaduck at `/mnt/blockchain.ssd/arc-snap/execution` (168GB, 44.4M accounts).
