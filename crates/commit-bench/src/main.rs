@@ -225,7 +225,17 @@ fn existing(path: &str, k_changed: u64, n_blocks: u64) -> eyre::Result<()> {
     Ok(())
 }
 
+mod primitives;
+
 fn main() -> eyre::Result<()> {
+    if std::env::args().any(|a| a == "--primitives") {
+        let n = arg("--accounts", 5_000_000);
+        let k = arg("--changed", 200);
+        let rounds = arg("--rounds", 20);
+        let rows = primitives::run(n, k, rounds)?;
+        primitives::print(&rows, n, k);
+        return Ok(());
+    }
     // --count <datadir/db>: how many accounts are actually in this state? Read from MDBX table
     // metadata (instant), not a walk. Needed before claiming SALT can or cannot hold it -- that
     // claim was previously made on an ASSUMED account count, which is not good enough.
