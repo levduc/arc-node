@@ -74,8 +74,11 @@ fn existing(path: &str, k_changed: u64, n_blocks: u64) -> eyre::Result<()> {
     println!("opening EXISTING datadir read-only: {path}");
     let db = reth_db::open_db_read_only(std::path::Path::new(path), Default::default())?;
 
-    // pseudo-random probe keys (xorshift, fixed seed => reproducible run to run)
-    let mut st: u64 = 0x243F_6A88_85A3_08D3;
+    // Pseudo-random probe keys. --seed MUST be varied between runs: with a fixed seed every run
+    // samples the SAME accounts, so run 2 onwards measures PAGE-CACHE HITS, not trie work. That
+    // error produced a bogus "357 ms, disk-bound" reading (run 1, cold) followed by 19.8 ms with
+    // ZERO disk reads (run 2, same accounts, cached).
+    let mut st: u64 = arg("--seed", 0x243F_6A88_85A3_08D3);
     let mut next = || { st ^= st << 13; st ^= st >> 7; st ^= st << 17; st };
 
     println!("{:>6} {:>10} {:>16}", "block", "sampled", "MPT root ms");

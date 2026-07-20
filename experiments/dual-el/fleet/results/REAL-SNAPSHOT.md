@@ -8,14 +8,26 @@ trie CANNOT be page-cached and lookups are real disk seeks. This is the regime n
 Measured with `commit-bench --existing`, read-only, 200 accounts changed per block, sampled by
 seeking to pseudo-random keys so access is scattered like real load.
 
-## Result
+## Result — and it depends ENTIRELY on cache residency
 
-| block | MPT root |
-|---|---|
-| 0 (coldest) | **583.3 ms** |
-| 5 | 357.0 ms |
-| 11 (warmest of 12) | 317.8 ms |
-| **median** | **357.0 ms** |
+The first run used a fixed PRNG seed, so a repeat run re-sampled the SAME 200 accounts and measured
+page-cache hits (19.8 ms, ZERO disk reads). That is a methodology trap, not a result. Re-measured
+with a varied `--seed` so each run touches FRESH accounts, capturing disk counters:
+
+| accounts touched | median root | disk read (5 blocks x 200 accts) |
+|---|---|---|
+| fresh (seed 11111) | 308.9 ms | 52 MB |
+| fresh (seed 22222) | 287.8 ms | 49 MB |
+| fresh (seed 33333) | 263.7 ms | 46 MB |
+| **already cached** | **19.8 ms** | **0 MB** |
+
+**~48 KB of disk read per account updated** (~12 random 4 KB pages) — that is the direct evidence
+the cost is disk seeks, not computation. Updating one account walks ~7 trie levels whose nodes are
+scattered across 168 GB that cannot fit in 63 GB of RAM.
+
+**The 15x spread between cached and uncached is the real finding.** Same state, same code; the only
+variable is whether the touched accounts are resident. A production chain sits between the two:
+active accounts repeat (cached), but fresh recipients do not.
 
 ### In context
 
@@ -23,16 +35,22 @@ seeking to pseudo-random keys so access is scattered like real load.
 |---|---|---|
 | synthetic 1M, cached, bulk-loaded | 0.246 ms | best case |
 | live fleet 5M, preseeded, cached | 3.23 ms | |
-| **real 168 GB Arc state, past RAM** | **357 ms** | **~100–1400x worse** |
-
-Cache warming only takes it from 583 -> 318 ms over 12 blocks. It does not approach the cached
-numbers, because the working set cannot fit.
+| **real 168 GB Arc state, UNCACHED accounts** | **~290 ms** | **~90-1200x worse** |
+| real 168 GB Arc state, cached accounts | 19.8 ms | ~6-80x worse |
 
 ## The crossover
 
-SALT costs ~3.1 ms for 200 changed accounts, and by its flat-cost property that is ~independent of
-total state size (fleet: +4.3% over a 20x state increase). Through the SAME `overlay_root` seam, in
-this regime, **SALT would be ~100x faster than the MPT**.
+SALT costs ~3.1 ms for 200 changed accounts, ~independent of total state size (fleet: +4.3% over a
+20x state increase). Through the SAME `overlay_root` seam:
+
+| MPT case | SALT advantage |
+|---|---|
+| uncached accounts (~290 ms) | **~90x** |
+| cached accounts (19.8 ms) | **~6x** |
+
+So SALT's advantage is real but its SIZE depends on the workload's cache behaviour, not just on
+state size. A payment lane paying fresh recipients -- exactly our `--fresh-recipients` load -- sits
+toward the uncached end.
 
 That is SALT's entire design thesis, and on this evidence it holds: once the MPT pays random disk
 seeks, elliptic-curve arithmetic in RAM is vastly cheaper than hashing against a cold disk.
