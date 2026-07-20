@@ -1,0 +1,16 @@
+# Two-lane MetaMask demo scenario.
+#   EVM lane   : this scenario -> block_gas_limit 30M (via --block-gas-limit on the CLI), chainId 1337
+#   Payment lane: launched separately at 200M gas / chainId 1338 (see demo-metamask.sh)
+# CORS opened so a browser wallet (MetaMask) can reach the RPC directly.
+cl.config.execution_persistence_backpressure = true
+el.config.arc.builder.deadline = 500
+el.config.arc.builder.wait-for-payload = true
+
+[nodes.validator1]
+cl_suggested_fee_recipient = "0x1111111111111111111111111111111111111111"
+[nodes.validator2]
+cl_suggested_fee_recipient = "0x2222222222222222222222222222222222222222"
+[nodes.validator3]
+cl_suggested_fee_recipient = "0x3333333333333333333333333333333333333333"
+[nodes.validator4]
+cl_suggested_fee_recipient = "0x4444444444444444444444444444444444444444"
