@@ -134,6 +134,10 @@ metamask(){
 
   Switch networks in the dropdown to see the two balances. Sending on one lane does not
   touch the other. If your browser is on another machine, use the host IP ${ip:-<host-ip>}.
+
+  Note: MetaMask may warn that the symbol should be "ETH" -- chain ID 1337 is a well-known dev
+  chain in its registry, so it expects ETH. The symbol is only a display label; the warning is
+  harmless, just click through. (Enter "ETH" for the EVM lane if you'd rather not see it.)
   =================================================
 EOF
 }
