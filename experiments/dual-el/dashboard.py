@@ -506,6 +506,8 @@ svg{width:100%;height:190px;display:block}
 .metrics{display:flex;gap:28px;margin-top:8px}
 .metrics .mk{font-size:11px;color:#7d8794;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
 .metrics .mv{font-size:24px;font-weight:800;margin-top:2px;font-variant-numeric:tabular-nums}
+.csum{margin-top:16px;font-size:15.5px;color:#1a2029;font-weight:600;line-height:1.5;border-top:1px solid #eef1f5;padding-top:13px}
+.csum b{color:#e5484d}.csum i{color:#2f9e5f;font-style:normal;font-weight:800}
 </style></head><body>
 <div class=hd><span class=dot></span><h1>Arc Payment Lane</h1></div>
 <div class=sub>live &middot; two lanes, one chain</div>
@@ -515,28 +517,29 @@ svg{width:100%;height:190px;display:block}
   <div class=card><div class=k>Payment-lane state</div><div class="v ink" id=pstate>&mdash;</div><div class=u id=pgrow>&mdash;</div></div>
 </div>
 <div class=panel>
-  <h2>Under load, the shared lane congests &mdash; payments still clear cheap</h2>
-  <div class=cap>Same demand on both. The 30M EVM block fills, its fee ratchets up (EIP&#8209;1559) and transactions pile up waiting; the 200M payment lane has room to spare, so its fee stays at the floor and every payment lands in the next block.</div>
+  <h2>When the shared lane is busy, payments get slow and pricey &mdash; the payment lane doesn't</h2>
+  <div class=cap>Both lanes get the same flood of transactions. The shared EVM block fills up, so sending costs more and transactions wait in line. The payment lane has room to spare, so it stays cheap and every payment settles in the next block.</div>
   <div class=cong>
     <div>
-      <div class=ct style="color:#e5484d">EVM lane</div>
+      <div class=ct style="color:#e5484d">EVM lane &mdash; congested</div>
       <div class=bar><i id=evmBar style="background:#e5484d;width:0"></i></div>
       <div class=metrics>
         <div><div class=mk>Block full</div><div class=mv id=evmFull style="color:#e5484d">&mdash;</div></div>
-        <div><div class=mk>Fee vs floor</div><div class=mv id=evmFee style="color:#e5484d">&mdash;</div></div>
-        <div><div class=mk>Waiting</div><div class=mv id=evmQ style="color:#e5484d">&mdash;</div></div>
+        <div><div class=mk>Cost to send</div><div class=mv id=evmFee style="color:#e5484d">&mdash;</div></div>
+        <div><div class=mk>Waiting in line</div><div class=mv id=evmQ style="color:#e5484d">&mdash;</div></div>
       </div>
     </div>
     <div>
-      <div class=ct style="color:#2f9e5f">Payment lane</div>
+      <div class=ct style="color:#2f9e5f">Payment lane &mdash; room to spare</div>
       <div class=bar><i id=payBar style="background:#2f9e5f;width:0"></i></div>
       <div class=metrics>
         <div><div class=mk>Block full</div><div class=mv id=payFull style="color:#2f9e5f">&mdash;</div></div>
-        <div><div class=mk>Fee vs floor</div><div class=mv id=payFee style="color:#2f9e5f">&mdash;</div></div>
-        <div><div class=mk>Waiting</div><div class=mv id=payQ style="color:#2f9e5f">&mdash;</div></div>
+        <div><div class=mk>Cost to send</div><div class=mv id=payFee style="color:#2f9e5f">&mdash;</div></div>
+        <div><div class=mk>Waiting in line</div><div class=mv id=payQ style="color:#2f9e5f">&mdash;</div></div>
       </div>
     </div>
   </div>
+  <div class=csum id=csum>&mdash;</div>
 </div>
 <div class=panel>
   <h2>State grows with activity &mdash; not with payments</h2>
@@ -582,11 +585,19 @@ async function tick(){
   $('evmFull').textContent=ef==null?'—':ef.toFixed(0)+'%'; $('evmBar').style.width=(ef==null?0:Math.min(100,ef))+'%';
   $('payFull').textContent=pf==null?'—':(pf<1?'<1%':pf.toFixed(0)+'%'); $('payBar').style.width=(pf==null?0:Math.max(2,Math.min(100,pf)))+'%';
   const ebf=hx(eh.baseFeePerGas), pbf=hx(ph.baseFeePerGas), floor=Math.min(ebf||1e18,pbf||1e18);
-  const em=(ebf!=null&&floor)?Math.max(1,Math.round(ebf/floor)):null;
-  $('evmFee').textContent=em==null?'—':(em>=1000?(em/1000).toFixed(0)+'k×':em.toLocaleString()+'×');
-  $('payFee').textContent='1×';
-  $('evmQ').textContent=(ex.evm||{}).pending==null?'—':Math.round(ex.evm.pending).toLocaleString();
-  $('payQ').textContent=(ex.pay||{}).pending==null?'—':Math.round(ex.pay.pending).toLocaleString();
+  const em=(ebf!=null&&floor)?Math.max(1,Math.round(ebf/floor)):null;   // EVM fee as a multiple of the cheap lane
+  const mtxt=m=>m>=1e6?'runaway':(m>=1000?(m/1000).toFixed(1).replace(/\.0$/,'')+'k':m.toLocaleString());
+  $('evmFee').textContent=em==null?'—':(em<2?'lowest':mtxt(em)+'× more');
+  $('payFee').textContent='lowest';
+  const eq=(ex.evm||{}).pending, pq=(ex.pay||{}).pending;
+  $('evmQ').textContent=eq==null?'—':Math.round(eq).toLocaleString()+' txs';
+  $('payQ').textContent=pq==null?'—':(pq<150?'none — next block':Math.round(pq).toLocaleString()+' txs');
+  // plain-language takeaway (no jargon): what the same payment costs / waits on each lane right now
+  if(em!=null&&eq!=null){
+    const feePart=em<2?'costs the same on both lanes':('costs <b>'+mtxt(em)+'× more</b> on the EVM lane');
+    $('csum').innerHTML='Right now, the same payment '+feePart+' and waits behind <b>'+Math.round(eq).toLocaleString()+
+      ' transactions</b> &mdash; on the payment lane it stays <i>cheap</i> and settles in the <i>next block</i>.';
+  }
   const ok=(d.evm||{}).agree&&(d.pay||{}).agree;
   $('foot').innerHTML=(ok?'<span class=ok>✓</span>':'<span class=bad>⚠</span>')+
     ' One chain &middot; same validators &middot; both lanes committed under one certificate'+(ok?' &mdash; all agree':' &mdash; syncing');
