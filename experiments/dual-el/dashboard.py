@@ -582,8 +582,11 @@ async function tick(){
   const eh=((d.evm||{}).block||{}).header||{}, ph=((d.pay||{}).block||{}).header||{};
   const full=h=>{const gu=hx(h.gasUsed),gl=hx(h.gasLimit);return (gu!=null&&gl)?100*gu/gl:null};
   const ef=full(eh), pf=full(ph);
-  $('evmFull').textContent=ef==null?'—':ef.toFixed(0)+'%'; $('evmBar').style.width=(ef==null?0:Math.min(100,ef))+'%';
-  $('payFull').textContent=pf==null?'—':(pf<1?'<1%':pf.toFixed(0)+'%'); $('payBar').style.width=(pf==null?0:Math.max(2,Math.min(100,pf)))+'%';
+  // one consistent formatter for both lanes: 0% when the block is empty, <1% only for truly tiny,
+  // else rounded. (An empty block must read 0%, not "<1%".)
+  const pct=v=>v==null?'—':(v<=0?'0%':(v<1?'<1%':v.toFixed(0)+'%'));
+  $('evmFull').textContent=pct(ef); $('evmBar').style.width=(ef==null?0:Math.min(100,ef))+'%';
+  $('payFull').textContent=pct(pf); $('payBar').style.width=(pf==null?0:Math.min(100,pf))+'%';
   const ebf=hx(eh.baseFeePerGas), pbf=hx(ph.baseFeePerGas), floor=Math.min(ebf||1e18,pbf||1e18);
   const em=(ebf!=null&&floor)?Math.max(1,Math.round(ebf/floor)):null;   // EVM fee as a multiple of the cheap lane
   const mtxt=m=>m>=1e6?'runaway':(m>=1000?(m/1000).toFixed(1).replace(/\.0$/,'')+'k':m.toLocaleString());
