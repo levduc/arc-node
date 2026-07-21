@@ -311,6 +311,15 @@ def _exec_loop():
                 _feed_tps("pay", PAY["val2"], now)
                 _exec["evm"]["tps"] = _tps_value("evm", now)
                 _exec["pay"]["tps"] = _tps_value("pay", now)
+                # mempool backlog: the congestion signal. A saturated lane holds a big pending queue;
+                # an uncongested one drains each block. (val2 RPC ports; any healthy peer is fine.)
+                for lane, port in (("evm", EVM["val2"]), ("pay", PAY["val2"])):
+                    ps = rpc(port, "txpool_status", [])
+                    if ps:
+                        try:
+                            _exec[lane]["pending"] = int(ps["pending"], 16) + int(ps.get("queued", "0x0"), 16)
+                        except Exception:
+                            pass
             except Exception:
                 pass
             _exec_series.append((now,
@@ -481,6 +490,13 @@ svg{width:100%;height:190px;display:block}
 .lane .ld{font-size:13px;color:#7d8794;margin-top:3px}
 .foot{display:flex;gap:9px;align-items:center;color:#516070;font-size:14px;font-weight:600}
 .ok{color:#2f9e5f}.bad{color:#e5484d}
+.cong{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin-top:8px}
+.cong .ct{font-weight:800;font-size:15px}
+.bar{height:12px;border-radius:6px;background:#eef1f5;overflow:hidden;margin:10px 0 4px}
+.bar>i{display:block;height:100%;border-radius:6px;transition:width .6s ease}
+.metrics{display:flex;gap:28px;margin-top:8px}
+.metrics .mk{font-size:11px;color:#7d8794;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.metrics .mv{font-size:24px;font-weight:800;margin-top:2px;font-variant-numeric:tabular-nums}
 </style></head><body>
 <div class=hd><span class=dot></span><h1>Arc Payment Lane</h1></div>
 <div class=sub>live &middot; two lanes, one chain</div>
@@ -488,6 +504,30 @@ svg{width:100%;height:190px;display:block}
   <div class=card><div class=k>Payments / second</div><div class="v green" id=tps>&mdash;</div><div class=u>on the payment lane</div></div>
   <div class=card><div class=k>Settlement</div><div class="v blue" id=blk>&mdash;</div><div class=u>per block, finalized</div></div>
   <div class=card><div class=k>Payment-lane state</div><div class="v ink" id=pstate>&mdash;</div><div class=u id=pgrow>&mdash;</div></div>
+</div>
+<div class=panel>
+  <h2>Under load, the shared lane congests &mdash; payments still clear cheap</h2>
+  <div class=cap>Same demand on both. The 30M EVM block fills, its fee ratchets up (EIP&#8209;1559) and transactions pile up waiting; the 200M payment lane has room to spare, so its fee stays at the floor and every payment lands in the next block.</div>
+  <div class=cong>
+    <div>
+      <div class=ct style="color:#e5484d">EVM lane</div>
+      <div class=bar><i id=evmBar style="background:#e5484d;width:0"></i></div>
+      <div class=metrics>
+        <div><div class=mk>Block full</div><div class=mv id=evmFull style="color:#e5484d">&mdash;</div></div>
+        <div><div class=mk>Fee vs floor</div><div class=mv id=evmFee style="color:#e5484d">&mdash;</div></div>
+        <div><div class=mk>Waiting</div><div class=mv id=evmQ style="color:#e5484d">&mdash;</div></div>
+      </div>
+    </div>
+    <div>
+      <div class=ct style="color:#2f9e5f">Payment lane</div>
+      <div class=bar><i id=payBar style="background:#2f9e5f;width:0"></i></div>
+      <div class=metrics>
+        <div><div class=mk>Block full</div><div class=mv id=payFull style="color:#2f9e5f">&mdash;</div></div>
+        <div><div class=mk>Fee vs floor</div><div class=mv id=payFee style="color:#2f9e5f">&mdash;</div></div>
+        <div><div class=mk>Waiting</div><div class=mv id=payQ style="color:#2f9e5f">&mdash;</div></div>
+      </div>
+    </div>
+  </div>
 </div>
 <div class=panel>
   <h2>State grows with activity &mdash; not with payments</h2>
@@ -525,6 +565,19 @@ async function tick(){
   $('payGrow').textContent='transfers between existing users'+(pg!=null?('  ('+(pg<1?'flat':'+'+pg.toFixed(1)+' MB')+')'):'');
   $('evmGrow').textContent='contracts + storage + new accounts'+(eg!=null?('  (+'+eg.toFixed(0)+' MB)'):'');
   drawChart(st.series||[]);
+  // congestion strip: fullness bar + fee-vs-floor + mempool backlog, from the latest block header
+  const hx=x=>x==null?null:parseInt(x,16);
+  const eh=((d.evm||{}).block||{}).header||{}, ph=((d.pay||{}).block||{}).header||{};
+  const full=h=>{const gu=hx(h.gasUsed),gl=hx(h.gasLimit);return (gu!=null&&gl)?100*gu/gl:null};
+  const ef=full(eh), pf=full(ph);
+  $('evmFull').textContent=ef==null?'—':ef.toFixed(0)+'%'; $('evmBar').style.width=(ef==null?0:Math.min(100,ef))+'%';
+  $('payFull').textContent=pf==null?'—':(pf<1?'<1%':pf.toFixed(0)+'%'); $('payBar').style.width=(pf==null?0:Math.max(2,Math.min(100,pf)))+'%';
+  const ebf=hx(eh.baseFeePerGas), pbf=hx(ph.baseFeePerGas), floor=Math.min(ebf||1e18,pbf||1e18);
+  const em=(ebf!=null&&floor)?Math.max(1,Math.round(ebf/floor)):null;
+  $('evmFee').textContent=em==null?'—':(em>=1000?(em/1000).toFixed(0)+'k×':em.toLocaleString()+'×');
+  $('payFee').textContent='1×';
+  $('evmQ').textContent=(ex.evm||{}).pending==null?'—':Math.round(ex.evm.pending).toLocaleString();
+  $('payQ').textContent=(ex.pay||{}).pending==null?'—':Math.round(ex.pay.pending).toLocaleString();
   const ok=(d.evm||{}).agree&&(d.pay||{}).agree;
   $('foot').innerHTML=(ok?'<span class=ok>✓</span>':'<span class=bad>⚠</span>')+
     ' One chain &middot; same validators &middot; both lanes committed under one certificate'+(ok?' &mdash; all agree':' &mdash; syncing');
