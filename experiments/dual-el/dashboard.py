@@ -74,6 +74,28 @@ _hr = collections.deque(maxlen=40)  # (t, consensus height) for block-rate
 _tps = {"evm": {"last": None, "win": collections.deque()},
         "pay": {"last": None, "win": collections.deque()}}  # rolling (t, txs) per lane
 
+# ---- ACCURATE state size (for the product view): reth_db_table_size, NOT du. du reads the
+# pre-allocated ~4GB MDBX file and never moves; this sums the account/storage/trie/bytecode tables
+# = exactly what a pruned snapshot ships, and it actually reflects growth.
+_STATE_TABLES = {"HashedAccounts", "HashedStorages", "AccountsTrie", "StoragesTrie",
+                 "PlainAccountState", "PlainStorageState", "Bytecodes"}
+_state_mb = {"evm": None, "pay": None}          # current state size (MB) per lane
+_state_bd = {"evm": {}, "pay": {}}              # breakdown: accounts vs storage (MB)
+_state_series = collections.deque(maxlen=240)   # (t, evm_mb, pay_mb) for the flat-vs-growing sparkline
+_state_base = {"evm": None, "pay": None}        # first reading, so we can show growth-since-start
+
+def _prom_state_bytes(text):
+    tot = acct = stor = 0.0
+    for ln in text.splitlines():
+        if ln.startswith('reth_db_table_size{table="'):
+            t = ln.split('table="', 1)[1].split('"', 1)[0]
+            try: v = float(ln.rsplit(" ", 1)[1])
+            except ValueError: continue
+            if t in _STATE_TABLES: tot += v
+            if t == "HashedAccounts": acct = v
+            if t == "HashedStorages": stor = v
+    return tot, acct, stor
+
 def _feed_tps(lane, port, now):
     st = _tps[lane]
     h = head(port)
@@ -188,6 +210,13 @@ def _exec_loop():
                             text = r.read().decode()
                     except Exception:
                         continue
+                    # accurate state size (all validators are ~identical; any responder is fine)
+                    sb, sa, sst = _prom_state_bytes(text)
+                    if sb:
+                        _state_mb[lane] = sb / 1e6
+                        _state_bd[lane] = {"accounts": sa / 1e6, "storage": sst / 1e6}
+                        if _state_base[lane] is None:
+                            _state_base[lane] = sb / 1e6
                     carry = {k: prev[k] for k in ("exec", "persist", "last_ms", "root_t") if k in prev}
                     ms, _mprev[key] = _prom_state_root_ms(text, prev)
                     _mprev[key].update(carry)   # _prom_state_root_ms returns a fresh dict; keep exec baseline + hold state
@@ -287,9 +316,19 @@ def _exec_loop():
             _exec_series.append((now,
                                  _exec["evm"].get("root_ms"), _exec["pay"].get("root_ms"),
                                  _exec["evm"].get("rd_mb_s"), _exec["pay"].get("rd_mb_s")))
+            _state_series.append((now, _state_mb.get("evm"), _state_mb.get("pay")))
         except Exception:
             pass
         time.sleep(3)
+
+def state_stats():
+    def growth(l):
+        cur, base = _state_mb.get(l), _state_base.get(l)
+        return (cur - base) if (cur is not None and base is not None) else None
+    return {"evm_mb": _state_mb.get("evm"), "pay_mb": _state_mb.get("pay"),
+            "evm_bd": _state_bd.get("evm"), "pay_bd": _state_bd.get("pay"),
+            "evm_growth_mb": growth("evm"), "pay_growth_mb": growth("pay"),
+            "series": list(_state_series)[-120:]}
 
 def exec_stats():
     def pub(d):
@@ -413,7 +452,85 @@ def collect():
         eh, ph = evm["block"]["hash"], pay["block"]["hash"]
         both = {"height": evm["settled"], "evm_hash": eh, "pay_hash": ph,
                 "value_id": value_id(eh, ph)}
-    return {"evm": evm, "pay": pay, "both": both, "growth": growth(), "exec": exec_stats()}
+    return {"evm": evm, "pay": pay, "both": both, "growth": growth(), "exec": exec_stats(), "state": state_stats()}
+
+# Product view: 3 hero numbers + the state-grows-with-activity-not-payments panel. Reuses /state.
+# Open http://localhost:8080/product . The full engineering dashboard stays at / .
+PRODUCT_HTML = r"""<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Arc Payment Lane</title><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#f6f8fb;color:#1a2029;padding:30px 34px;max-width:1080px;margin:0 auto}
+.hd{display:flex;align-items:center;gap:12px}
+.hd h1{font-size:27px;font-weight:800}
+.dot{width:11px;height:11px;border-radius:50%;background:#2f9e5f;box-shadow:0 0 0 4px #2f9e5f22}
+.sub{color:#7d8794;font-size:14px;margin:4px 0 22px 23px}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:18px}
+.card{background:#fff;border:1px solid #e6e9ee;border-radius:14px;padding:20px 22px}
+.card .k{font-size:12px;color:#7d8794;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.card .v{font-size:42px;font-weight:800;margin-top:8px;line-height:1}
+.card .u{font-size:14px;color:#7d8794;font-weight:600;margin-top:6px}
+.green{color:#2f9e5f}.blue{color:#2b76c9}.ink{color:#1a2029}
+.panel{background:#fff;border:1px solid #e6e9ee;border-radius:14px;padding:22px 24px;margin-bottom:16px}
+.panel h2{font-size:20px;font-weight:800}
+.panel .cap{color:#7d8794;font-size:14px;margin:2px 0 12px}
+svg{width:100%;height:190px;display:block}
+.lanes{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:14px}
+.lane .lt{font-weight:800;font-size:15px}
+.lane .lv{font-size:32px;font-weight:800;margin-top:2px}
+.lane .ld{font-size:13px;color:#7d8794;margin-top:3px}
+.foot{display:flex;gap:9px;align-items:center;color:#516070;font-size:14px;font-weight:600}
+.ok{color:#2f9e5f}.bad{color:#e5484d}
+</style></head><body>
+<div class=hd><span class=dot></span><h1>Arc Payment Lane</h1></div>
+<div class=sub>live &middot; two lanes, one chain</div>
+<div class=cards>
+  <div class=card><div class=k>Payments / second</div><div class="v green" id=tps>&mdash;</div><div class=u>on the payment lane</div></div>
+  <div class=card><div class=k>Settlement</div><div class="v blue" id=blk>&mdash;</div><div class=u>per block, finalized</div></div>
+  <div class=card><div class=k>Payment-lane state</div><div class="v ink" id=pstate>&mdash;</div><div class=u id=pgrow>&mdash;</div></div>
+</div>
+<div class=panel>
+  <h2>State grows with activity &mdash; not with payments</h2>
+  <div class=cap>A chain slows and gets pricier as its state grows. Payments between existing users add almost none.</div>
+  <svg id=chart viewBox="0 0 800 190" preserveAspectRatio=none></svg>
+  <div class=lanes>
+    <div class=lane><div class=lt style="color:#e5484d">EVM lane</div><div class=lv id=evmState style="color:#e5484d">&mdash;</div><div class=ld id=evmGrow>contracts + storage + new accounts</div></div>
+    <div class=lane><div class=lt style="color:#2f9e5f">Payment lane</div><div class=lv id=payState style="color:#2f9e5f">&mdash;</div><div class=ld id=payGrow>transfers between existing users</div></div>
+  </div>
+</div>
+<div class=panel style="padding:16px 24px"><div class=foot id=foot>&mdash;</div></div>
+<script>
+const $=id=>document.getElementById(id);
+function mb(x){return x==null?'—':(x>=1000?(x/1000).toFixed(2)+' GB':x.toFixed(1)+' MB')}
+function drawChart(series){
+  const W=800,H=190,pad=8;
+  const pts=series.filter(r=>r[1]!=null||r[2]!=null);
+  if(pts.length<2){$('chart').innerHTML='';return}
+  const t0=pts[0][0], t1=pts[pts.length-1][0]||1;
+  const ymax=Math.max(1,...pts.map(r=>Math.max(r[1]||0,r[2]||0)))*1.12;
+  const X=t=>pad+(W-2*pad)*((t-t0)/((t1-t0)||1));
+  const Y=v=>H-pad-(H-2*pad)*((v||0)/ymax);
+  const path=i=>'M '+pts.map(r=>X(r[0]).toFixed(1)+' '+Y(r[i]).toFixed(1)).join(' L ');
+  $('chart').innerHTML='<path d="'+path(1)+'" fill=none stroke="#e5484d" stroke-width=3/>'+
+                       '<path d="'+path(2)+'" fill=none stroke="#2f9e5f" stroke-width=3/>';
+}
+async function tick(){
+  let d; try{d=await(await fetch('/state')).json()}catch(e){return}
+  const ex=d.exec||{}, st=d.state||{};
+  const tps=(ex.pay||{}).tps; $('tps').textContent=tps==null?'—':Math.round(tps).toLocaleString();
+  const bs=ex.blk_s; $('blk').textContent=bs?('~'+(1/bs).toFixed(2)+'s'):'—';
+  $('pstate').textContent=mb(st.pay_mb); $('payState').textContent=mb(st.pay_mb); $('evmState').textContent=mb(st.evm_mb);
+  const pg=st.pay_growth_mb, eg=st.evm_growth_mb;
+  $('pgrow').textContent=pg==null?'—':('+'+pg.toFixed(1)+' MB since start');
+  $('payGrow').textContent='transfers between existing users'+(pg!=null?('  ('+(pg<1?'flat':'+'+pg.toFixed(1)+' MB')+')'):'');
+  $('evmGrow').textContent='contracts + storage + new accounts'+(eg!=null?('  (+'+eg.toFixed(0)+' MB)'):'');
+  drawChart(st.series||[]);
+  const ok=(d.evm||{}).agree&&(d.pay||{}).agree;
+  $('foot').innerHTML=(ok?'<span class=ok>✓</span>':'<span class=bad>⚠</span>')+
+    ' One chain &middot; same validators &middot; both lanes committed under one certificate'+(ok?' &mdash; all agree':' &mdash; syncing');
+}
+tick(); setInterval(tick,2500);
+</script></body></html>"""
 
 HTML = r"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
@@ -778,6 +895,11 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(data))); self.end_headers()
             self.wfile.write(data)
+        elif self.path.startswith("/product"):
+            b = PRODUCT_HTML.encode()
+            self.send_response(200); self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(b))); self.end_headers()
+            self.wfile.write(b)
         else:
             b = HTML.encode()
             self.send_response(200); self.send_header("content-type", "text/html; charset=utf-8")
