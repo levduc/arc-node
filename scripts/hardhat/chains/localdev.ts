@@ -19,7 +19,7 @@ import { contracts, nativeCurrency } from './config'
 
 export const arcLocaldev = defineChain({
   testnet: true,
-  id: 1337,
+  id: Number(process.env.LOCALDEV_CHAIN_ID ?? 1337),
   name: 'Arc Devnet',
   nativeCurrency,
   rpcUrls: {
