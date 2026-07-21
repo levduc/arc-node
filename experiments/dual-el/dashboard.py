@@ -471,20 +471,23 @@ def collect():
         both = {"height": evm["settled"], "evm_hash": eh, "pay_hash": ph,
                 "value_id": value_id(eh, ph)}
     return {"evm": evm, "pay": pay, "both": both, "growth": growth(), "exec": exec_stats(),
-            "state": state_stats(), "congest": {"running": _congest_running()}}
+            "state": state_stats(), "congest": {"running": _congest_running()},
+            "stress": {"running": _stress_running()}}
 
 # ---- browser-controlled congestion simulation: start/stop the tuned load from the /product page.
 # Shells out to the sibling congest-demo.sh (single source of truth for the load profile), which
 # drives the LOCAL validator's lanes (127.0.0.1:8546 / :19546) -- the load gossips to the fleet.
 _CONGEST_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "congest-demo.sh")
+_CONGEST_PID = "/tmp/congest-demo/evm.pid"   # congest-demo.sh writes this for its EVM spammer
 _congest_lock = threading.Lock()
 
 def _congest_running():
-    """True iff the congestion spammer (EVM guzzler load) is live."""
+    """True iff the congestion demo's EVM spammer is live (by its pidfile, so it doesn't
+    conflate with the fleet stress test which targets the same lane)."""
     try:
-        r = subprocess.run(["pgrep", "-f", "targets ws://127.0.0.1:8546"],
-                           capture_output=True, timeout=4)
-        return r.returncode == 0
+        pid = int(open(_CONGEST_PID).read().strip())
+        os.kill(pid, 0)
+        return True
     except Exception:
         return False
 
@@ -495,6 +498,33 @@ def _congest(action):
     with _congest_lock:   # serialize control clicks so start/stop can't race
         try:
             r = subprocess.run(["bash", _CONGEST_SH, action], capture_output=True, text=True, timeout=40)
+            return r.returncode == 0, (r.stdout or r.stderr or "")[-300:]
+        except Exception as e:
+            return False, str(e)
+
+# ---- browser-controlled fleet stress test: start/stop fleet/spam-fleet.sh from the / dashboard.
+# spam-fleet drives the full demo-bloat profile (EVM guzzler bloat + payment pool-update + organic
+# growth) at every fleet machine; it tracks its own supervisor pid at /tmp/dualel-fleet/spam.pid.
+_STRESS_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fleet", "spam-fleet.sh")
+_STRESS_PID = "/tmp/dualel-fleet/spam.pid"
+_stress_lock = threading.Lock()
+
+def _stress_running():
+    """True iff spam-fleet's supervisor process is alive (by its pidfile)."""
+    try:
+        pid = int(open(_STRESS_PID).read().strip())
+        os.kill(pid, 0)     # signal 0 = liveness check, doesn't actually signal
+        return True
+    except Exception:
+        return False
+
+def _stress(action):
+    """action in {start, stop}. Runs spam-fleet.sh synchronously; returns (ok, message)."""
+    if action not in ("start", "stop"):
+        return False, "bad action"
+    with _stress_lock:
+        try:
+            r = subprocess.run(["bash", _STRESS_SH, action], capture_output=True, text=True, timeout=40)
             return r.returncode == 0, (r.stdout or r.stderr or "")[-300:]
         except Exception as e:
             return False, str(e)
@@ -564,6 +594,7 @@ svg{width:100%;height:190px;display:block}
       <div class=ct style="color:#e5484d">EVM lane &mdash; congested</div>
       <div class=bar><i id=evmBar style="background:#e5484d;width:0"></i></div>
       <div class=metrics>
+        <div><div class=mk>Throughput</div><div class=mv id=evmTps style="color:#e5484d">&mdash;</div></div>
         <div><div class=mk>Block full</div><div class=mv id=evmFull style="color:#e5484d">&mdash;</div></div>
         <div><div class=mk>Cost to send</div><div class=mv id=evmFee style="color:#e5484d">&mdash;</div></div>
         <div><div class=mk>Pending txs</div><div class=mv id=evmQ style="color:#e5484d">&mdash;</div></div>
@@ -573,6 +604,7 @@ svg{width:100%;height:190px;display:block}
       <div class=ct style="color:#2f9e5f">Payment lane &mdash; room to spare</div>
       <div class=bar><i id=payBar style="background:#2f9e5f;width:0"></i></div>
       <div class=metrics>
+        <div><div class=mk>Throughput</div><div class=mv id=payTps style="color:#2f9e5f">&mdash;</div></div>
         <div><div class=mk>Block full</div><div class=mv id=payFull style="color:#2f9e5f">&mdash;</div></div>
         <div><div class=mk>Cost to send</div><div class=mv id=payFee style="color:#2f9e5f">&mdash;</div></div>
         <div><div class=mk>Pending txs</div><div class=mv id=payQ style="color:#2f9e5f">&mdash;</div></div>
@@ -656,6 +688,10 @@ async function tick(){
   const qtxt=q=>q==null?'—':Math.round(q).toLocaleString()+' txs';
   $('evmQ').textContent=qtxt(eq);
   $('payQ').textContent=qtxt(pq);
+  // throughput (tx/s landing on-chain) per lane
+  const tps=v=>v==null?'—':Math.round(v).toLocaleString()+' tx/s';
+  $('evmTps').textContent=tps((ex.evm||{}).tps);
+  $('payTps').textContent=tps((ex.pay||{}).tps);
   // plain-language takeaway (no jargon): what the same payment costs / waits on each lane right now
   if(em!=null&&eq!=null){
     const feePart=em<2?'costs the same on both lanes':('costs <b>'+mtxt(em)+'× more</b> on the EVM lane');
@@ -767,11 +803,22 @@ h1 b{color:var(--pay)}
 .foot{color:var(--dim);font-size:11.5px;margin-top:16px;line-height:1.7}
 .mono2{color:#9fb0c0}
 .tick{position:absolute;top:16px;right:20px;font-size:11px;color:var(--dim)}
+.stressbtn{border:0;border-radius:8px;padding:9px 16px;font-size:12.5px;font-weight:700;cursor:pointer;
+ color:#fff;white-space:nowrap;font-family:var(--mono);transition:background .15s}
+.stressbtn.off{background:var(--evm)}.stressbtn.off:hover{filter:brightness(1.1)}
+.stressbtn.on{background:var(--bad)}.stressbtn.on:hover{filter:brightness(1.1)}
+.stressbtn:disabled{opacity:.55;cursor:default}
+.stressbtn .sp{display:inline-block;width:7px;height:7px;border-radius:50%;background:#fff;margin-right:7px;vertical-align:middle}
+.stressbtn.on .sp{animation:spulse 1.1s ease-in-out infinite}
+@keyframes spulse{0%,100%{opacity:1}50%{opacity:.35}}
 </style></head><body><div class=wrap>
 <header>
  <div><h1>Arc &mdash; dual&#8209;EL <b>payment lane</b></h1>
   <div class=sub>one consensus, two execution layers, two state roots per block &middot; 4 validators &middot; Malachite BFT</div></div>
- <div id=chainpill class=pill>connecting&hellip;</div>
+ <div style="display:flex;align-items:center;gap:12px">
+  <button id=stressBtn class="stressbtn off" onclick=toggleStress()><span class=sp></span>Start stress test</button>
+  <div id=chainpill class=pill>connecting&hellip;</div>
+ </div>
 </header>
 
 <div class=lanes>
@@ -983,6 +1030,24 @@ function renderHeaders(s){
 function dots(el,vhashes,agree){el.innerHTML='';
  for(const v of ['val1','val2','val3','val4']){const d=document.createElement('span');
   d.className='dot '+(vhashes[v]?(agree?'on':'off'):'');d.title=v+': '+(vhashes[v]||'no data');el.appendChild(d);}}
+// ---- fleet stress test (spam-fleet.sh) start/stop from the browser ----
+let stressBusy=false;
+function setStressBtn(running){
+ if(stressBusy)return;
+ const b=document.getElementById('stressBtn');
+ b.dataset.running=running?'1':'0';
+ b.className='stressbtn '+(running?'on':'off');
+ b.innerHTML='<span class=sp></span>'+(running?'Stop stress test':'Start stress test');
+}
+async function toggleStress(){
+ if(stressBusy)return;stressBusy=true;
+ const b=document.getElementById('stressBtn');const running=b.dataset.running==='1';
+ b.disabled=true;b.innerHTML='<span class=sp></span>'+(running?'Stopping…':'Starting…');
+ try{const r=await(await fetch('/stress/'+(running?'stop':'start'),{method:'POST'})).json();
+   stressBusy=false;setStressBtn(!!r.running);}
+ catch(e){stressBusy=false;}
+ finally{b.disabled=false;}
+}
 async function tick(){
  let s;try{s=await(await fetch('/state')).json();}catch(e){return;}
  const pill=document.getElementById('chainpill');
@@ -1005,6 +1070,7 @@ async function tick(){
   if(lastPay!==null&&pay.block.num>lastPay){const l=document.getElementById('lanePay');l.classList.remove('flash');void l.offsetWidth;l.classList.add('flash');}
   lastPay=pay.block.num;
  }
+ setStressBtn(!!(s.stress||{}).running);
  drawGrowth(s.growth);
  renderHeaders(s);
  drawExec(s.exec);
@@ -1045,12 +1111,19 @@ class H(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b)
 
     def do_POST(self):
-        # browser-triggered congestion control: /congest/start | /congest/stop
-        if self.path.startswith("/congest/start") or self.path.startswith("/congest/stop"):
-            action = "start" if self.path.startswith("/congest/start") else "stop"
-            ok, msg = _congest(action)
-            data = json.dumps({"ok": ok, "action": action, "running": _congest_running(),
-                               "msg": msg}).encode()
+        # browser-triggered load control:
+        #   /congest/{start,stop}  -> congest-demo.sh   (the /product congestion demo)
+        #   /stress/{start,stop}   -> fleet/spam-fleet.sh (the / engineering stress test)
+        p = self.path
+        ctl = None
+        if p.startswith("/congest/start") or p.startswith("/congest/stop"):
+            ctl, run = _congest, _congest_running
+        elif p.startswith("/stress/start") or p.startswith("/stress/stop"):
+            ctl, run = _stress, _stress_running
+        if ctl is not None:
+            action = "start" if p.endswith("start") or "/start" in p else "stop"
+            ok, msg = ctl(action)
+            data = json.dumps({"ok": ok, "action": action, "running": run(), "msg": msg}).encode()
             self.send_response(200); self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(data))); self.end_headers()
             self.wfile.write(data)
