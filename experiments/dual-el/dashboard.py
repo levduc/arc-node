@@ -526,7 +526,7 @@ svg{width:100%;height:190px;display:block}
       <div class=metrics>
         <div><div class=mk>Block full</div><div class=mv id=evmFull style="color:#e5484d">&mdash;</div></div>
         <div><div class=mk>Cost to send</div><div class=mv id=evmFee style="color:#e5484d">&mdash;</div></div>
-        <div><div class=mk>Waiting in line</div><div class=mv id=evmQ style="color:#e5484d">&mdash;</div></div>
+        <div><div class=mk>Pending txs</div><div class=mv id=evmQ style="color:#e5484d">&mdash;</div></div>
       </div>
     </div>
     <div>
@@ -535,7 +535,7 @@ svg{width:100%;height:190px;display:block}
       <div class=metrics>
         <div><div class=mk>Block full</div><div class=mv id=payFull style="color:#2f9e5f">&mdash;</div></div>
         <div><div class=mk>Cost to send</div><div class=mv id=payFee style="color:#2f9e5f">&mdash;</div></div>
-        <div><div class=mk>Waiting in line</div><div class=mv id=payQ style="color:#2f9e5f">&mdash;</div></div>
+        <div><div class=mk>Pending txs</div><div class=mv id=payQ style="color:#2f9e5f">&mdash;</div></div>
       </div>
     </div>
   </div>
@@ -593,8 +593,10 @@ async function tick(){
   $('evmFee').textContent=em==null?'—':(em<2?'lowest':mtxt(em)+'× more');
   $('payFee').textContent='lowest';
   const eq=(ex.evm||{}).pending, pq=(ex.pay||{}).pending;
-  $('evmQ').textContent=eq==null?'—':Math.round(eq).toLocaleString()+' txs';
-  $('payQ').textContent=pq==null?'—':(pq<150?'none — next block':Math.round(pq).toLocaleString()+' txs');
+  // one consistent formatter for both lanes: "N txs" (0 txs when empty), never "none" vs "0 txs"
+  const qtxt=q=>q==null?'—':Math.round(q).toLocaleString()+' txs';
+  $('evmQ').textContent=qtxt(eq);
+  $('payQ').textContent=qtxt(pq);
   // plain-language takeaway (no jargon): what the same payment costs / waits on each lane right now
   if(em!=null&&eq!=null){
     const feePart=em<2?'costs the same on both lanes':('costs <b>'+mtxt(em)+'× more</b> on the EVM lane');
