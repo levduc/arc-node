@@ -22,12 +22,6 @@ declare -A RTS=( [2]=100.85.150.119 [3]=100.70.62.92 [4]=100.86.97.40 )
 # per-host data roots: papaduck (val3) -> fast NVMe; others -> home
 declare -A RPARENT=( [2]=/home/papaduck/arc-fleet [3]=/mnt/blockchain.ssd/arc-fleet [4]=/home/papaduck/arc-fleet )
 declare -A RB=( [2]=/home/papaduck/arc-fleet/$SCEN [3]=/mnt/blockchain.ssd/arc-fleet/$SCEN [4]=/home/papaduck/arc-fleet/$SCEN )
-# Custom, unregistered chain IDs. MetaMask reserves 1337 for its built-in "Localhost 8545" network
-# and refuses a custom net there; these avoid that AND MetaMask's symbol registry (so "ARC" is
-# accepted with no warning). Neither is Arc mainnet/testnet (5042/5042002), so gas bounds stay
-# [1M,1B] and 30M / 200M are valid. spam-fleet.sh auto-detects these from each lane's RPC.
-EVM_CHAINID=${EVM_CHAINID:-88811}
-PAY_CHAINID=${PAY_CHAINID:-88812}
 PAY_PORT(){ echo $((19545+($1-1)*100)); }
 tss(){ local h=$1; shift; timeout "${TSS_TMO:-120}" tailscale ssh "$h" "$@"; }
 
@@ -59,20 +53,20 @@ start(){
   for n in 2 3 4; do tss "${RHOST[$n]}" "docker rm -f validator1_cl validator1_el validator1_el_pay validator2_cl validator2_el validator2_el_pay validator3_cl validator3_el validator3_el_pay validator4_cl validator4_el validator4_el_pay 2>/dev/null; rm -rf ${RB[$n]} 2>/dev/null || docker run --rm -v ${RPARENT[$n]}:/f --user root alpine rm -rf /f/$SCEN; mkdir -p ${RB[$n]}; docker run --rm -v ${RPARENT[$n]}:/f --user root alpine chown -R \$(id -u):\$(id -g) /f; true" || true; done
 
   echo "==> [1/9] generate testnet locally (quake)"
-  LOCALDEV_CHAIN_ID=$EVM_CHAINID target/release/quake -f "crates/quake/scenarios/${SCEN}.toml" start -e 1000 --monitoring false --force --block-gas-limit 30000000 >"$RUN/quake.log" 2>&1 || true
+  target/release/quake -f "crates/quake/scenarios/${SCEN}.toml" start -e 1000 --monitoring false --force --block-gas-limit 30000000 >"$RUN/quake.log" 2>&1 || true
   [ "$(docker ps --format '{{.Names}}' | grep -cE 'validator[0-9]+_(cl|el)$')" -ge 8 ] || { echo "!! quake start failed"; exit 1; }
   docker rm -f $(docker ps -aq --filter name=validator) >/dev/null
 
-  echo "==> [2/9] payment genesis: chainId $PAY_CHAINID + 200M gas (patched from the 30M EVM genesis)"
+  echo "==> [2/9] payment genesis: chainId 1338 + 200M gas (patched from the 30M EVM genesis)"
   cp assets/localdev/payment-jwt.hex "$LBASE/assets/" 2>/dev/null || true
   for i in 1 2 3 4; do rm -rf "$LBASE/validator$i/reth-pay"; mkdir -p "$LBASE/validator$i/reth-pay"; done
   # Arc reads the block gas limit from the ProtocolConfig contract (0x36..01) at RUNTIME, so patch
   # BOTH the header gasLimit AND storage slot 0x668f...385203. chainId 1338 (bounds [1M,1B] for a
   # non-mainnet/testnet chain, so 200M is valid). Written into assets/, shipped to every machine.
-  PAY_CHAINID="$PAY_CHAINID" python3 - <<'PYGEN'
-import json, os
+  python3 - <<'PYGEN'
+import json
 g=json.load(open('.quake/soak4/assets/genesis.json'))
-g['config']['chainId']=int(os.environ['PAY_CHAINID'])
+g['config']['chainId']=1338
 gas=200000000
 g['gasLimit']=hex(gas)
 proto='0x3600000000000000000000000000000000000001'
@@ -153,11 +147,12 @@ metamask(){
      address 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 -- prefunded 1,000,000 on both lanes.
 
   2) Add two networks (Settings > Networks > Add network manually):
-       Arc EVM        RPC http://${ip:-127.0.0.1}:8545    Chain ID $(cid 8545)   gas $(gv 8545)   symbol ARC
+       Arc EVM        RPC http://${ip:-127.0.0.1}:8545    Chain ID $(cid 8545)   gas $(gv 8545)   symbol ETH
        Arc Payments   RPC http://${ip:-127.0.0.1}:19545   Chain ID $(cid 19545)  gas $(gv 19545)  symbol ARC
 
-  Switch networks to see the two balances. Both chain IDs are custom/unregistered, so MetaMask
-  accepts "ARC" with no symbol warning and neither collides with its built-in Localhost (1337).
+  Switch networks to see the two balances. (MetaMask expects "ETH" for the well-known dev chain
+  1337, so use ETH for the EVM lane to avoid its symbol warning; the payment lane's 1338 is
+  unrecognised, so "ARC" is accepted there.)
   =========================================================================
 EOF
 }
@@ -173,9 +168,9 @@ verify(){
   done
   ec=$(curl -s -m5 -X POST http://127.0.0.1:8545 -H 'content-type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' | python3 -c "import sys,json;print(int(json.load(sys.stdin)['result'],16))" 2>/dev/null)
   pc=$(curl -s -m5 -X POST http://127.0.0.1:19545 -H 'content-type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' | python3 -c "import sys,json;print(int(json.load(sys.stdin)['result'],16))" 2>/dev/null)
-  echo "  chainIds: EVM=${ec:-?} (want $EVM_CHAINID)  PAY=${pc:-?} (want $PAY_CHAINID)"
-  { [ "$ec" = "$EVM_CHAINID" ] && [ "$pc" = "$PAY_CHAINID" ]; } || ok=0
-  [ "$ok" = 1 ] && echo "✅ FLEET VERIFIED (4 machines, empty, val3 fast NVMe, EVM 30M/$EVM_CHAINID PAY 200M/$PAY_CHAINID)" || echo "❌ FLEET VERIFY FAILED — fallback: ./experiments/dual-el/fleet/demo-fleet-empty-fastssd.sh start"
+  echo "  chainIds: EVM=${ec:-?} (want 1337)  PAY=${pc:-?} (want 1338)"
+  { [ "$ec" = "1337" ] && [ "$pc" = "1338" ]; } || ok=0
+  [ "$ok" = 1 ] && echo "✅ FLEET VERIFIED (4 machines, empty chain, val3 fast NVMe, EVM 30M / PAY 200M)" || echo "❌ FLEET VERIFY FAILED — fallback: ./experiments/dual-el/fleet/demo-fleet-empty-fastssd.sh start"
 }
 
 stop(){

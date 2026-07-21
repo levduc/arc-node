@@ -45,7 +45,7 @@ export const localBuilderOptionsSchema = LocalDevAccountCreator.optionsSchema.an
 const build = async (options: z.infer<typeof localBuilderOptionsSchema>) => {
   const ctx = await createBuilderContext({
     network: 'localdev',
-    chainId: Number(process.env.LOCALDEV_CHAIN_ID ?? 1337), // env-overridable for demos
+    chainId: 1337,
   })
   const { outputControllersConfig, outputGenesisConfig, validatorNames, hardforks, extraAccountBalance, blockGasLimit, ...accountOptions } = options
   const accountCreator = new LocalDevAccountCreator(accountOptions)
