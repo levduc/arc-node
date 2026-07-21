@@ -376,6 +376,41 @@ separate. Dashboard fleet mode: DUALEL_FLEET=<json {valN: ts-ip}> (unset = singl
 per-val root/exec/PERSIST now+avg-run, landed TPS, block rate; exec-now had been lifetime-avg since
 inception (fixed), stale values expire after 45s idle.
 
+**PRODUCT-LEGIBLE DEMO: "state grows with activity, not payments" + "EVM congests, payment lane doesn't"
+(2026-07-18..20, branch `fleet-multi-machine`, commits `3390c40` + `525cff1`).** For product-audience
+demos (MetaMask walkthrough on single-machine or fleet, EVM lane chainId 1337 / payment lane 1338).
+Two theses, each measured live (honest, real EIP-1559 — not mocked):
+- **State metric = `reth_db_table_size{table=...}` prometheus gauge** (live, no DB lock), summed over
+  STATE_TABLES {HashedAccounts, HashedStorages, AccountsTrie, StoragesTrie, PlainAccountState,
+  PlainStorageState, Bytecodes} = exactly what a pruned snapshot ships. `du` on the datadir is USELESS
+  (MDBX pre-allocates a flat ~4GB file). Payment state grows in HashedAccounts (users); EVM state grows
+  in HashedStorages (contract activity). Measured live: pay ~10MB (transfers between existing accts add
+  ~0) vs EVM ~58MB and climbing (storage writes + fresh recipients).
+- **Congestion**: oversubscribe the 30M EVM block (~200 tx/s of ~1.6M-gas guzzlers = ~320M gas/s demand
+  vs ~120M/s capacity) → block pins ~95% full, EIP-1559 baseFee ratchets +12.5%/full block (compounds
+  ~2× every ~6 blocks; measured 12k→29M wei in 2min, exponential, no plateau in that range; seen to reach
+  ~1e12 wei / 1000 gwei at steady state), mempool holds ~740 stuck txs. Meanwhile the 200M payment lane
+  at ~300 tx/s transfers (~6M gas/s) stays <1% full, baseFee flat at the **49-wei floor**, backlog drains
+  each block. NOT a protocol-fixed fee — it's capacity≫demand keeping the fee at the floor (state honest).
+- **Tooling (experiments/dual-el/):** `congest-demo.sh` {start|watch|status|stop} (auto-detects each
+  lane's chainId from RPC; env EVM_RATE/PAY_RATE/GUZZLER/EVM_WS/PAY_WS; `watch` = live fullness-bar/
+  baseFee/backlog table). `congestion.py` + `state-growth.py` = reproducible generators → CSV + self-
+  contained presentation SVGs. `dashboard.py` `/product` = 3 hero tiles + congestion strip (fullness bar,
+  fee-vs-floor multiple, mempool backlog via txpool_status) + state-grows chart; engineering view stays
+  at `/`. `demo-metamask.sh` / `fleet/demo-fleet-metamask.sh` = MetaMask-tuned starts.
+- **GOTCHAS:** (1) MetaMask reserves chainId 1337 for its built-in "Localhost 8545" — but the demo KEEPS
+  1337(EVM)/1338(payment); do NOT change chainIds (breaks the working MetaMask demo — firm user
+  constraint). The CL only validates the PRIMARY (EVM) engine's chainId against its whitelist {MAINNET
+  5042, TESTNET 5042002, DEVNET 5042001, LOCALDEV 1337}; the payment EL's chainId is NOT validated, so
+  1338 is fine there. (2) Guzzler intensity: `storage-write=100@8`≈182k gas/tx, `@80`≈1.6M gas/tx (use
+  @80 — ~19 fill a 30M block AND land); `@600`/`@40` at high rate → per-tx gasLimit estimate exceeds the
+  30M block → "-32003: gas limit too high", ALL accounts skipped, spammer EXITS. `-a N` must be divisible
+  by `-g` (generators). (3) baseFee is PERSISTENT chain state — for the live fee-CLIMB visual, `stop` and
+  let the EVM lane idle ~1-2min first (empty blocks decay it 12.5%/block back to the floor) THEN `start`;
+  otherwise it opens already-maxed (still shows the divergence, just no ramp). (4) Payment-lane genesis:
+  chainId + 200M gas set in BOTH the header gasLimit AND the ProtocolConfig slot (Arc reads gas limit
+  from contract 0x3600...0001 slot 0x668f09ce... at runtime, not just the header).
+
 Other branches: `gravity-payment-lane` PARKED (gravity-reth = O(total-state) per block on standard
 Engine API paths, perf requires their consensus; FINDINGS.md there); erigon probe passed the engine
 smoke (needs Prague system-contract predeploys in genesis; chainId 1337 collides with its named
