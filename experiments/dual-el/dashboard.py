@@ -689,9 +689,9 @@ async function tick(){
   $('evmQ').textContent=qtxt(eq);
   $('payQ').textContent=qtxt(pq);
   // throughput (tx/s landing on-chain) per lane
-  const tps=v=>v==null?'—':Math.round(v).toLocaleString()+' tx/s';
-  $('evmTps').textContent=tps((ex.evm||{}).tps);
-  $('payTps').textContent=tps((ex.pay||{}).tps);
+  const tpsFmt=v=>v==null?'—':Math.round(v).toLocaleString()+' tx/s';
+  $('evmTps').textContent=tpsFmt((ex.evm||{}).tps);
+  $('payTps').textContent=tpsFmt((ex.pay||{}).tps);
   // plain-language takeaway (no jargon): what the same payment costs / waits on each lane right now
   if(em!=null&&eq!=null){
     const feePart=em<2?'costs the same on both lanes':('costs <b>'+mtxt(em)+'× more</b> on the EVM lane');
