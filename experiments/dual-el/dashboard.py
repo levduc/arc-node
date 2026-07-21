@@ -470,7 +470,34 @@ def collect():
         eh, ph = evm["block"]["hash"], pay["block"]["hash"]
         both = {"height": evm["settled"], "evm_hash": eh, "pay_hash": ph,
                 "value_id": value_id(eh, ph)}
-    return {"evm": evm, "pay": pay, "both": both, "growth": growth(), "exec": exec_stats(), "state": state_stats()}
+    return {"evm": evm, "pay": pay, "both": both, "growth": growth(), "exec": exec_stats(),
+            "state": state_stats(), "congest": {"running": _congest_running()}}
+
+# ---- browser-controlled congestion simulation: start/stop the tuned load from the /product page.
+# Shells out to the sibling congest-demo.sh (single source of truth for the load profile), which
+# drives the LOCAL validator's lanes (127.0.0.1:8546 / :19546) -- the load gossips to the fleet.
+_CONGEST_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "congest-demo.sh")
+_congest_lock = threading.Lock()
+
+def _congest_running():
+    """True iff the congestion spammer (EVM guzzler load) is live."""
+    try:
+        r = subprocess.run(["pgrep", "-f", "targets ws://127.0.0.1:8546"],
+                           capture_output=True, timeout=4)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+def _congest(action):
+    """action in {start, stop}. Runs congest-demo.sh synchronously; returns (ok, message)."""
+    if action not in ("start", "stop"):
+        return False, "bad action"
+    with _congest_lock:   # serialize control clicks so start/stop can't race
+        try:
+            r = subprocess.run(["bash", _CONGEST_SH, action], capture_output=True, text=True, timeout=40)
+            return r.returncode == 0, (r.stdout or r.stderr or "")[-300:]
+        except Exception as e:
+            return False, str(e)
 
 # Product view: 3 hero numbers + the state-grows-with-activity-not-payments panel. Reuses /state.
 # Open http://localhost:8080/product . The full engineering dashboard stays at / .
@@ -508,6 +535,14 @@ svg{width:100%;height:190px;display:block}
 .metrics .mv{font-size:24px;font-weight:800;margin-top:2px;font-variant-numeric:tabular-nums}
 .csum{margin-top:16px;font-size:15.5px;color:#1a2029;font-weight:600;line-height:1.5;border-top:1px solid #eef1f5;padding-top:13px}
 .csum b{color:#e5484d}.csum i{color:#2f9e5f;font-style:normal;font-weight:800}
+.phd{display:flex;justify-content:space-between;align-items:flex-start;gap:18px}
+.congbtn{border:0;border-radius:10px;padding:11px 20px;font-size:14px;font-weight:800;cursor:pointer;color:#fff;white-space:nowrap;flex:none;transition:background .15s}
+.congbtn.off{background:#2b76c9}.congbtn.off:hover{background:#2569b3}
+.congbtn.on{background:#e5484d}.congbtn.on:hover{background:#d13b40}
+.congbtn:disabled{opacity:.55;cursor:default}
+.congbtn .sp{display:inline-block;width:8px;height:8px;border-radius:50%;background:#fff;margin-right:7px;vertical-align:middle}
+.congbtn.on .sp{animation:pulse 1.1s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 </style></head><body>
 <div class=hd><span class=dot></span><h1>Arc Payment Lane</h1></div>
 <div class=sub>live &middot; two lanes, one chain</div>
@@ -517,8 +552,13 @@ svg{width:100%;height:190px;display:block}
   <div class=card><div class=k>Payment-lane state</div><div class="v ink" id=pstate>&mdash;</div><div class=u id=pgrow>&mdash;</div></div>
 </div>
 <div class=panel>
-  <h2>When the shared lane is busy, payments get slow and pricey &mdash; the payment lane doesn't</h2>
-  <div class=cap>Both lanes get the same flood of transactions. The shared EVM block fills up, so sending costs more and transactions wait in line. The payment lane has room to spare, so it stays cheap and every payment settles in the next block.</div>
+  <div class=phd>
+    <div>
+      <h2>When the shared lane is busy, payments get slow and pricey &mdash; the payment lane doesn't</h2>
+      <div class=cap>Both lanes get the same flood of transactions. The shared EVM block fills up, so sending costs more and transactions wait in line. The payment lane has room to spare, so it stays cheap and every payment settles in the next block.</div>
+    </div>
+    <button id=congBtn class="congbtn off" onclick=toggleCongest()><span class=sp></span>Start congestion</button>
+  </div>
   <div class=cong>
     <div>
       <div class=ct style="color:#e5484d">EVM lane &mdash; congested</div>
@@ -554,6 +594,25 @@ svg{width:100%;height:190px;display:block}
 <script>
 const $=id=>document.getElementById(id);
 function mb(x){return x==null?'—':(x>=1000?(x/1000).toFixed(2)+' GB':x.toFixed(1)+' MB')}
+// ---- congestion start/stop, driven from the browser ----
+let congBusy=false;
+function setCongBtn(running){
+  if(congBusy) return;                      // don't fight a click that's still resolving
+  const b=$('congBtn');
+  b.dataset.running=running?'1':'0';
+  b.className='congbtn '+(running?'on':'off');
+  b.innerHTML='<span class=sp></span>'+(running?'Stop congestion':'Start congestion');
+}
+async function toggleCongest(){
+  if(congBusy) return;
+  congBusy=true;
+  const b=$('congBtn'); const running=b.dataset.running==='1';
+  b.disabled=true; b.innerHTML='<span class=sp></span>'+(running?'Stopping…':'Starting…');
+  try{const r=await(await fetch('/congest/'+(running?'stop':'start'),{method:'POST'})).json();
+      congBusy=false; setCongBtn(!!r.running);}
+  catch(e){congBusy=false;}
+  finally{b.disabled=false;}
+}
 function drawChart(series){
   const W=800,H=190,pad=8;
   const pts=series.filter(r=>r[1]!=null||r[2]!=null);
@@ -603,6 +662,7 @@ async function tick(){
     $('csum').innerHTML='Right now, the same payment '+feePart+' and waits behind <b>'+Math.round(eq).toLocaleString()+
       ' transactions</b> &mdash; on the payment lane it stays <i>cheap</i> and settles in the <i>next block</i>.';
   }
+  setCongBtn(!!(d.congest||{}).running);
   const ok=(d.evm||{}).agree&&(d.pay||{}).agree;
   $('foot').innerHTML=(ok?'<span class=ok>✓</span>':'<span class=bad>⚠</span>')+
     ' One chain &middot; same validators &middot; both lanes committed under one certificate'+(ok?' &mdash; all agree':' &mdash; syncing');
@@ -983,6 +1043,19 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("content-type", "text/html; charset=utf-8")
             self.send_header("content-length", str(len(b))); self.end_headers()
             self.wfile.write(b)
+
+    def do_POST(self):
+        # browser-triggered congestion control: /congest/start | /congest/stop
+        if self.path.startswith("/congest/start") or self.path.startswith("/congest/stop"):
+            action = "start" if self.path.startswith("/congest/start") else "stop"
+            ok, msg = _congest(action)
+            data = json.dumps({"ok": ok, "action": action, "running": _congest_running(),
+                               "msg": msg}).encode()
+            self.send_response(200); self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(data))); self.end_headers()
+            self.wfile.write(data)
+        else:
+            self.send_response(404); self.end_headers()
 
 class Srv(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
