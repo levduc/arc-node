@@ -98,6 +98,10 @@ def _prom_state_bytes(text):
 
 def _feed_tps(lane, port, now):
     st = _tps[lane]
+    # age out the 60s window FIRST, unconditionally -- so a stopped/unreachable chain's tps decays
+    # to zero and then blanks, instead of freezing at its last value (the node-down early-return
+    # below must not skip this).
+    while st["win"] and now - st["win"][0][0] > 60: st["win"].popleft()
     h = head(port)
     if h is None: return
     last = st["last"]
@@ -108,11 +112,12 @@ def _feed_tps(lane, port, now):
         if c is not None:
             st["win"].append((now, int(c, 16)))
     st["last"] = h
-    while st["win"] and now - st["win"][0][0] > 60: st["win"].popleft()
 
 def _tps_value(lane, now):
     w = _tps[lane]["win"]
     if len(w) < 2: return None
+    # no new block in the last ~8s => the chain isn't producing: report 0, not a stale average
+    if now - w[-1][0] > 8: return 0.0
     span = max(now - w[0][0], 3.0)
     return round(sum(x[1] for x in w) / span, 1)
 
@@ -344,8 +349,12 @@ def exec_stats():
         return {k: v for k, v in d.items() if not k.startswith("_")}
     blk_s = None
     hr = list(_hr)
+    now = time.time() - _t0
     if len(hr) >= 2 and hr[-1][0] > hr[0][0]:
-        blk_s = round((hr[-1][1] - hr[0][1]) / (hr[-1][0] - hr[0][0]), 2)
+        if now - hr[-1][0] > 8:     # no new block seen in ~8s -> chain not producing: 0, not a frozen rate
+            blk_s = 0.0
+        else:
+            blk_s = round((hr[-1][1] - hr[0][1]) / (hr[-1][0] - hr[0][0]), 2)
     return {"evm": pub(_exec["evm"]), "pay": pub(_exec["pay"]), "blk_s": blk_s,
             "series": [x for x in list(_exec_series)[-100:]]}
 
