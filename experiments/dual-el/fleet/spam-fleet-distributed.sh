@@ -50,8 +50,11 @@ ship(){
 
 start(){
   need
+  echo "==> [1/2] ensuring the spammer binary is on every remote (idempotent)"
+  ship            # auto-ship: skips hosts that already have the matching binary
+  echo "==> [2/2] launching distributed spam"
   local total=$((4*S*ACCTS))
-  echo "==> distributed spam: 4 machines x $S spammers ($ACCTS accts each) = $((4*S)) spammers, $total accounts needed"
+  echo "    4 machines x $S spammers ($ACCTS accts each) = $((4*S)) spammers, $total accounts needed"
   for n in 1 2 3 4; do
     local ws; ws=$(localws $n)
     for j in $(seq 0 $((S-1))); do
