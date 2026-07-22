@@ -59,7 +59,9 @@ start(){
     local ws; ws=$(localws $n)
     for j in $(seq 0 $((S-1))); do
       local gidx=$(( (n-1)*S + j )) off; off=$(( ((n-1)*S + j) * ACCTS ))
-      local run="ws --targets ws://127.0.0.1:$ws --chain-id $CID -r $RATE -t $DUR -g 20 -a $ACCTS --account-offset $off --mix transfer=100"
+      # -l resyncs each account to its latest on-chain nonce, so re-runs on a live chain don't
+      # nonce-gap (without it, a second run starts from nonce 0 -> all "nonce too low").
+      local run="ws --targets ws://127.0.0.1:$ws --chain-id $CID -r $RATE -t $DUR -g 20 -a $ACCTS --account-offset $off -l --mix transfer=100"
       if [ "$n" -eq 1 ]; then
         nohup "$SPAMMER" $run >/tmp/spam-d-1-$j.log 2>&1 & disown
       else

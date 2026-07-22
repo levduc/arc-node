@@ -64,7 +64,7 @@ def prom(names):
                 except: pass
     return out
 h0=int(rpc("eth_blockNumber"),16); t0=time.time(); last=h0
-gas_l=None; rows=[]
+gas_l=None; rows=[]; arr=[]   # rows: (gas,txs,gaslimit); arr: (wall_t, txs) per block as first observed
 pm0=prom(["reth_sync_execution_execution_histogram_sum","reth_sync_execution_execution_histogram_count",
           "reth_sync_block_validation_state_root_histogram_sum","reth_sync_block_validation_state_root_histogram_count",
           "reth_consensus_engine_persistence_save_blocks_duration_seconds_sum","reth_consensus_engine_persistence_save_blocks_duration_seconds_count"])
@@ -72,17 +72,27 @@ while time.time()-t0 < window:
     h=int(rpc("eth_blockNumber"),16)
     while last < h:
         last+=1; r=blk(last)
-        if r: rows.append(r); gas_l=r[2]
-    time.sleep(0.5)
+        if r: rows.append(r); arr.append((time.time(), r[1])); gas_l=r[2]
+    time.sleep(0.3)
 pm1=prom(list(pm0))
 dt=time.time()-t0
 tot_tx=sum(r[1] for r in rows); tot_gas=sum(r[0] for r in rows); nblk=len(rows)
+# peak = max tx/s over any rolling window spanning >= 10s (smooths single-block noise)
+peak=0.0
+for i in range(len(arr)):
+    for j in range(i+1, len(arr)):
+        span=arr[j][0]-arr[i][0]
+        if span>=10:
+            tps=sum(arr[k][1] for k in range(i+1,j+1))/span
+            if tps>peak: peak=tps
+            break
 def per(a,b):  # avg ms per block-op from histogram deltas
     ds=pm1.get(a,0)-pm0.get(a,0); dc=pm1.get(b,0)-pm0.get(b,0)
     return (ds/dc*1000) if dc>0 else None
 print(f"\n================ PAYMENT LANE @ {gas_l/1e6 if gas_l else 0:.0f}M gas limit ================")
 print(f"  window            {dt:.1f}s   blocks {nblk}")
-print(f"  throughput        {tot_tx/dt:,.0f} tx/s")
+print(f"  throughput (avg)  {tot_tx/dt:,.0f} tx/s")
+print(f"  throughput (peak) {peak:,.0f} tx/s   (best rolling >=10s window)")
 print(f"  block rate        {nblk/dt:.2f} blocks/s")
 print(f"  txs / block       {tot_tx/max(nblk,1):,.0f}   (avg)")
 print(f"  gas / block       {tot_gas/max(nblk,1)/1e6:,.1f}M   ({100*tot_gas/max(nblk,1)/gas_l if gas_l else 0:.0f}% full)")
