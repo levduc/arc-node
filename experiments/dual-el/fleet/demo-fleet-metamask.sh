@@ -16,6 +16,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO"
 SCEN=soak4; RUN=/tmp/dualel-fleet-fastssd; mkdir -p "$RUN"
 LBASE="$REPO/.quake/$SCEN"
+PAY_GAS=${PAY_GAS:-200000000}          # payment-lane block gas limit. Override e.g. PAY_GAS=1000000000 (1 Ggas).
+EXTRA_ACCOUNTS=${EXTRA_ACCOUNTS:-1000} # prefunded genesis EOAs (raise for many parallel/distributed spammers).
 LOCAL_TS=100.124.148.61
 declare -A RHOST=( [2]=ginnythui [3]=papaduck [4]=papaduck-alien2 )
 declare -A RTS=( [2]=100.85.150.119 [3]=100.70.62.92 [4]=100.86.97.40 )
@@ -53,7 +55,7 @@ start(){
   for n in 2 3 4; do tss "${RHOST[$n]}" "docker rm -f validator1_cl validator1_el validator1_el_pay validator2_cl validator2_el validator2_el_pay validator3_cl validator3_el validator3_el_pay validator4_cl validator4_el validator4_el_pay 2>/dev/null; rm -rf ${RB[$n]} 2>/dev/null || docker run --rm -v ${RPARENT[$n]}:/f --user root alpine rm -rf /f/$SCEN; mkdir -p ${RB[$n]}; docker run --rm -v ${RPARENT[$n]}:/f --user root alpine chown -R \$(id -u):\$(id -g) /f; true" || true; done
 
   echo "==> [1/9] generate testnet locally (quake)"
-  target/release/quake -f "crates/quake/scenarios/${SCEN}.toml" start -e 1000 --monitoring false --force --block-gas-limit 30000000 >"$RUN/quake.log" 2>&1 || true
+  target/release/quake -f "crates/quake/scenarios/${SCEN}.toml" start -e "$EXTRA_ACCOUNTS" --monitoring false --force --block-gas-limit 30000000 >"$RUN/quake.log" 2>&1 || true
   [ "$(docker ps --format '{{.Names}}' | grep -cE 'validator[0-9]+_(cl|el)$')" -ge 8 ] || { echo "!! quake start failed"; exit 1; }
   docker rm -f $(docker ps -aq --filter name=validator) >/dev/null
 
@@ -63,11 +65,11 @@ start(){
   # Arc reads the block gas limit from the ProtocolConfig contract (0x36..01) at RUNTIME, so patch
   # BOTH the header gasLimit AND storage slot 0x668f...385203. chainId 1338 (bounds [1M,1B] for a
   # non-mainnet/testnet chain, so 200M is valid). Written into assets/, shipped to every machine.
-  python3 - <<'PYGEN'
-import json
+  PAY_GAS="$PAY_GAS" python3 - <<'PYGEN'
+import json, os
 g=json.load(open('.quake/soak4/assets/genesis.json'))
 g['config']['chainId']=1338
-gas=200000000
+gas=int(os.environ['PAY_GAS'])
 g['gasLimit']=hex(gas)
 proto='0x3600000000000000000000000000000000000001'
 slot='0x668f09ce856848ead6cb1ddee963f15ef833cea8958030868f867aec84385203'

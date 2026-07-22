@@ -23,8 +23,9 @@ SCEN="demo2lane"; PORT=8080; RUN="/tmp/dualel-metamask"
 DASH="$REPO/experiments/dual-el/dashboard.py"
 EVM_CHAINID=1337
 PAY_CHAINID=1338
-PAY_GAS=200000000          # 0xBEBC200
-EVM_GAS=30000000           # 0x1C9C380
+PAY_GAS=${PAY_GAS:-200000000}          # 0xBEBC200 (200M). Override e.g. PAY_GAS=1000000000 (1 Ggas).
+EVM_GAS=${EVM_GAS:-30000000}           # 0x1C9C380 (30M)
+EXTRA_ACCOUNTS=${EXTRA_ACCOUNTS:-1000} # prefunded genesis EOAs (raise for many parallel spammers)
 PROTO_CFG_ADDR="0x3600000000000000000000000000000000000001"
 GAS_SLOT="0x668f09ce856848ead6cb1ddee963f15ef833cea8958030868f867aec84385203"
 cd "$REPO"; mkdir -p "$RUN"
@@ -72,7 +73,7 @@ start(){
 
   echo "==> [1/5] EVM lane: 4 validators (CL + EVM-EL) at ${EVM_GAS} gas (30M)..."
   target/release/quake -f "crates/quake/scenarios/${SCEN}.toml" start \
-    -e 1000 --monitoring false --force --block-gas-limit "$EVM_GAS" >"$RUN/quake.log" 2>&1 || true
+    -e "$EXTRA_ACCOUNTS" --monitoring false --force --block-gas-limit "$EVM_GAS" >"$RUN/quake.log" 2>&1 || true
   [ "$(val_up)" -ge 8 ] || { echo "!! start failed -- see $RUN/quake.log"; tail -5 "$RUN/quake.log"; exit 1; }
 
   echo "==> [2/5] payment lane genesis: chainId ${PAY_CHAINID}, ${PAY_GAS} gas (200M)..."
