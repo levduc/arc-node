@@ -411,6 +411,46 @@ Two theses, each measured live (honest, real EIP-1559 — not mocked):
   chainId + 200M gas set in BOTH the header gasLimit AND the ProtocolConfig slot (Arc reads gas limit
   from contract 0x3600...0001 slot 0x668f09ce... at runtime, not just the header).
 
+**🎯 1 Ggas PAYMENT-LANE THROUGHPUT EXPERIMENT (2026-07-21, branch `fleet-multi-machine`).** Question:
+how high can payment-lane tps go, and is "bigger blocks" the lever? Answer: **1 Ggas blocks WORK**
+(chainId 1338 bounds are [1M,1B] in `crates/execution-config/src/chainspec.rs:293-297`, NO code change
+— set via payment genesis header gasLimit + ProtocolConfig slot). **Block size is NOT the bottleneck.**
+- **Tooling:** `PAY_GAS`/`EXTRA_ACCOUNTS` now env-overridable in `demo-metamask.sh` + `fleet/demo-fleet-metamask.sh`
+  (defaults unchanged). Delivery: **`fleet/spam-fleet-distributed.sh {start|stop|status}`** — the TRUE
+  distributed spammer (didn't exist before; fleet spam was always local-from-ginny + gossip): runs S
+  spammers ON EACH machine against that machine's LOCAL payment EL (ws 19546/19646/19746/19846),
+  globally-disjoint account ranges (`--account-offset`), `-l` nonce-resync for re-runs. `start` folds in
+  an idempotent `ship` (sha-check, base64 over `tailscale ssh`, binary is only 5.1MB). Measure:
+  **`pay-throughput-bench.sh {run|measure|stop}`** (`measure` = sample-only; reports avg + PEAK tx/s via
+  best rolling ≥10s window, block rate, txs/block, fullness, exec/root/persist from prometheus).
+- **Runbook:** `PAY_GAS=1000000000 EXTRA_ACCOUNTS=16000 fleet/demo-fleet-metamask.sh start` → `S=4 ACCTS=1000 fleet/spam-fleet-distributed.sh start` → `WINDOW=300 pay-throughput-bench.sh measure` → `spam-fleet-distributed.sh stop`. (S=4,ACCTS=1000 needs 16000 prefunded accounts = 4·S·ACCTS.)
+- **RESULTS** (i7-11700F 16-thread local val1 + 3 tailscale remotes, **alien2 on WIFI**):
+  - single-machine (all 12 containers + spam on ONE box): **7.4k tps, blocks 19% full** — CPU-contention +
+    ack-gated delivery bound; MORE spammers made it WORSE (16 spammers = 6.5k). NOT block-size bound.
+  - fleet + distributed spam: blocks **FILL to 100% = 47,618 txs** (1e9/21000). **5-min window: avg 9.5k /
+    PEAK 15k tps** (snapshots to ~19k), block rate 0.28/s, 34,363 txs/blk (72% full), **exec 379ms,
+    state-root 0.8ms, persist 169ms.**
+- **KEY FINDINGS (this is the slide material):**
+  1. **STATE-ROOT IS FREE ON A LEAN LANE: 0.8ms for a 34k-tx block.** Because 16k accounts send AMONG
+     THEMSELVES → tiny ~16k-leaf RAM-resident trie, and NO new accounts → trie structure static, only
+     values change. Contrast 27.8ms for a 2.7M-gas block on the 169GB disk-bound mainnet trie. The MPT
+     "bottleneck" is about SHARED DISK-BOUND state, NOT a lean payment lane. **THESIS VALIDATED.**
+  2. **EXECUTION IS THE SOLE BOTTLENECK:** exec 379ms/pass, **replayed ~5×/height** (proposer build + 4
+     validators re-execute). Block time 3.6s (0.28/s) but measured work only ~0.55s → **~3s is CONSENSUS
+     COORDINATION** (re-exec passes + voting + the **alien2 WIFI node** dragging rounds).
+  3. **CONTENTION is the parallel-execution research problem:** transfers among a hot closed account set
+     create read-write deps on balances → naive optimistic parallel (Block-STM) aborts. Deterministic/
+     partitioned parallel (or UTXO conflict-free) is the angle.
+  4. **STATE-ROOT GROWS WITH NEW ACCOUNTS:** cheap root holds ONLY for a closed set; fresh-recipients grow
+     the trie → root climbs toward mainnet. "State grows with USERS, not payment volume."
+- **PATH TO 20-50k:** parallel execution (cut the 379ms, replayed 5×) + drop the wifi node / reduce
+  coordination. If cadence were exec-bound only (~0.93s/blk) the same full blocks = **~37k tps**. Block
+  size and commitment are NOT the levers. TODO: isolate wifi-node drag (run 3 validators); try parallel exec.
+- **GOTCHA:** after a spam run's timer expires, accounts are left nonce-gapped → mempool shows big
+  `queued` (NOT `pending`) that never executes (waiting for nonces that won't come); drains/evicts on its
+  own. Re-runs MUST use `-l` (in the script) or start at nonce 0 → "nonce too low". The product dashboard
+  summed pending+queued, so it showed a phantom backlog — payment-lane pending tile removed for this reason.
+
 Other branches: `gravity-payment-lane` PARKED (gravity-reth = O(total-state) per block on standard
 Engine API paths, perf requires their consensus; FINDINGS.md there); erigon probe passed the engine
 smoke (needs Prague system-contract predeploys in genesis; chainId 1337 collides with its named

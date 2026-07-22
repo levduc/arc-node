@@ -472,7 +472,7 @@ def collect():
                 "value_id": value_id(eh, ph)}
     return {"evm": evm, "pay": pay, "both": both, "growth": growth(), "exec": exec_stats(),
             "state": state_stats(), "congest": {"running": _congest_running()},
-            "stress": {"running": _stress_running()}}
+            "stress": {"running": _stress_running()}, "bench": _bench_status()}
 
 # ---- browser-controlled congestion simulation: start/stop the tuned load from the /product page.
 # Shells out to the sibling congest-demo.sh (single source of truth for the load profile), which
@@ -528,6 +528,31 @@ def _stress(action):
             return r.returncode == 0, (r.stdout or r.stderr or "")[-300:]
         except Exception as e:
             return False, str(e)
+
+# ---- one-click payment-lane throughput benchmark (run-bench.sh writes bench-status.json) ----
+_BENCH_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run-bench.sh")
+_BENCH_STATUS = "/tmp/pay-bench/bench-status.json"
+
+def _bench_status():
+    """Return the current bench status dict (running/done/error + result), or idle."""
+    try:
+        return json.load(open(_BENCH_STATUS))
+    except Exception:
+        return {"state": "idle"}
+
+def _bench_start(window):
+    """Kick off run-bench.sh in the background if not already running. Returns (ok, msg)."""
+    if _bench_status().get("state") == "running":
+        return False, "already running"
+    try:
+        win = str(int(window)) if str(window).isdigit() else "300"
+        env = dict(os.environ, WINDOW=win)
+        # detach so it survives this request (the whole benchmark takes window+~75s)
+        subprocess.Popen(["bash", _BENCH_SH], env=env, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        return True, "started"
+    except Exception as e:
+        return False, str(e)
 
 # Product view: 3 hero numbers + the state-grows-with-activity-not-payments panel. Reuses /state.
 # Open http://localhost:8080/product . The full engineering dashboard stays at / .
@@ -607,7 +632,6 @@ svg{width:100%;height:190px;display:block}
         <div><div class=mk>Throughput</div><div class=mv id=payTps style="color:#2f9e5f">&mdash;</div></div>
         <div><div class=mk>Block full</div><div class=mv id=payFull style="color:#2f9e5f">&mdash;</div></div>
         <div><div class=mk>Cost to send</div><div class=mv id=payFee style="color:#2f9e5f">&mdash;</div></div>
-        <div><div class=mk>Pending txs</div><div class=mv id=payQ style="color:#2f9e5f">&mdash;</div></div>
       </div>
     </div>
   </div>
@@ -683,11 +707,10 @@ async function tick(){
   const mtxt=m=>m>=1e6?'runaway':(m>=1000?(m/1000).toFixed(1).replace(/\.0$/,'')+'k':m.toLocaleString());
   $('evmFee').textContent=em==null?'—':(em<2?'lowest':mtxt(em)+'× more');
   $('payFee').textContent='lowest';
-  const eq=(ex.evm||{}).pending, pq=(ex.pay||{}).pending;
-  // one consistent formatter for both lanes: "N txs" (0 txs when empty), never "none" vs "0 txs"
-  const qtxt=q=>q==null?'—':Math.round(q).toLocaleString()+' txs';
-  $('evmQ').textContent=qtxt(eq);
-  $('payQ').textContent=qtxt(pq);
+  const eq=(ex.evm||{}).pending;
+  // EVM lane only: payment-lane backlog is dropped from the product view because heavy spam leaves
+  // nonce-gapped queued txs that never execute (misleading as "pending").
+  $('evmQ').textContent=eq==null?'—':Math.round(eq).toLocaleString()+' txs';
   // throughput (tx/s landing on-chain) per lane
   const tpsFmt=v=>v==null?'—':Math.round(v).toLocaleString()+' tx/s';
   $('evmTps').textContent=tpsFmt((ex.evm||{}).tps);
@@ -811,15 +834,25 @@ h1 b{color:var(--pay)}
 .stressbtn .sp{display:inline-block;width:7px;height:7px;border-radius:50%;background:#fff;margin-right:7px;vertical-align:middle}
 .stressbtn.on .sp{animation:spulse 1.1s ease-in-out infinite}
 @keyframes spulse{0%,100%{opacity:1}50%{opacity:.35}}
+.benchbtn{border:0;border-radius:8px;padding:9px 16px;font-size:12.5px;font-weight:700;cursor:pointer;color:#0d1117;white-space:nowrap;font-family:var(--mono);background:var(--warn);transition:filter .15s}
+.benchbtn:hover{filter:brightness(1.1)} .benchbtn:disabled{opacity:.55;cursor:default}
+.benchpanel{background:var(--panel);border:1px solid var(--warn);border-radius:10px;padding:16px 20px;margin:16px 0 0}
+.benchpanel h3{margin:0 0 10px;font-size:13px;font-weight:600;color:var(--warn);letter-spacing:.04em}
+.benchphase{color:var(--dim);font-size:13px}
+.benchtbl{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+.benchtbl td{padding:6px 10px;border-bottom:1px solid var(--line)}
+.benchtbl td.bk{color:var(--dim)} .benchtbl td.bv{color:var(--ink);font-weight:600;text-align:right}
 </style></head><body><div class=wrap>
 <header>
  <div><h1>Arc &mdash; dual&#8209;EL <b>payment lane</b></h1>
   <div class=sub>one consensus, two execution layers, two state roots per block &middot; 4 validators &middot; Malachite BFT</div></div>
  <div style="display:flex;align-items:center;gap:12px">
+  <button id=benchBtn class=benchbtn onclick=runBench()>Run 5-min benchmark</button>
   <button id=stressBtn class="stressbtn off" onclick=toggleStress()><span class=sp></span>Start stress test</button>
   <div id=chainpill class=pill>connecting&hellip;</div>
  </div>
 </header>
+<div id=benchPanel class=benchpanel style="display:none"></div>
 
 <div class=lanes>
  <div class="lane evm" id=laneEvm>
@@ -1048,6 +1081,30 @@ async function toggleStress(){
  catch(e){stressBusy=false;}
  finally{b.disabled=false;}
 }
+// ---- one-click 5-min payment-lane benchmark ----
+async function runBench(){
+ if(!confirm('Run the 5-minute payment-lane benchmark?\n\nStarts distributed spam on all fleet machines, measures for 5 min, then stops. Existing load will be replaced.')) return;
+ document.getElementById('benchBtn').disabled=true;
+ try{await fetch('/bench/start?window=300',{method:'POST'});}catch(e){}
+}
+function brow(k,v){return '<tr><td class=bk>'+k+'</td><td class=bv>'+v+'</td></tr>';}
+function renderBench(b){
+ const el=document.getElementById('benchPanel'), btn=document.getElementById('benchBtn');
+ if(!b||b.state==='idle'){el.style.display='none';btn.disabled=false;btn.textContent='Run 5-min benchmark';return;}
+ el.style.display='block';
+ if(b.state==='running'){btn.disabled=true;btn.textContent='Benchmarking…';
+   el.innerHTML='<h3>5-minute benchmark — running</h3><div class=benchphase>'+(b.phase||'')+' …</div>';return;}
+ btn.disabled=false;btn.textContent='Run 5-min benchmark';
+ if(b.state==='error'){el.innerHTML='<h3>Benchmark error</h3><div class=benchphase>'+(b.phase||'unknown')+'</div>';return;}
+ if(b.state==='done'&&b.result){const r=b.result;const n=x=>x==null?'—':Number(x).toLocaleString();
+   el.innerHTML='<h3>Payment lane @ '+r.gas_limit_m+'M gas — '+r.window_s+'s, '+r.blocks+' blocks</h3>'+
+     '<table class=benchtbl>'+
+     brow('Throughput (avg)', n(r.avg_tps)+' tx/s')+brow('Throughput (peak)', n(r.peak_tps)+' tx/s')+
+     brow('Block rate', r.block_rate+' blocks/s')+brow('Txs / block', n(r.txs_per_block))+
+     brow('Gas / block', r.gas_per_block_m+'M ('+r.full_pct+'% full)')+
+     brow('Exec / block', n(r.exec_ms)+' ms')+brow('State-root / block', n(r.root_ms)+' ms')+
+     brow('Persist / block', n(r.persist_ms)+' ms')+'</table>';}
+}
 async function tick(){
  let s;try{s=await(await fetch('/state')).json();}catch(e){return;}
  const pill=document.getElementById('chainpill');
@@ -1071,6 +1128,7 @@ async function tick(){
   lastPay=pay.block.num;
  }
  setStressBtn(!!(s.stress||{}).running);
+ renderBench(s.bench);
  drawGrowth(s.growth);
  renderHeaders(s);
  drawExec(s.exec);
@@ -1120,6 +1178,14 @@ class H(http.server.BaseHTTPRequestHandler):
             ctl, run = _congest, _congest_running
         elif p.startswith("/stress/start") or p.startswith("/stress/stop"):
             ctl, run = _stress, _stress_running
+        elif p.startswith("/bench/start"):
+            import urllib.parse as _up
+            q = _up.parse_qs(_up.urlparse(p).query)
+            ok, msg = _bench_start(q.get("window", ["300"])[0])
+            data = json.dumps({"ok": ok, "msg": msg, "bench": _bench_status()}).encode()
+            self.send_response(200); self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(data))); self.end_headers()
+            self.wfile.write(data); return
         if ctl is not None:
             action = "start" if p.endswith("start") or "/start" in p else "stop"
             ok, msg = ctl(action)

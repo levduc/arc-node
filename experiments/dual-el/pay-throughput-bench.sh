@@ -43,9 +43,9 @@ if [ "$MODE" != measure ]; then
 fi
 echo "==> sampling the payment lane for ${WINDOW}s..."
 
-python3 - "$RPC" "$MET" "$WINDOW" <<'PY'
+python3 - "$RPC" "$MET" "$WINDOW" "$RUN/result.json" <<'PY'
 import sys, json, time, urllib.request
-rpc_port, met_port, window = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+rpc_port, met_port, window, out_json = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 def rpc(m,p=None):
     req=urllib.request.Request(f"http://127.0.0.1:{rpc_port}",
         data=json.dumps({"jsonrpc":"2.0","id":1,"method":m,"params":p or []}).encode(),
@@ -103,5 +103,13 @@ print(f"  exec / block      {e:.1f} ms" if e else "  exec / block      n/a")
 print(f"  state-root / block{r:8.1f} ms" if r else "  state-root/block  n/a")
 print(f"  persist / block   {p:.1f} ms" if p else "  persist / block   n/a")
 print("=========================================================")
+json.dump({"window_s": round(dt,1), "blocks": nblk, "avg_tps": round(tot_tx/dt),
+           "peak_tps": round(peak), "block_rate": round(nblk/dt,3),
+           "txs_per_block": round(tot_tx/max(nblk,1)),
+           "gas_per_block_m": round(tot_gas/max(nblk,1)/1e6,1),
+           "full_pct": round(100*tot_gas/max(nblk,1)/gas_l) if gas_l else 0,
+           "gas_limit_m": round(gas_l/1e6) if gas_l else 0,
+           "exec_ms": round(e,1) if e else None, "root_ms": round(r,1) if r else None,
+           "persist_ms": round(p,1) if p else None}, open(out_json,"w"))
 PY
 echo "==> stop spammers with: $0 stop"
