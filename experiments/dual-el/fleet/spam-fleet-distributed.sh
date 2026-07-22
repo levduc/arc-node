@@ -35,9 +35,12 @@ ship(){
   echo "local spammer sha256=$sha ($(du -h "$SPAMMER" | cut -f1))"
   for n in 2 3 4; do
     local h=${RHOST[$n]}
-    echo "==> $h: shipping (base64 over ssh)..."
+    # already there with the SAME binary? skip (idempotent — handles a prior ship).
+    local rsha; rsha=$(tss "$h" "sha256sum $RBIN 2>/dev/null | awk '{print \$1}'" 2>/dev/null | tr -d '\r')
+    if [ "$rsha" = "$sha" ]; then echo "==> $h: already up to date, skip"; continue; fi
+    echo "==> $h: shipping (base64 over ssh)$([ -n "$rsha" ] && echo ' [replacing older build]')..."
     if base64 "$SPAMMER" | tss "$h" "base64 -d > $RBIN && chmod +x $RBIN"; then
-      local rsha; rsha=$(tss "$h" "sha256sum $RBIN | awk '{print \$1}'" 2>/dev/null | tr -d '\r')
+      rsha=$(tss "$h" "sha256sum $RBIN | awk '{print \$1}'" 2>/dev/null | tr -d '\r')
       if [ "$rsha" = "$sha" ]; then echo "    OK ($h)"; else echo "    !! sha MISMATCH on $h (got $rsha) — link truncated (wifi?). Re-run 'ship' or use taildrop."; fi
     else
       echo "    !! ship failed to $h"
