@@ -372,7 +372,13 @@ Fleet scripts (experiments/dual-el/fleet/): demo-fleet.sh (4-machine 10M ~40min)
 demo-fleet2.sh (2-machine), spam-fleet.sh / spam-fleet-fanout.sh (start|stop|status; env rates),
 revive-val.sh [N] (single-validator revival incl. finding-#7 heal), measure-2h.sh, gen-fleet.py /
 gen-remote-val4.py (compose surgery), pilot.sh. All starts self-verify + print fallback; loads always
-separate. Dashboard fleet mode: DUALEL_FLEET=<json {valN: ts-ip}> (unset = single-machine); rows:
+separate. **`clean-fleet.sh`** (also a `clean` subcommand on demo-fleet-metamask/-fast/-empty-fastssd)
+= deep-wipe ALL machines: force-rm every `validator*` container + every datadir (local `.quake/*` except
+monitoring, each remote's `arc-fleet` on home + NVMe) + buildx prune. Use it — start/stop only touch a
+tracked scenario, so ORPHANED datadirs from past runs pile up (measured: ~615 GB across the 4 machines
+in one session; the docker "build cache" number in `system df` is a PHANTOM over-count — the real hog is
+always the `.quake`/`arc-fleet` chain datadirs, 50-200 GB/machine/run). `clean` is explicit-only (never on
+start/stop); datadirs are root-owned so removal needs a root container (`docker run --user root alpine rm`). Dashboard fleet mode: DUALEL_FLEET=<json {valN: ts-ip}> (unset = single-machine); rows:
 per-val root/exec/PERSIST now+avg-run, landed TPS, block rate; exec-now had been lifetime-avg since
 inception (fixed), stale values expire after 45s idle.
 

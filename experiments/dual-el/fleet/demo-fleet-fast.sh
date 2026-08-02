@@ -152,4 +152,6 @@ stop(){
 
 status(){ verify; }
 
-case "${1:-}" in start) start;; stop) stop;; status) status;; verify) verify;; *) echo "usage: $0 {start|stop|status}"; exit 1;; esac
+case "${1:-}" in start) start;; stop) stop;; status) status;; verify) verify;;
+  clean) exec bash "$(dirname "${BASH_SOURCE[0]}")/clean-fleet.sh";;
+  *) echo "usage: $0 {start|stop|status|clean}"; exit 1;; esac
