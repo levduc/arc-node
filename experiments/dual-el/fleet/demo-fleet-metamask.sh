@@ -190,5 +190,5 @@ stop(){
 status(){ verify; }
 
 case "${1:-}" in start) start;; stop) stop;; status) status;; verify) verify;; metamask) metamask;;
-  clean) exec bash "$(dirname "${BASH_SOURCE[0]}")/clean-fleet.sh";;
+  clean) exec bash "$REPO/experiments/dual-el/fleet/clean-fleet.sh";;
   *) echo "usage: $0 {start|stop|status|metamask|clean}"; exit 1;; esac
