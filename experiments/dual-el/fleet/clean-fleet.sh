@@ -13,7 +13,15 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 declare -A RHOST=( [2]=ginnythui [3]=papaduck [4]=papaduck-alien2 )
-tss(){ local h=$1; shift; timeout "${TSS_TMO:-200}" tailscale ssh "$h" "$@"; }
+# `tailscale ssh` can wedge on an interactive auth/TTY check and IGNORE SIGTERM -- a plain
+# `timeout N` then hangs forever (observed: a 20s timeout still alive after 479s). So:
+#   -k 10  -> SIGKILL 10s after the SIGTERM it ignores
+#   </dev/null -> never wait on stdin/a TTY (the actual wedge)
+tss(){ local h=$1; shift; timeout -k 10 "${TSS_TMO:-200}" tailscale ssh "$h" "$@" </dev/null; }
+# If this script is interrupted (Ctrl-C) or killed, take any wedged ssh children with it --
+# otherwise they linger and the next run inherits a stuck session.
+cleanup(){ pkill -9 -P $$ -f "tailscale ssh" 2>/dev/null; }
+trap 'cleanup; echo; echo "interrupted — remaining hosts not cleaned"; exit 130' INT TERM
 
 # remote one-liner: rm validator containers, both arc-fleet locations (root-owned -> root container),
 # prune buildx, print disk.
@@ -33,9 +41,9 @@ echo "   validators left: $(docker ps -aq --filter name=validator | wc -l | tr -
 for n in 2 3 4; do
   h=${RHOST[$n]}
   echo "==> $h"
-  if timeout 20 tailscale ssh "$h" "echo ok" >/dev/null 2>&1; then
+  if timeout -k 5 20 tailscale ssh "$h" "echo ok" </dev/null >/dev/null 2>&1; then
     out=$(tss "$h" "$REMOTE_CLEAN" 2>/dev/null | tr -d '\r' | tail -1)
-    left=$(timeout 20 tailscale ssh "$h" "docker ps -aq --filter name=validator | wc -l" 2>/dev/null | tr -d ' \r')
+    left=$(timeout -k 5 20 tailscale ssh "$h" "docker ps -aq --filter name=validator | wc -l" </dev/null 2>/dev/null | tr -d ' \r')
     echo "   validators left: ${left:-?}   disk: ${out:-?}"
   else
     echo "   ⚠ unreachable via tailscale — skipped (reauth: tailscale up)"
