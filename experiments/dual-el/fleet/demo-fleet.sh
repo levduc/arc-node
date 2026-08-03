@@ -19,7 +19,11 @@ declare -A RTS=( [2]=100.85.150.119 [3]=100.70.62.92 [4]=100.86.97.40 )
 PAY_PORT(){ echo $((19545+($1-1)*100)); }   # rpc; ws=+1 auth=+6 metrics: 19001+100(i-1)
 # `tailscale ssh` can wedge on an interactive auth/TTY check and IGNORE SIGTERM, so a plain
 # `timeout N` hangs forever. -k forces SIGKILL; </dev/null removes the TTY wait (the real wedge).
-tss(){ local h=$1; shift; timeout -k 10 "${TSS_TMO:-120}" tailscale ssh "$h" "$@" </dev/null; }
+tss(){ local h=$1; shift;
+  # -k forces SIGKILL after the SIGTERM tailscale-ssh ignores. Close stdin ONLY when it is a TTY
+  # (the wedge); callers that PIPE data in (tar | tss ...) must keep their stdin.
+  if [ -t 0 ]; then timeout -k 10 "${TSS_TMO:-120}" tailscale ssh "$h" "$@" </dev/null;
+  else timeout -k 10 "${TSS_TMO:-120}" tailscale ssh "$h" "$@"; fi; }
 
 setup_env(){ export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1; nvm use 22 >/dev/null 2>&1 || true; export PATH="$HOME/.foundry/bin:$HOME/.cargo/bin:$PATH"; }
 

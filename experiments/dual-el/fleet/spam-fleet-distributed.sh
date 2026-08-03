@@ -26,7 +26,11 @@ declare -A RHOST=( [1]="" [2]=ginnythui [3]=papaduck [4]=papaduck-alien2 )
 S=${S:-4}; ACCTS=${ACCTS:-1000}; RATE=${RATE:-12000}; DUR=${DUR:-300}; CID=${CID:-1338}
 # `tailscale ssh` can wedge on an interactive auth/TTY check and IGNORE SIGTERM, so a plain
 # `timeout N` hangs forever. -k forces SIGKILL; </dev/null removes the TTY wait (the real wedge).
-tss(){ local h=$1; shift; timeout -k 10 "${TSS_TMO:-90}" tailscale ssh "$h" "$@" </dev/null; }
+tss(){ local h=$1; shift;
+  # -k forces SIGKILL after the SIGTERM tailscale-ssh ignores. Close stdin ONLY when it is a TTY
+  # (the wedge); callers that PIPE data in (tar | tss ...) must keep their stdin.
+  if [ -t 0 ]; then timeout -k 10 "${TSS_TMO:-90}" tailscale ssh "$h" "$@" </dev/null;
+  else timeout -k 10 "${TSS_TMO:-90}" tailscale ssh "$h" "$@"; fi; }
 localws(){ echo $((19546+($1-1)*100)); }    # payment EL ws port published on the box hosting val_n
 
 need(){ [ -x "$SPAMMER" ] || { echo "!! build the spammer first: cargo build --release -p spammer"; exit 1; }; }

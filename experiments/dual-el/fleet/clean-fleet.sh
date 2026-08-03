@@ -17,7 +17,11 @@ declare -A RHOST=( [2]=ginnythui [3]=papaduck [4]=papaduck-alien2 )
 # `timeout N` then hangs forever (observed: a 20s timeout still alive after 479s). So:
 #   -k 10  -> SIGKILL 10s after the SIGTERM it ignores
 #   </dev/null -> never wait on stdin/a TTY (the actual wedge)
-tss(){ local h=$1; shift; timeout -k 10 "${TSS_TMO:-200}" tailscale ssh "$h" "$@" </dev/null; }
+tss(){ local h=$1; shift;
+  # -k forces SIGKILL after the SIGTERM tailscale-ssh ignores. Close stdin ONLY when it is a TTY
+  # (the wedge); callers that PIPE data in (tar | tss ...) must keep their stdin.
+  if [ -t 0 ]; then timeout -k 10 "${TSS_TMO:-200}" tailscale ssh "$h" "$@" </dev/null;
+  else timeout -k 10 "${TSS_TMO:-200}" tailscale ssh "$h" "$@"; fi; }
 # If this script is interrupted (Ctrl-C) or killed, take any wedged ssh children with it --
 # otherwise they linger and the next run inherits a stuck session.
 cleanup(){ pkill -9 -P $$ -f "tailscale ssh" 2>/dev/null; }
