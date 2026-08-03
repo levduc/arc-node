@@ -24,7 +24,9 @@ SPAMMER="$REPO/target/release/spammer"
 RBIN=/tmp/arc-spammer                       # where the binary lands on each remote
 declare -A RHOST=( [1]="" [2]=ginnythui [3]=papaduck [4]=papaduck-alien2 )
 S=${S:-4}; ACCTS=${ACCTS:-1000}; RATE=${RATE:-12000}; DUR=${DUR:-300}; CID=${CID:-1338}
-tss(){ local h=$1; shift; timeout "${TSS_TMO:-90}" tailscale ssh "$h" "$@"; }
+# `tailscale ssh` can wedge on an interactive auth/TTY check and IGNORE SIGTERM, so a plain
+# `timeout N` hangs forever. -k forces SIGKILL; </dev/null removes the TTY wait (the real wedge).
+tss(){ local h=$1; shift; timeout -k 10 "${TSS_TMO:-90}" tailscale ssh "$h" "$@" </dev/null; }
 localws(){ echo $((19546+($1-1)*100)); }    # payment EL ws port published on the box hosting val_n
 
 need(){ [ -x "$SPAMMER" ] || { echo "!! build the spammer first: cargo build --release -p spammer"; exit 1; }; }
