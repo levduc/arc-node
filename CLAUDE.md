@@ -406,8 +406,9 @@ Two theses, each measured live (honest, real EIP-1559 — not mocked):
   21000×1e9/1e18 = **$0.000021 flat** (native gas token is USDC, 1e18 wei = $1); dashboard shows $ per
   transfer on both lanes. The EVM lane gets **Arc MAINNET's real fee band** (min 20 gwei / max 20,000
   gwei from assets/mainnet/genesis.json) — an idle devnet otherwise decays to the 1-wei dev floor and
-  reads CHEAPER than the payment lane, inverting the story. Result: EVM $0.00042 floor → $0.42
-  congested vs payment $0.000021 fixed (20×→20,000×); spammer-safe (signs max_fee 40k gwei). NOTE: `payment-lane-gas` also reorganized the demo surface (testnet.sh/spam.sh,
+  reads CHEAPER than the payment lane, inverting the story. Payment fixed fee = 20 gwei too
+  (matches the EVM floor): BOTH lanes idle at the SAME $0.00042/transfer — apples-to-apples — and under
+  congestion only the EVM lane climbs (→$0.42, 1,000×); spammer-safe (signs max_fee 40k gwei). NOTE: `payment-lane-gas` also reorganized the demo surface (testnet.sh/spam.sh,
   attic/) — the two branches have overlapping parallel work (EXTRA_ACCOUNTS, --account-offset); reconcile
   before merging either.
 - **Tooling (experiments/dual-el/):** `congest-demo.sh` {start|watch|status|stop} (auto-detects each
