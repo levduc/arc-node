@@ -4,12 +4,16 @@
 # zero restarts, consensus-safe by construction (every validator reads the same
 # contract state; the executor re-reads FeeParams every block).
 #
-#   EVM lane     -> blockGasLimit = 30M   (real Arc mainnet size)
+#   EVM lane     -> blockGasLimit = 30M AND Arc MAINNET's real fee band (min 20 gwei / max
+#                   20,000 gwei, from assets/mainnet/genesis.json) — an idle devnet otherwise
+#                   decays to the 1-wei dev floor and reads absurdly cheap (<$0.000001/transfer,
+#                   cheaper than the payment lane, inverting the demo story)
 #   payment lane -> blockGasLimit = 100M  AND minBaseFee == maxBaseFee  (FIXED gas price)
 #
 #   ./set-lane-economics.sh apply    (default)
 #   ./set-lane-economics.sh show     (read feeParams from both lanes)
 # Env: EVM_GAS=30000000 PAY_GAS=100000000 PAY_FIXED_FEE=1000000000 (wei; default 1 gwei)
+#      EVM_MIN_FEE=20000000000 EVM_MAX_FEE=20000000000000 (wei; Arc mainnet's band)
 #      EVM_RPC=http://127.0.0.1:8545 PAY_RPC=http://127.0.0.1:19545
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"; cd "$REPO"
@@ -20,6 +24,8 @@ PAY_RPC=${PAY_RPC:-http://127.0.0.1:19545}
 EVM_GAS=${EVM_GAS:-30000000}
 PAY_GAS=${PAY_GAS:-100000000}
 PAY_FIXED_FEE=${PAY_FIXED_FEE:-1000000000}
+EVM_MIN_FEE=${EVM_MIN_FEE:-20000000000}      # 20 gwei    = Arc mainnet minBaseFee ($0.00042/transfer)
+EVM_MAX_FEE=${EVM_MAX_FEE:-20000000000000}   # 20,000 gwei = Arc mainnet maxBaseFee ($0.42/transfer)
 CFG=".quake/soak4/assets/controllers-config.json"
 SIG_FP="feeParams()((uint64,uint64,uint64,uint256,uint256,uint256))"
 
@@ -59,8 +65,13 @@ apply(){
   ADDR=$(cast wallet address "$KEY")
   echo "controller: $ADDR"
 
-  echo "==> EVM lane: blockGasLimit -> $EVM_GAS"
-  cast send $PC "updateBlockGasLimit(uint256)" "$EVM_GAS" --private-key "$KEY" --rpc-url "$EVM_RPC" --timeout 60 >/dev/null && echo "    sent"
+  echo "==> EVM lane: gas $EVM_GAS + Arc mainnet fee band (min $EVM_MIN_FEE / max $EVM_MAX_FEE wei)"
+  ecur=$(cast call $PC "$SIG_FP" --rpc-url "$EVM_RPC" | sed 's/[()]//g')
+  ealpha=$(echo "$ecur" | cut -d, -f1 | tr -d " "); ekrate=$(echo "$ecur" | cut -d, -f2 | tr -d " "); einv=$(echo "$ecur" | cut -d, -f3 | tr -d " ")
+  echo "    keeping alpha=$ealpha kRate=$ekrate invElasticity=$einv"
+  cast send $PC "updateFeeParams((uint64,uint64,uint64,uint256,uint256,uint256))" \
+    "($ealpha,$ekrate,$einv,$EVM_MIN_FEE,$EVM_MAX_FEE,$EVM_GAS)" \
+    --private-key "$KEY" --rpc-url "$EVM_RPC" --timeout 60 >/dev/null && echo "    sent"
 
   echo "==> payment lane: read current FeeParams, pin minBaseFee=maxBaseFee=$PAY_FIXED_FEE wei, gas $PAY_GAS"
   cur=$(cast call $PC "$SIG_FP" --rpc-url "$PAY_RPC" | sed 's/[()]//g')
