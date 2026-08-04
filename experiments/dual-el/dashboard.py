@@ -702,11 +702,22 @@ async function tick(){
   const pct=v=>v==null?'—':(v<=0?'0%':(v<1?'<1%':v.toFixed(0)+'%'));
   $('evmFull').textContent=pct(ef); $('evmBar').style.width=(ef==null?0:Math.min(100,ef))+'%';
   $('payFull').textContent=pct(pf); $('payBar').style.width=(pf==null?0:Math.min(100,pf))+'%';
-  const ebf=hx(eh.baseFeePerGas), pbf=hx(ph.baseFeePerGas), floor=Math.min(ebf||1e18,pbf||1e18);
-  const em=(ebf!=null&&floor)?Math.max(1,Math.round(ebf/floor)):null;   // EVM fee as a multiple of the cheap lane
-  const mtxt=m=>m>=1e6?'runaway':(m>=1000?(m/1000).toFixed(1).replace(/\.0$/,'')+'k':m.toLocaleString());
-  $('evmFee').textContent=em==null?'—':(em<2?'lowest':mtxt(em)+'× more');
-  $('payFee').textContent='lowest';
+  const ebf=hx(eh.baseFeePerGas), pbf=hx(ph.baseFeePerGas);
+  // Concrete $ cost per simple transfer: 21,000 gas x baseFee. Arc's native gas token is USDC
+  // (1e18 wei = $1), so this IS a dollar figure, not a proxy. Fee is dynamic (Arc's base-fee
+  // controller) -- the payment lane just sits at its floor because capacity >> demand.
+  const usd=bf=>bf==null?null:21000*bf/1e18;
+  const fmtUsd=v=>{
+    if(v==null)return '—';
+    if(v<1e-6)return '<$0.000001';
+    if(v<0.01)return '$'+v.toFixed(6).replace(/0+$/,'').replace(/\.$/,'');
+    return '$'+v.toFixed(v<1?3:2);
+  };
+  const eUsd=usd(ebf), pUsd=usd(pbf);
+  $('evmFee').textContent=fmtUsd(eUsd);
+  $('payFee').textContent=fmtUsd(pUsd);
+  const em=(ebf!=null&&pbf)?Math.max(1,Math.round(ebf/Math.min(ebf,pbf))):null;  // multiple for the takeaway
+  const mtxt=m=>m>=1e6?'a million+':(m>=1000?(m/1000).toFixed(1).replace(/\.0$/,'')+'k':m.toLocaleString());
   const eq=(ex.evm||{}).pending;
   // EVM lane only: payment-lane backlog is dropped from the product view because heavy spam leaves
   // nonce-gapped queued txs that never execute (misleading as "pending").
@@ -717,9 +728,10 @@ async function tick(){
   $('payTps').textContent=tpsFmt((ex.pay||{}).tps);
   // plain-language takeaway (no jargon): what the same payment costs / waits on each lane right now
   if(em!=null&&eq!=null){
-    const feePart=em<2?'costs the same on both lanes':('costs <b>'+mtxt(em)+'× more</b> on the EVM lane');
+    const feePart=em<2?'costs the same on both lanes ('+fmtUsd(pUsd)+')'
+                      :('costs <b>'+fmtUsd(eUsd)+'</b> on the EVM lane ('+mtxt(em)+'&times; more)');
     $('csum').innerHTML='Right now, the same payment '+feePart+' and waits behind <b>'+Math.round(eq).toLocaleString()+
-      ' transactions</b> &mdash; on the payment lane it stays <i>cheap</i> and settles in the <i>next block</i>.';
+      ' transactions</b> &mdash; on the payment lane it costs <i>'+fmtUsd(pUsd)+'</i> and settles in the <i>next block</i>.';
   }
   setCongBtn(!!(d.congest||{}).running);
   const ok=(d.evm||{}).agree&&(d.pay||{}).agree;
