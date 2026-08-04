@@ -398,6 +398,15 @@ Two theses, each measured live (honest, real EIP-1559 — not mocked):
   ~1e12 wei / 1000 gwei at steady state), mempool holds ~740 stuck txs. Meanwhile the 200M payment lane
   at ~300 tx/s transfers (~6M gas/s) stays <1% full, baseFee flat at the **49-wei floor**, backlog drains
   each block. NOT a protocol-fixed fee — it's capacity≫demand keeping the fee at the floor (state honest).
+  **SUPERSEDED (2026-08-04): the payment fee IS now protocol-fixed.** Branch `payment-lane-gas` (other
+  session) built `fleet/set-lane-economics.sh`: `updateFeeParams` with **minBaseFee==maxBaseFee**
+  (default 1 gwei) pins the payment lane's baseFee EXACTLY (verified: 1,000,000,000 wei constant), while
+  the EVM lane stays dynamic. Ported to `fleet-multi-machine`; demo-metamask starts auto-apply it
+  (steps 4c/8c, 5× retry — fresh-chain quorum races silently drop controller txs). Cost per transfer =
+  21000×1e9/1e18 = **$0.000021 flat** (native gas token is USDC, 1e18 wei = $1); dashboard shows $ per
+  transfer on both lanes. NOTE: `payment-lane-gas` also reorganized the demo surface (testnet.sh/spam.sh,
+  attic/) — the two branches have overlapping parallel work (EXTRA_ACCOUNTS, --account-offset); reconcile
+  before merging either.
 - **Tooling (experiments/dual-el/):** `congest-demo.sh` {start|watch|status|stop} (auto-detects each
   lane's chainId from RPC; env EVM_RATE/PAY_RATE/GUZZLER/EVM_WS/PAY_WS; `watch` = live fullness-bar/
   baseFee/backlog table). `congestion.py` + `state-growth.py` = reproducible generators → CSV + self-

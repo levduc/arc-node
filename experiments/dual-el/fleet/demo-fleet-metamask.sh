@@ -132,6 +132,14 @@ PYGEN
   echo "==> [8b/9] block time -> ${BLOCK_TIME_MS}ms (Arc's 2 blocks/s product cadence)"
   bash "$REPO/experiments/dual-el/set-block-time.sh" "$BLOCK_TIME_MS" || echo "  !! block-time update failed (chain keeps genesis 250ms)"
 
+  echo "==> [8c/9] lane economics: payment fee FIXED at ${PAY_FIXED_FEE:-1000000000} wei (minBaseFee==maxBaseFee)"
+  # retry: on a fresh chain the first controller txs can be dropped in the quorum race
+  for i in 1 2 3 4 5; do
+    EVM_GAS=30000000 PAY_GAS="$PAY_GAS" PAY_FIXED_FEE="${PAY_FIXED_FEE:-1000000000}" \
+      bash "$REPO/experiments/dual-el/fleet/set-lane-economics.sh" apply && break
+    echo "  retry $i/5..."; sleep 5
+  done
+
   echo "==> [9/9] fleet dashboard"
   python3 -c "import json;json.dump({'val2':'${RTS[2]}','val3':'${RTS[3]}','val4':'${RTS[4]}'},open('$RUN/fleet-endpoints.json','w'))"
   old=$(ss -ltnp 2>/dev/null | grep ':8080 ' | grep -oP 'pid=\K[0-9]+' | head -1); [ -n "$old" ] && kill "$old" 2>/dev/null

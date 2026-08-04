@@ -610,7 +610,7 @@ svg{width:100%;height:190px;display:block}
   <div class=phd>
     <div>
       <h2>When the shared lane is busy, payments get slow and pricey &mdash; the payment lane doesn't</h2>
-      <div class=cap>Both lanes get the same flood of transactions. The shared EVM block fills up, so sending costs more and transactions wait in line. The payment lane has room to spare, so it stays cheap and every payment settles in the next block.</div>
+      <div class=cap>Both lanes get the same flood of transactions. The shared EVM block fills up, so sending costs more and transactions wait in line. The payment lane runs a <b>fixed fee</b> (set by protocol policy) with room to spare &mdash; every payment costs the same and settles in the next block.</div>
     </div>
     <button id=congBtn class="congbtn off" onclick=toggleCongest()><span class=sp></span>Start congestion</button>
   </div>
@@ -731,7 +731,7 @@ async function tick(){
     const feePart=em<2?'costs the same on both lanes ('+fmtUsd(pUsd)+')'
                       :('costs <b>'+fmtUsd(eUsd)+'</b> on the EVM lane ('+mtxt(em)+'&times; more)');
     $('csum').innerHTML='Right now, the same payment '+feePart+' and waits behind <b>'+Math.round(eq).toLocaleString()+
-      ' transactions</b> &mdash; on the payment lane it costs <i>'+fmtUsd(pUsd)+'</i> and settles in the <i>next block</i>.';
+      ' transactions</b> &mdash; on the payment lane it costs a fixed <i>'+fmtUsd(pUsd)+'</i> and settles in the <i>next block</i>.';
   }
   setCongBtn(!!(d.congest||{}).running);
   const ok=(d.evm||{}).agree&&(d.pay||{}).agree;
