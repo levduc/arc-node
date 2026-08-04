@@ -12,7 +12,7 @@
 #
 #   ./set-lane-economics.sh apply    (default)
 #   ./set-lane-economics.sh show     (read feeParams from both lanes)
-# Env: EVM_GAS=30000000 PAY_GAS=100000000 PAY_FIXED_FEE=1000000000 (wei; default 1 gwei)
+# Env: EVM_GAS=30000000 PAY_GAS=100000000 PAY_FIXED_FEE=20000000000 (wei; default 20 gwei = EVM mainnet floor)
 #      EVM_MIN_FEE=20000000000 EVM_MAX_FEE=20000000000000 (wei; Arc mainnet's band)
 #      EVM_RPC=http://127.0.0.1:8545 PAY_RPC=http://127.0.0.1:19545
 set -uo pipefail
@@ -23,7 +23,7 @@ EVM_RPC=${EVM_RPC:-http://127.0.0.1:8545}
 PAY_RPC=${PAY_RPC:-http://127.0.0.1:19545}
 EVM_GAS=${EVM_GAS:-30000000}
 PAY_GAS=${PAY_GAS:-100000000}
-PAY_FIXED_FEE=${PAY_FIXED_FEE:-1000000000}
+PAY_FIXED_FEE=${PAY_FIXED_FEE:-20000000000}   # 20 gwei = Arc mainnet minBaseFee -> same idle price as the EVM lane (apples-to-apples)
 EVM_MIN_FEE=${EVM_MIN_FEE:-20000000000}      # 20 gwei    = Arc mainnet minBaseFee ($0.00042/transfer)
 EVM_MAX_FEE=${EVM_MAX_FEE:-20000000000000}   # 20,000 gwei = Arc mainnet maxBaseFee ($0.42/transfer)
 CFG=".quake/soak4/assets/controllers-config.json"

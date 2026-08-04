@@ -98,10 +98,10 @@ start(){
   echo "==> [4b/5] block time -> ${BLOCK_TIME_MS}ms (Arc's 2 blocks/s product cadence)..."
   bash "$REPO/experiments/dual-el/set-block-time.sh" "$BLOCK_TIME_MS" || echo "  !! block-time update failed (chain keeps genesis 250ms)"
 
-  echo "==> [4c/5] lane economics: payment fee FIXED at ${PAY_FIXED_FEE:-1000000000} wei (minBaseFee==maxBaseFee)..."
+  echo "==> [4c/5] lane economics: payment fee FIXED at ${PAY_FIXED_FEE:-20000000000} wei (minBaseFee==maxBaseFee)..."
   # retry: on a fresh chain the first controller txs can be dropped in the quorum race
   for i in 1 2 3 4 5; do
-    EVM_GAS="$EVM_GAS" PAY_GAS="$PAY_GAS" PAY_FIXED_FEE="${PAY_FIXED_FEE:-1000000000}" \
+    EVM_GAS="$EVM_GAS" PAY_GAS="$PAY_GAS" PAY_FIXED_FEE="${PAY_FIXED_FEE:-20000000000}" \
       bash "$REPO/experiments/dual-el/fleet/set-lane-economics.sh" apply && break
     echo "  retry $i/5..."; sleep 5
   done
