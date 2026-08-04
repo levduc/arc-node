@@ -26,6 +26,8 @@ PAY_CHAINID=1338
 PAY_GAS=${PAY_GAS:-200000000}          # 0xBEBC200 (200M). Override e.g. PAY_GAS=1000000000 (1 Ggas).
 EVM_GAS=${EVM_GAS:-30000000}           # 0x1C9C380 (30M)
 EXTRA_ACCOUNTS=${EXTRA_ACCOUNTS:-1000} # prefunded genesis EOAs (raise for many parallel spammers)
+BLOCK_TIME_MS=${BLOCK_TIME_MS:-500}    # Arc's product target: 2 blocks/s. Genesis ships 250ms; we
+                                       # set 500 at runtime via ProtocolConfig (set-block-time.sh).
 PROTO_CFG_ADDR="0x3600000000000000000000000000000000000001"
 GAS_SLOT="0x668f09ce856848ead6cb1ddee963f15ef833cea8958030868f867aec84385203"
 cd "$REPO"; mkdir -p "$RUN"
@@ -92,6 +94,9 @@ start(){
     docker update --memory 5g   --memory-swap 5g   validator${i}_el >/dev/null 2>&1
     docker update --memory 6g   --memory-swap 6g   validator${i}_el_pay >/dev/null 2>&1
   done
+
+  echo "==> [4b/5] block time -> ${BLOCK_TIME_MS}ms (Arc's 2 blocks/s product cadence)..."
+  bash "$REPO/experiments/dual-el/set-block-time.sh" "$BLOCK_TIME_MS" || echo "  !! block-time update failed (chain keeps genesis 250ms)"
 
   echo "==> [5/5] dashboard..."
   old=$(ss -ltnp 2>/dev/null | grep ":$PORT " | grep -oP 'pid=\K[0-9]+' | head -1); [ -n "$old" ] && kill "$old" 2>/dev/null

@@ -18,6 +18,7 @@ SCEN=soak4; RUN=/tmp/dualel-fleet-fastssd; mkdir -p "$RUN"
 LBASE="$REPO/.quake/$SCEN"
 PAY_GAS=${PAY_GAS:-200000000}          # payment-lane block gas limit. Override e.g. PAY_GAS=1000000000 (1 Ggas).
 EXTRA_ACCOUNTS=${EXTRA_ACCOUNTS:-1000} # prefunded genesis EOAs (raise for many parallel/distributed spammers).
+BLOCK_TIME_MS=${BLOCK_TIME_MS:-500}    # Arc's product target: 2 blocks/s (genesis ships 250ms; set at runtime).
 LOCAL_TS=100.124.148.61
 declare -A RHOST=( [2]=ginnythui [3]=papaduck [4]=papaduck-alien2 )
 declare -A RTS=( [2]=100.85.150.119 [3]=100.70.62.92 [4]=100.86.97.40 )
@@ -128,6 +129,9 @@ PYGEN
 
   echo "==> [8/9] NO load started. Flood separately:"
   echo "    ./experiments/dual-el/fleet/spam-fleet.sh start   (stop|status; rates via env)"
+  echo "==> [8b/9] block time -> ${BLOCK_TIME_MS}ms (Arc's 2 blocks/s product cadence)"
+  bash "$REPO/experiments/dual-el/set-block-time.sh" "$BLOCK_TIME_MS" || echo "  !! block-time update failed (chain keeps genesis 250ms)"
+
   echo "==> [9/9] fleet dashboard"
   python3 -c "import json;json.dump({'val2':'${RTS[2]}','val3':'${RTS[3]}','val4':'${RTS[4]}'},open('$RUN/fleet-endpoints.json','w'))"
   old=$(ss -ltnp 2>/dev/null | grep ':8080 ' | grep -oP 'pid=\K[0-9]+' | head -1); [ -n "$old" ] && kill "$old" 2>/dev/null
