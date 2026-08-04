@@ -404,6 +404,15 @@ Two theses, each measured live (honest, real EIP-1559 — not mocked):
   contained presentation SVGs. `dashboard.py` `/product` = 3 hero tiles + congestion strip (fullness bar,
   fee-vs-floor multiple, mempool backlog via txpool_status) + state-grows chart; engineering view stays
   at `/`. `demo-metamask.sh` / `fleet/demo-fleet-metamask.sh` = MetaMask-tuned starts.
+- **BLOCK CADENCE = 2 blocks/s (2026-08-04, commit 05317bd, product feedback: match Arc's real block
+  time).** The CL paces heights via malachite "stable block times": each height it eth_calls
+  `consensusParams()` on ProtocolConfig (0x3600...0001, PRIMARY/EVM lane only) and waits
+  `targetBlockTimeMs` (0=unpaced; storage slot 0x668f...38520**5**, bits 112-127 of the packed
+  8×uint16 ConsensusParams; localdev genesis ships **250ms**). **`set-block-time.sh <ms>`** flips it at
+  RUNTIME via `updateConsensusParams` — onlyController = **hardhat dev account #8**
+  (0x23618e81..., key at m/44'/60'/0'/0/8 of the junk mnemonic); effect within ~2 heights, no
+  restart. demo-metamask.sh + fleet/demo-fleet-metamask.sh apply `BLOCK_TIME_MS` (default **500**)
+  post-boot. Validated: both lanes lock to exactly 2.00 blk/s; dashboard Settlement reads ~0.5s.
 - **GOTCHAS:** (1) MetaMask reserves chainId 1337 for its built-in "Localhost 8545" — but the demo KEEPS
   1337(EVM)/1338(payment); do NOT change chainIds (breaks the working MetaMask demo — firm user
   constraint). The CL only validates the PRIMARY (EVM) engine's chainId against its whitelist {MAINNET
