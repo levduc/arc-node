@@ -426,6 +426,15 @@ Two theses, each measured live (honest, real EIP-1559 — not mocked):
   (0x23618e81..., key at m/44'/60'/0'/0/8 of the junk mnemonic); effect within ~2 heights, no
   restart. demo-metamask.sh + fleet/demo-fleet-metamask.sh apply `BLOCK_TIME_MS` (default **500**)
   post-boot. Validated: both lanes lock to exactly 2.00 blk/s; dashboard Settlement reads ~0.5s.
+- **SINGLE-MACHINE PORTABILITY (2026-08-06, commit 3d2c9ae):** the whole demo (4 validators = 12
+  containers + dashboard) runs on ONE machine via `demo-metamask.sh`; validated cold-start end-to-end.
+  `./demo-metamask.sh check` = preflight for a NEW device (binaries, images, node>=20-even,
+  node_modules, ports, RAM). To port: clone repo + `cargo build --release -p quake -p spammer` (or copy
+  binaries) + ship images (`docker save arc_execution arc_consensus | gzip` → `docker load`) + foundry +
+  nvm node 22 + `npm install`. Footprint measured: **1.7 GiB idle / 5.5 GiB under full congestion** —
+  16 GB device comfortable (lower the caps in start() below that). Dashboard + RPCs bind 0.0.0.0, so
+  other devices reach them via the host's IP. Bench button caveat: run-bench.sh drives the FLEET
+  distributed spam (tailscale) — on a lone device it degrades to val1-local spam only.
 - **GOTCHAS:** (1) MetaMask reserves chainId 1337 for its built-in "Localhost 8545" — but the demo KEEPS
   1337(EVM)/1338(payment); do NOT change chainIds (breaks the working MetaMask demo — firm user
   constraint). The CL only validates the PRIMARY (EVM) engine's chainId against its whitelist {MAINNET
