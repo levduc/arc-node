@@ -173,10 +173,52 @@ stop(){
   rm -f "$RUN"/*.pid; echo "  ✅ stopped and cleaned."
 }
 
+# Preflight for a NEW machine: verifies everything `start` needs, without touching anything.
+# Run this first when porting the demo to a different device.
+check(){
+  setup_env
+  local ok=1
+  say(){ printf "  %-34s %s\n" "$1" "$2"; }
+  # binaries
+  for b in target/release/quake target/release/spammer; do
+    [ -x "$b" ] && say "$b" "OK" || { say "$b" "MISSING — cargo build --release -p ${b##*/}"; ok=0; }
+  done
+  for c in docker python3 cast; do
+    command -v "$c" >/dev/null && say "$c" "OK" || { say "$c" "MISSING"; ok=0; }
+  done
+  # node >= 20 even-major (Node 18 breaks the hardhat genesis step with a misleading HH19)
+  nv=$(node -v 2>/dev/null | tr -d v | cut -d. -f1)
+  if [ -n "$nv" ] && [ "$nv" -ge 20 ] && [ $((nv % 2)) -eq 0 ]; then say "node ($(node -v))" "OK"
+  else say "node (${nv:-none})" "need >= 20, even major (nvm install 22)"; ok=0; fi
+  # hardhat deps for genesis generation
+  [ -d node_modules ] && say "node_modules (hardhat genesis)" "OK" || { say "node_modules" "MISSING — run: npm install"; ok=0; }
+  # docker daemon + images
+  if docker info >/dev/null 2>&1; then
+    say "docker daemon" "OK"
+    for img in arc_execution:latest arc_consensus:latest; do
+      docker image inspect "$img" >/dev/null 2>&1 && say "image $img" "OK" \
+        || { say "image $img" "MISSING — make build-docker (or docker save|load from another box)"; ok=0; }
+    done
+  else say "docker daemon" "NOT REACHABLE"; ok=0; fi
+  # ports the demo publishes (EL rpc/ws x4 per lane, dashboard)
+  busy=""
+  for p in 8080 8545 8546 8645 8745 8845 19545 19546 19645 19745 19845; do
+    ss -ltn 2>/dev/null | grep -q ":$p " && busy="$busy $p"
+  done
+  [ -z "$busy" ] && say "ports (8080, 8545.., 19545..)" "free" || { say "ports busy:$busy" "stop whatever holds them"; ok=0; }
+  # resources
+  mem_gb=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}')
+  cores=$(nproc 2>/dev/null)
+  say "resources" "${cores:-?} cores / ${mem_gb:-?} GB RAM"
+  [ -n "$mem_gb" ] && [ "$mem_gb" -lt 16 ] && echo "  ⚠ 12 containers idle need ~8-10 GB; under load caps allow up to ~48 GB. <16 GB will be tight — lower the caps in start()."
+  [ "$ok" = 1 ] && echo "✅ preflight PASSED — ./demo-metamask.sh start" || echo "❌ preflight FAILED — fix the items above"
+}
+
 case "${1:-}" in
   start) start ;;
   stop) stop ;;
   status) status ;;
   metamask) metamask ;;
-  *) echo "usage: $0 {start|stop|status|metamask}"; exit 1 ;;
+  check) check ;;
+  *) echo "usage: $0 {start|stop|status|metamask|check}"; exit 1 ;;
 esac
