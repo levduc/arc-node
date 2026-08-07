@@ -502,6 +502,21 @@ verdict predates the 1 Ggas fleet finding where exec DOMINATES (379ms vs persist
 at full blocks, so the win case is stronger than the old verdict suggests. Cherry-picked onto this
 branch as the baseline. NEXT: wire parallel execution into the real payment-EL path (grevm/reth or
 Arc's executor) and re-measure fleet tps at 1 Ggas.
+**MEASURED (2026-08-07, commit 55d3a60): the EVM/executor layer is NOT the bottleneck.**
+`crates/evm/examples/transfer_bench.rs` runs the REAL ArcBlockExecutor on a full 1-Ggas block
+(47,618×21k transfers, 16k closed accounts, bundle tracking on): **102.5ms = 2.15 µs/tx** (465k tx/s
+serial) vs the live node's ~11 µs/tx (379ms/34k block) → **~80% of live exec cost is AROUND the
+executor**: reth's engine-tree per-tx loop (payload_validator.rs:1298 drives per-tx, streams receipts
+to the root task, coordinates prewarm) + state-provider/cache lookups. IMPLICATION: fast-pathing Arc's
+executor crates can't fix it; the modified reth must attack the engine-tree loop/provider layer —
+i.e. a vendored reth fork with a batched/parallel transfer path in the payload validator (Arc handler
+detail: base fee NOT burned, beneficiary credited EVERY tx → parallel scheme must defer coinbase).
+Arc's per-transfer customizations (for any fast/parallel path): blocklist SLOAD check on
+sender+recipient (unmetered) + NATIVE_COIN_CONTROL load in pre_execution; full fee (base+tip) to
+beneficiary in reward_beneficiary. Engine hot path: newPayload → payload_validator per-tx loop —
+`execute_block` override would NOT be hit (only BasicBlockExecutor uses it). GOTCHA: arc-evm
+cfg(test) has 91 pre-existing compile errors (revm-40 bump never fixed tests) — benches must be
+example targets. perf is locked on this box (perf_event_paranoid=4, no sudo).
 
 Other branches: `gravity-payment-lane` PARKED (gravity-reth = O(total-state) per block on standard
 Engine API paths, perf requires their consensus; FINDINGS.md there); erigon probe passed the engine
