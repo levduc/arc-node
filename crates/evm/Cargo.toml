@@ -52,6 +52,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+rayon = "1"
 alloy-genesis.workspace = true
 alloy-rpc-types-trace.workspace = true
 arc-execution-config = { workspace = true, features = ["test-utils"] }
