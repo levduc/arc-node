@@ -531,6 +531,15 @@ FULL fee every tx, base not burned — else all-tx conflict), cache blocklist bi
 NATIVE_COIN_CONTROL_ADDRESS), handle hot-recipient conflicts. Full plan + status: experiments/reth-fork/README.md.
 NEXT (in order): measure state-root-fallback (no fork) → write parallel path → differential replay →
 docker-from-fork (host-build+COPY; docker can't reach abs host paths) → fleet re-measure at 1 Ggas.
+**LEVER 1 MEASURED LIVE (2026-08-07, commit 34d9fec):** single-machine 1 Ggas demo, val1 pay-EL with
+`--engine.state-root-fallback` vs val2-4 stock, 333 IDENTICAL blocks (~3.4k tx each): val1 exec
+**67.4ms/blk + root 12.3 = 79.7 total** vs stock **104.5 + 2.2 = 106.7** → async root machinery taxes
+exec by **~35%**; net **-25% total work**, zero code changes, mixed config kept consensus (A/B via new
+`PAY_EL<i>_EXTRA_ARGS` env in launch-payment-els.sh). Execution now dominates (67 vs 12) → parallel
+exec in the fork is the remaining lever. Parallel execution NOT YET IMPLEMENTED (fork builds, hook
+located, no parallel code written). Note: sync root 12.3ms > the 0.8ms fleet number because this box
+ran 8 spammers + 12 containers concurrently (contention), and async "root 2.2ms" hides its real cost
+inside the exec window (workers overlap) — the honest comparison is the TOTAL column.
 
 Other branches: `gravity-payment-lane` PARKED (gravity-reth = O(total-state) per block on standard
 Engine API paths, perf requires their consensus; FINDINGS.md there); erigon probe passed the engine
