@@ -105,7 +105,42 @@ Safe split: **parallelize VALIDATION only, leave BUILDING serial.**
   and its `execute_transaction` return value is ignored.
 - Gate on an env var / CLI flag so the payment EL opts in and the EVM lane stays stock.
 
-### THE SEAM (worked out 2026-08-08 — this was the blocker; design is now settled)
+### ⚡ NO FORK NEEDED (2026-08-08) — the seam below is SUPERSEDED
+
+Two findings collapse the whole problem into arc-evm only:
+
+**1. Deferring receipts to `finish()` is SAFE — reth's receipt-root task fails closed.**
+`receipt_root_task.rs::run()` counts what it receives and, on a mismatch, `return`s WITHOUT sending:
+```rust
+if receipts_len.is_some_and(|len| len != next) { error!("...incomplete receipts..."); return; }
+```
+The caller does `receipt_root_rx.blocking_recv().ok()` -> `None` -> and `receipt_root_bloom: Option`
+means the validator then computes the receipt root + bloom from the FINAL receipts instead. So if the
+executor streams zero receipts during the loop and produces them all at `finish()`, the block still
+validates correctly; cost is one serial receipt-root pass (what stock reth does anyway) plus a noisy
+error log per block. Receipts themselves can NEVER be skipped — `receiptsRoot` is in the header, hence
+in the block hash — but for plain transfers they are trivial (success, 21000 gas, no logs, empty bloom).
+
+**2. arc-evm can tell VALIDATION from BUILDING by itself** — no fork hook required. Arc already relies
+on this discriminator in `executor.rs::finish()`: `!self.ctx.extra_data.is_empty()` means "executing an
+existing payload" (consensus set extra_data); during block building it is empty.
+
+=> **Plan: implement entirely in `ArcBlockExecutor` (arc-evm), ship with plain `make build-docker`.**
+- add `batch: Vec<BufferedTx>`; in `execute_transaction_with_commit_condition`, if
+  `!ctx.extra_data.is_empty()` (validation) AND parallel enabled AND the tx is a plain transfer
+  (no input, gas_limit 21000, `to` has empty code) -> buffer and return zero gas (the engine loop
+  ignores the return value); otherwise execute serially exactly as today (this keeps the BUILDER,
+  which inspects per-tx results for inclusion, completely untouched);
+- in `finish()`, before the existing gas/extra_data logic: if the buffer is non-empty, snapshot the
+  touched accounts + 2 blocklist slots per address out of the db (serial, cache-hot; avoids any Sync
+  bound on the provider), run the verified parallel algorithm, then patch each `ResultAndState`
+  balance to `current_real + (post - pre)` (nonce = owner's absolute) and feed the EXISTING
+  `commit_transaction(..)` in tx order so receipts/gas/bloom come from unchanged production code;
+- gate behind an env var so only the payment EL opts in; the EVM lane stays stock.
+
+(Historical: the trait-based seam below was designed before finding #1 and is no longer needed.)
+
+### (superseded) THE SEAM — trait-based design
 
 Parallel execution must bypass reth's per-tx loop, but that loop is where RECEIPTS are built, and the
 receipt type is `E::Result` (executor-specific). Generic reth code CANNOT construct it. So the batch
