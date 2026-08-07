@@ -105,6 +105,46 @@ Safe split: **parallelize VALIDATION only, leave BUILDING serial.**
   and its `execute_transaction` return value is ignored.
 - Gate on an env var / CLI flag so the payment EL opts in and the EVM lane stays stock.
 
+### THE SEAM (worked out 2026-08-08 — this was the blocker; design is now settled)
+
+Parallel execution must bypass reth's per-tx loop, but that loop is where RECEIPTS are built, and the
+receipt type is `E::Result` (executor-specific). Generic reth code CANNOT construct it. So the batch
+execution has to live in arc-evm, reachable from the fork via a trait. Closed alternatives (checked):
+- buffer inside `execute_transaction` -> breaks the BUILDER (inspects per-tx result for inclusion);
+- parallel prewarm + serial loop -> just prewarming; serial floor stays ~102 ms (2.15 us/tx);
+- do it generically in reth -> cannot construct `E::Result`;
+- blanket `impl<E: BlockExecutor> Trait for E` -> blocks ArcBlockExecutor's real impl (no specialization).
+
+**Settled design — batch-mode trait, defined in the fork's `reth-evm`, implemented in arc-evm:**
+```rust
+// reth-fork/crates/evm/evm/src/batch.rs  (new, ~20 lines)
+pub trait BatchExecute {
+    /// Buffer txs instead of executing them (validation path only).
+    fn set_batch_mode(&mut self, _on: bool) {}
+    /// Execute everything buffered, in parallel, committing state + receipts in tx order.
+    /// Ok(false) => not applicable (non-transfer tx seen); caller must re-run serially.
+    fn flush_batch(&mut self) -> Result<bool, BlockExecutionError> { Ok(false) }
+}
+```
+- Add `E: BlockExecutor + BatchExecute` to the fork's `execute_transactions`; call `set_batch_mode(true)`
+  before the loop and `flush_batch()` after. The loop already ignores the per-tx return value and
+  tolerates receipts appearing only at the end — no other change needed.
+- Add a one-line empty impl for each executor the fork instantiates (reth's `EthBlockExecutor`);
+  NO blanket impl (it would block the real one — Rust has no specialization).
+- In arc-evm, `impl BatchExecute for ArcBlockExecutor`: buffer `(TxEnv, Recovered<Tx>)` in batch mode
+  (concrete types here — this is why it must live in arc-evm), then in `flush_batch`:
+  1. gate: every buffered tx is a plain transfer (no input, gas_limit 21000, `to` has empty code) — else
+     return Ok(false) and let the caller redo it serially;
+  2. snapshot the touched accounts + the 2 blocklist slots per address out of `self.evm.db_mut()`
+     (serial, cache-hot) into an owned `DatabaseRef` — this avoids ANY `Sync` bound on the provider;
+  3. parallel-execute per the verified algorithm (partition by sender, per-worker delta aggregation).
+     Worker EVMs: `ArcEvmFactory::new(self.chain_spec)` + `EvmEnv` — the block env comes from
+     `self.evm.block()`, the cfg must MATCH production (`CfgEnv::new().with_chain_id(..)
+     .with_spec_and_mainnet_gas_params(spec)`, see evm.rs:2050) or results diverge;
+  4. merge in tx order: patch each `ResultAndState` balance to `current_real + (post - pre)` (nonce stays
+     the owner's absolute), then hand it to the EXISTING `commit_transaction(..)` so receipts, gas
+     accounting and the bloom are produced by production code, unchanged.
+
 ### Then: deploy + verify on all 4 machines
 1. `make build-docker` (NOTE: run `apply-fork.sh revert` first if the image build must not see the
    local patch; the parallel code itself lives in arc-evm, so only the engine-loop hook needs the fork).
