@@ -517,6 +517,20 @@ beneficiary in reward_beneficiary. Engine hot path: newPayload → payload_valid
 `execute_block` override would NOT be hit (only BasicBlockExecutor uses it). GOTCHA: arc-evm
 cfg(test) has 91 pre-existing compile errors (revm-40 bump never fixed tests) — benches must be
 example targets. perf is locked on this box (perf_event_paranoid=4, no sudo).
+**RETH FORK STOOD UP (2026-08-07):** `~/reth-fork` (cp of `~/reth-2.3-ref`, v2.3.0). `experiments/reth-fork/apply-fork.sh`
+appends a `[patch."https://github.com/paradigmxyz/reth"]` section (41 crates → absolute local paths) to
+Cargo.toml — DEV-BOX ONLY, never commit (breaks Docker/CI); `apply-fork.sh revert` is a verified clean
+round-trip (Cargo.toml==HEAD). Full `arc-node-execution` binary builds against the fork (10m30s).
+TWO LEVERS, both located: (1) **state-root machinery = stock CLI flag `--engine.state-root-fallback`**
+→ `StateRootStrategy::Synchronous` → `spawn_cache_exclusive` (NO multiproof task / prewarm / receipt-
+stream; only `StateRootTask` strategy spawns those, gated in payload_validator.rs `spawn_payload_processor`).
+NO FORK NEEDED for this half — test it on the payment EL first. (2) **parallel exec** = fork edit to
+`reth-fork/.../engine/tree/src/tree/payload_validator.rs` `execute_transactions` (~L1265, the
+`executor.execute_transaction(tx)` loop). Parallel scheme MUST: defer coinbase (Arc credits beneficiary
+FULL fee every tx, base not burned — else all-tx conflict), cache blocklist bitmap (2 SLOADs/transfer on
+NATIVE_COIN_CONTROL_ADDRESS), handle hot-recipient conflicts. Full plan + status: experiments/reth-fork/README.md.
+NEXT (in order): measure state-root-fallback (no fork) → write parallel path → differential replay →
+docker-from-fork (host-build+COPY; docker can't reach abs host paths) → fleet re-measure at 1 Ggas.
 
 Other branches: `gravity-payment-lane` PARKED (gravity-reth = O(total-state) per block on standard
 Engine API paths, perf requires their consensus; FINDINGS.md there); erigon probe passed the engine
