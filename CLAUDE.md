@@ -426,8 +426,10 @@ Two theses, each measured live (honest, real EIP-1559 — not mocked):
   (0x23618e81..., key at m/44'/60'/0'/0/8 of the junk mnemonic); effect within ~2 heights, no
   restart. demo-metamask.sh + fleet/demo-fleet-metamask.sh apply `BLOCK_TIME_MS` (default **500**)
   post-boot. Validated: both lanes lock to exactly 2.00 blk/s; dashboard Settlement reads ~0.5s.
-- **SINGLE-MACHINE PORTABILITY (2026-08-06, commit 3d2c9ae):** the whole demo (4 validators = 12
-  containers + dashboard) runs on ONE machine via `demo-metamask.sh`; validated cold-start end-to-end.
+- **SINGLE-MACHINE PORTABILITY (2026-08-06, commits 3d2c9ae + 4e01573; USER-CONFIRMED WORKING
+  2026-08-07):** the whole demo (4 validators = 12 containers + dashboard) runs on ONE machine via
+  `demo-metamask.sh`; validated cold-start end-to-end. `check` treats ports held by our OWN running
+  demo as info ("stop first"), only fails when something ELSE holds them.
   `./demo-metamask.sh check` = preflight for a NEW device (binaries, images, node>=20-even,
   node_modules, ports, RAM). To port: clone repo + `cargo build --release -p quake -p spammer` (or copy
   binaries) + ship images (`docker save arc_execution arc_consensus | gzip` → `docker load`) + foundry +
@@ -487,6 +489,19 @@ how high can payment-lane tps go, and is "bigger blocks" the lever? Answer: **1 
   `queued` (NOT `pending`) that never executes (waiting for nonces that won't come); drains/evicts on its
   own. Re-runs MUST use `-l` (in the script) or start at nonce 0 → "nonce too low". The product dashboard
   summed pending+queued, so it showed a phantom backlog — payment-lane pending tile removed for this reason.
+
+**BRANCH `blockstm-native-transfers` (2026-08-07):** next experiment — Block-STM parallel execution
+for native transfers on the payment lane (the "parallel execution" lever from the 1 Ggas finding:
+exec 379ms/pass replayed ~5×/height is THE bottleneck; state-root 0.8ms is free). PRIOR WORK to build
+on: `payment-lane-gas` commit `bd943f0` = standalone grevm-style Block-STM bench
+(`experiments/utxo-state/src/bin/blockstm.rs`, 172 lines: hint DAG + level-parallel + deferred fee) +
+`docs/block-stm-for-arc.md`. MEASURED there: **8.5× pooled transfers / 8.9× disjoint at realistic
+per-tx cost, 1.0× hot-recipient (serial chain, expected), net-overhead when transfers are free**;
+verdict "real execute-phase win but persistence>root>execute is the lane's priority order" — NOTE that
+verdict predates the 1 Ggas fleet finding where exec DOMINATES (379ms vs persist 169ms vs root 0.8ms)
+at full blocks, so the win case is stronger than the old verdict suggests. Cherry-picked onto this
+branch as the baseline. NEXT: wire parallel execution into the real payment-EL path (grevm/reth or
+Arc's executor) and re-measure fleet tps at 1 Ggas.
 
 Other branches: `gravity-payment-lane` PARKED (gravity-reth = O(total-state) per block on standard
 Engine API paths, perf requires their consensus; FINDINGS.md there); erigon probe passed the engine
