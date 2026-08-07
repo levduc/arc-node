@@ -23,6 +23,11 @@ for i in 1 2 3 4; do sleep ${STAGGER:-0};
   name="validator${i}_el_pay"
   http=$((19545 + (i-1)*100)); ws=$((19546 + (i-1)*100)); auth=$((19551 + (i-1)*100)); met=$((19001 + (i-1)*100))
   dd="$BASE/validator${i}/reth-pay"; mkdir -p "$dd"
+  # Extra node args: PAY_EL_EXTRA_ARGS applies to every payment EL; PAY_EL<i>_EXTRA_ARGS to one
+  # validator only (node-local flags like --engine.state-root-fallback are consensus-safe per
+  # node, so a single-validator A/B on identical blocks is valid).
+  eval "per_val_extra=\${PAY_EL${i}_EXTRA_ARGS:-}"
+  extra_args="${PAY_EL_EXTRA_ARGS:-} ${per_val_extra}"
   docker rm -f "$name" >/dev/null 2>&1
   docker run -d --name "$name" --network "$NET" \
     --entrypoint /app/assets/entrypoint_el.sh \
@@ -37,7 +42,7 @@ for i in 1 2 3 4; do sleep ${STAGGER:-0};
       --metrics=0.0.0.0:9001 --disable-discovery --ipcdisable \
       --port 30303 \
       --arc.builder.deadline=500 --arc.builder.wait-for-payload=true --txpool.nolocals \
-      --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 >/dev/null \
+      --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 ${extra_args} >/dev/null \
     && { docker network connect "$HOSTNET" "$name" 2>/dev/null; \
          echo "launched $name on $NET+$HOSTNET (RPC http://127.0.0.1:${http})"; } \
     || echo "FAILED $name"
