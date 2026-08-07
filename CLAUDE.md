@@ -529,7 +529,20 @@ spammer `transfer_recipient`). Perf notes: per-worker delta aggregation took it 
 merge of ~140k per-tx entries was the bottleneck); chunk = partitions/(threads*4) for load balance.
 GOTCHA the differential test caught immediately: `State` keeps changes as transitions —
 `merge_transitions(BundleRetention::PlainState)` is required before `take_bundle()` or the bundle is empty.
-**WIRING (design settled, next up): do NOT buffer txs inside ArcBlockExecutor** — the BUILDER routes
+**WIRING BLOCKER FOUND + SOLVED ON PAPER (2026-08-08, commit b307b0d) — NOT YET IMPLEMENTED.** Parallel
+exec must bypass reth's per-tx loop, but that loop builds RECEIPTS whose type is `E::Result`
+(executor-specific) — generic reth code CANNOT construct it, so batch execution must live in arc-evm and
+be called through a trait that does not exist yet. Closed alternatives (all checked): buffering inside
+`execute_transaction` breaks the BUILDER; parallel-prewarm+serial keeps the 102ms serial floor; blanket
+`impl<E: BlockExecutor>` blocks the real impl (no specialization). SETTLED: add a small `BatchExecute`
+trait to the FORK's reth-evm (`set_batch_mode` / `flush_batch`, default no-ops), bound it in
+`payload_validator::execute_transactions`, one-line empty impl for reth's EthBlockExecutor, real impl on
+ArcBlockExecutor (buffer -> gate on all-plain-transfers -> snapshot touched accts + blocklist slots (avoids
+any Sync bound on the provider) -> parallel per verified algorithm -> patch each ResultAndState balance to
+`current_real + (post-pre)` and feed the EXISTING commit_transaction so receipts/gas/bloom stay production
+code). Worker EVM cfg MUST match production (evm.rs:2050) or state diverges. Step-by-step in
+experiments/reth-fork/README.md.
+**Also: do NOT buffer txs inside ArcBlockExecutor unconditionally** — the BUILDER routes
 through `execute_transaction_with_commit_condition` and inspects each tx result to decide inclusion, so
 buffering breaks block production. Instead parallelize VALIDATION only (building stays serial): add
 `ArcBlockExecutor::execute_transactions_parallel(txs)` and call it from the fork's
