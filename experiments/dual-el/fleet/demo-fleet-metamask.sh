@@ -39,6 +39,12 @@ setup_env(){ export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DI
 payment_el_cmd(){ # payment_el_cmd <n> <base>
   local n=$1 base=$2
   local rpc=$(PAY_PORT $n) ws=$((19546+(n-1)*100)) auth=$((19551+(n-1)*100)) met=$((19001+(n-1)*100)) p2p=$((30410+n))
+  # Extra node args (same contract as launch-payment-els.sh): PAY_EL_EXTRA_ARGS = every pay EL,
+  # PAY_EL<n>_EXTRA_ARGS = that validator only. Node-local flags (e.g.
+  # --engine.state-root-fallback) are consensus-safe per node. Expanded locally, shipped in the
+  # command string to the remote.
+  local per_val_extra; eval "per_val_extra=\${PAY_EL${n}_EXTRA_ARGS:-}"
+  local extra_args="${PAY_EL_EXTRA_ARGS:-} ${per_val_extra}"
   echo "docker rm -f validator${n}_el_pay 2>/dev/null; docker run -d --name validator${n}_el_pay --network arc_testnet_host-access \
   --entrypoint /app/assets/entrypoint_el.sh \
   -v $base/validator${n}/reth-pay:/data/reth/execution-data -v $base/assets:/app/assets \
@@ -50,7 +56,7 @@ payment_el_cmd(){ # payment_el_cmd <n> <base>
   --authrpc.addr=0.0.0.0 --authrpc.port=8551 --authrpc.jwtsecret=/app/assets/payment-jwt.hex \
   --metrics=0.0.0.0:9001 --disable-discovery --ipcdisable --port 30303 \
   --arc.builder.deadline=500 --arc.builder.wait-for-payload=true --txpool.nolocals \
-  --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 && docker network connect arc_testnet_default validator${n}_el_pay"
+  --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 ${extra_args} && docker network connect arc_testnet_default validator${n}_el_pay"
 }
 
 start(){
