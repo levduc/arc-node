@@ -531,6 +531,18 @@ FULL fee every tx, base not burned — else all-tx conflict), cache blocklist bi
 NATIVE_COIN_CONTROL_ADDRESS), handle hot-recipient conflicts. Full plan + status: experiments/reth-fork/README.md.
 NEXT (in order): measure state-root-fallback (no fork) → write parallel path → differential replay →
 docker-from-fork (host-build+COPY; docker can't reach abs host paths) → fleet re-measure at 1 Ggas.
+**FLEET A/B AT FULL 1-Ggas BLOCKS (2026-08-08):** val1 recreated live with the flag (node-local →
+no chain restart; re-mesh val1 via admin_addPeer after any pay-EL recreate — runtime peer list is
+lost). 47,618-tx blocks, 4 physical machines: val1 SYNC exec 304.7 + root 32.2 = 337ms vs val1's own
+prior stock fleet baseline 379ms (~-20%, hw-consistent); cross-validator comparisons on the fleet are
+CONFOUNDED BY HARDWARE (stock val4/alien2 280ms < stock val3/papaduck 623ms on identical blocks!) —
+only same-machine A/Bs are valid. KEY HONEST POINT: fleet tps did NOT move (~0.35 blk/s, 2.9s/block vs
+~0.5s of work) because cadence is CONSENSUS-COORDINATION-BOUND — root-machinery removal and even
+future parallel exec show up in per-block exec_ms, not fleet tps, until the ~2.4s/height coordination
+overhead is attacked. USER-RUN GOTCHAS (2026-08-08): plain `demo-fleet-metamask.sh start` = NO flag
+(must pass PAY_EL_EXTRA_ARGS) and EXTRA_ACCOUNTS defaults to 1000 (S=1 ACCTS=250 for distributed spam);
+"root field still changes" is EXPECTED — the flag changes HOW the root is computed, not WHETHER
+(no-root = pending fork edit).
 **LEVER 1 MEASURED LIVE (2026-08-07, commit 34d9fec):** single-machine 1 Ggas demo, val1 pay-EL with
 `--engine.state-root-fallback` vs val2-4 stock, 333 IDENTICAL blocks (~3.4k tx each): val1 exec
 **67.4ms/blk + root 12.3 = 79.7 total** vs stock **104.5 + 2.2 = 106.7** → async root machinery taxes
