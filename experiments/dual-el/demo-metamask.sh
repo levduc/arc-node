@@ -200,12 +200,20 @@ check(){
         || { say "image $img" "MISSING — make build-docker (or docker save|load from another box)"; ok=0; }
     done
   else say "docker daemon" "NOT REACHABLE"; ok=0; fi
-  # ports the demo publishes (EL rpc/ws x4 per lane, dashboard)
+  # ports the demo publishes (EL rpc/ws x4 per lane, dashboard). If OUR demo is already
+  # running, its own ports are expected — that's not a failure.
   busy=""
   for p in 8080 8545 8546 8645 8745 8845 19545 19546 19645 19745 19845; do
     ss -ltn 2>/dev/null | grep -q ":$p " && busy="$busy $p"
   done
-  [ -z "$busy" ] && say "ports (8080, 8545.., 19545..)" "free" || { say "ports busy:$busy" "stop whatever holds them"; ok=0; }
+  running=$(val_up)
+  if [ "$running" -gt 0 ]; then
+    say "demo already RUNNING ($running/12)" "ports are its own — './demo-metamask.sh stop' first for a fresh start"
+  elif [ -z "$busy" ]; then
+    say "ports (8080, 8545.., 19545..)" "free"
+  else
+    say "ports busy:$busy" "held by something ELSE — stop it"; ok=0
+  fi
   # resources
   mem_gb=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}')
   cores=$(nproc 2>/dev/null)
