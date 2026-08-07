@@ -63,3 +63,53 @@ host-build + copy is the path.) TODO: add a `build-docker-fork` target.
 - [ ] parallel `execute_transactions` path in the fork (deferred coinbase, blocklist cache, conflicts)
 - [ ] differential replay vs stock binary (consensus-correctness) BEFORE any fleet run
 - [ ] docker image from the fork + re-measure fleet tps at 1 Ggas
+
+---
+
+## Parallel execution — ALGORITHM DONE & VERIFIED (2026-08-08, commit e4e8dc4)
+
+`crates/evm/examples/parallel_transfer_bench.rs` — runs a full 1-Ggas block (47,618 transfers)
+BOTH ways through the real `ArcBlockExecutor`/Arc EVM and compares post-state account-by-account:
+
+| workload | serial | parallel | speedup | state |
+|---|---|---|---|---|
+| `pool` (recipients not senders — real spammer `0x1000+nonce`) | 105.4 ms | 25.7 ms | **4.11×** | IDENTICAL ✓ |
+| `closed` (ring — every recipient is also a sender) | 93.6 ms | 22.0 ms | **4.25×** | IDENTICAL ✓ |
+
+**Algorithm** (grevm-style lazy balance updates, deliberately NOT textbook Block-STM):
+partition by SENDER (nonce/balance = real read-modify-write, one owner, in-order), and merge every
+other touched account (recipients + the beneficiary Arc credits on EVERY tx) as a **commutative
+balance delta**, aggregated per worker. No aborts, no retries, deterministic. Optimistic Block-STM
+(pevm-style) collapses to 1.0× on exactly this hot-recipient workload; here it is the easy case.
+
+Known semantic edge (the `closed` workload exercises it, and it matched): a sender that is also a
+recipient reads a balance without the in-block credit. Only observable if an account would be
+insufficiently funded without it → guard: if any tx fails on balance in parallel mode, re-run the
+block serially.
+
+### Wiring — DO THIS NEXT (design settled, ~mechanical)
+
+**Do NOT buffer txs inside `ArcBlockExecutor`.** The block BUILDER routes through
+`execute_transaction_with_commit_condition` and inspects each tx's result to decide inclusion
+(gas/revert) — buffering there breaks block production.
+
+Safe split: **parallelize VALIDATION only, leave BUILDING serial.**
+- Building happens on 1 of 4 validators per block; validation happens on all 4 — so this still
+  captures ~4/5 of the network's execution work (matches the "exec replayed ~5×/height" finding).
+- Add `ArcBlockExecutor::execute_transactions_parallel(&mut self, txs) -> Result<...>` (port the
+  bench's algorithm; the bench is the reference implementation and its differential test the gate).
+- In the fork, `crates/engine/tree/src/tree/payload_validator.rs::execute_transactions` (~L1265):
+  collect the tx iterator, and when parallel is enabled call the batch method instead of the
+  per-tx loop. Receipts may be produced at the end — the loop already tolerates that
+  ("Some executors may execute transactions that do not append receipts during the main loop"),
+  and its `execute_transaction` return value is ignored.
+- Gate on an env var / CLI flag so the payment EL opts in and the EVM lane stays stock.
+
+### Then: deploy + verify on all 4 machines
+1. `make build-docker` (NOTE: run `apply-fork.sh revert` first if the image build must not see the
+   local patch; the parallel code itself lives in arc-evm, so only the engine-loop hook needs the fork).
+2. Ship the image to the 3 remotes (`docker save | gzip | tailscale ssh docker load`).
+3. Start the fleet with the payment ELs on the parallel build; **verification = the chain itself**:
+   all 4 validators must agree on the payment-lane state root at every height (the dashboard's
+   per-lane root + `agree` indicator). Any divergence halts consensus immediately — a loud, safe failure.
+4. Only after that: drop the state root (`Synchronous` → frozen), re-verify agreement.
