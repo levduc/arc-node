@@ -517,6 +517,27 @@ beneficiary in reward_beneficiary. Engine hot path: newPayload → payload_valid
 `execute_block` override would NOT be hit (only BasicBlockExecutor uses it). GOTCHA: arc-evm
 cfg(test) has 91 pre-existing compile errors (revm-40 bump never fixed tests) — benches must be
 example targets. perf is locked on this box (perf_event_paranoid=4, no sudo).
+**🎯 PARALLEL TRANSFER EXECUTION — ALGORITHM DONE, DIFFERENTIAL-VERIFIED (2026-08-08, commit e4e8dc4).**
+`crates/evm/examples/parallel_transfer_bench.rs` runs a full 1-Ggas block (47,618 transfers) BOTH ways
+through the REAL ArcBlockExecutor and compares post-state per account: **pool workload 105.4→25.7ms
+(4.11x), closed/ring 93.6→22.0ms (4.25x), state IDENTICAL both**. ALGORITHM (grevm-style lazy balance
+updates, NOT textbook Block-STM): partition by SENDER (nonce/balance = real RMW, one owner, in-order);
+merge every other touched account (recipients + the beneficiary Arc credits EVERY tx) as a COMMUTATIVE
+BALANCE DELTA aggregated per worker. No aborts/retries, deterministic — inverts the hard case, since
+optimistic Block-STM collapses to 1.0x on this hot-recipient workload (`0x1000+nonce` recipients; see
+spammer `transfer_recipient`). Perf notes: per-worker delta aggregation took it 2.2x→4.25x (the serial
+merge of ~140k per-tx entries was the bottleneck); chunk = partitions/(threads*4) for load balance.
+GOTCHA the differential test caught immediately: `State` keeps changes as transitions —
+`merge_transitions(BundleRetention::PlainState)` is required before `take_bundle()` or the bundle is empty.
+**WIRING (design settled, next up): do NOT buffer txs inside ArcBlockExecutor** — the BUILDER routes
+through `execute_transaction_with_commit_condition` and inspects each tx result to decide inclusion, so
+buffering breaks block production. Instead parallelize VALIDATION only (building stays serial): add
+`ArcBlockExecutor::execute_transactions_parallel(txs)` and call it from the fork's
+`payload_validator.rs::execute_transactions` (~L1265) — that loop IGNORES the per-tx return value and
+already tolerates receipts appearing only at finish(). Validation runs on all 4 validators vs building on
+1, so this still captures ~4/5 of network execution work. Verification on the fleet = the chain itself:
+all 4 validators must agree on the payment-lane state root every height (divergence halts consensus =
+loud safe failure). Full plan: experiments/reth-fork/README.md.
 **RETH FORK STOOD UP (2026-08-07):** `~/reth-fork` (cp of `~/reth-2.3-ref`, v2.3.0). `experiments/reth-fork/apply-fork.sh`
 appends a `[patch."https://github.com/paradigmxyz/reth"]` section (41 crates → absolute local paths) to
 Cargo.toml — DEV-BOX ONLY, never commit (breaks Docker/CI); `apply-fork.sh revert` is a verified clean
