@@ -31,7 +31,13 @@
 - [x] Lever 1 already live-proven on the fleet: `--engine.state-root-fallback` = −35 % exec,
       −25 % total, consensus intact (commit 34d9fec). Payment ELs opt in via
       `PAY_EL_EXTRA_ARGS` / `PAY_EL<n>_EXTRA_ARGS`.
-- [ ] **NEXT: implement in `crates/evm/src/executor.rs`** (all of it in arc-evm; ~150–250 lines):
+- [x] **STRATEGY CHANGE (iteration 1): hand-written FAST PATH beats parallel EVM by 6x.**
+      No-EVM transfer semantics, differentially verified IDENTICAL vs revm on both workloads:
+      **24.4x / 21.6x** (4.4ms vs 107ms per full 1-Ggas block; 0.09 us/tx vs 2.15 us/tx).
+      => Implement the FAST PATH first: simpler (no worker EVMs, no thread-safety), bigger win.
+      Parallelism layers on top later for a further multiple. Exact semantics are in the bench's
+      `run_fastpath()` and are the reference for the executor implementation.
+- [ ] **NEXT: implement `run_fastpath` semantics in `crates/evm/src/executor.rs`** (all of it in arc-evm; ~150–250 lines):
       buffer plain transfers during validation → execute fast/parallel at `finish()` → feed the
       existing `commit_transaction()` so receipts/gas/bloom stay production code. Env-gated
       (e.g. `ARC_PARALLEL_TRANSFERS=1`) so only the payment EL opts in.
