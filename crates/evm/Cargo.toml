@@ -51,8 +51,6 @@ revm-primitives.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
-rayon = "1"
-
 [dev-dependencies]
 rayon = "1"
 alloy-signer.workspace = true

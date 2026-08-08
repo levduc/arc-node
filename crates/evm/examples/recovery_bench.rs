@@ -112,22 +112,30 @@ fn main() {
              full_serial / full_par);
 
     let live_wait = 10.0_f64;
-    println!("\n  live wait/tx (val1, state-root-fallback): {live_wait:.2} us/tx");
-    println!("  ideal parallel floor:                     {full_par:.2} us/tx");
-    if full_par < live_wait * 0.5 {
-        println!(
-            "\n  => VERDICT (b): recovery parallelises to {:.2} us/tx, far below the {live_wait:.1} us
-     the live loop actually stalls for. The gap is reth's per-tx ORDERED DELIVERY, not the
-     crypto. Recovering eagerly inside ArcEvmConfig::tx_iterator_for_payload (arc-evm only,
-     no reth fork) should remove most of it. Headroom ~{:.1} us/tx.",
-            full_par,
-            live_wait - full_par
-        );
-    } else {
-        println!(
-            "\n  => VERDICT (a): recovery really costs ~{full_par:.2} us/tx even fully parallel, so the
-     live wait is near its floor. Eager recovery cannot help; only SKIPPING recovery
-     (reusing senders already recovered at mempool insertion) would."
-        );
-    }
+    println!("\n  live wait/tx (state-root-fallback, ~4.8k-tx blocks): {live_wait:.2} us/tx");
+    println!("  ideal parallel floor:                                {full_par:.2} us/tx");
+    println!(
+        "
+  => RESOLVED, AND NOT THE WAY THIS BENCH FIRST SUGGESTED (2026-08-08).
+
+     The numbers above are real: recovery parallelises {:.1}x, and the live loop stalls for
+     roughly {:.1} us/tx more than the parallel floor. The tempting conclusion was that reth's
+     ordered per-tx delivery wastes that gap, and that recovering the whole payload eagerly in
+     ArcEvmConfig::tx_iterator_for_payload would reclaim it.
+
+     It does not. Measured live, same box, same 4,761-tx blocks, SIMULTANEOUS window, eager on
+     val1 only: the execution histogram fell 58.2 -> 19.9 ms/blk and wait/tx fell 8.7 -> 0.9 us,
+     but 'other' time inside newPayload rose 4.1 -> 43.2 ms -- and TOTAL newPayload latency was
+     85.9 ms eager vs 81.1-87.5 ms stock, i.e. unchanged within noise.
+
+     The stall is not waste: reth OVERLAPS recovery with execution, so the `wait` histogram
+     measures pipeline overlap, not lost time. Recovering eagerly converts that overlap into a
+     serial barrier and gives back exactly what it saves. The eager path was reverted.
+
+     LESSON: `transaction_wait` + `transaction_execution` do NOT sum to the cost of newPayload.
+     Optimising against them can relocate work out of the loop and look like a win. Always
+     confirm against `reth_consensus_engine_beacon_new_payload_latency`.",
+        full_serial / full_par,
+        live_wait - full_par
+    );
 }

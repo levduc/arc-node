@@ -533,8 +533,32 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**❌ CORRECTION: THE "EAGER RECOVERY 4x" BELOW WAS A MEASUREMENT ARTIFACT — REVERTED (2026-08-08).**
+It was measured with `transaction_wait` + `transaction_execution`, which do NOT sum to the cost of
+newPayload; eager recovery moved work OUT of the execution loop (into iterator construction) where
+those histograms cannot see it. Checked against the independent
+`reth_consensus_engine_beacon_new_payload_latency`, same box, same 4,761-tx blocks, SIMULTANEOUS
+window, eager on val1 only: exec 58.2->19.9ms and wait/tx 8.7->0.9us, BUT `other` inside newPayload
+4.1->43.2ms, and **TOTAL newPayload 85.9ms (eager) vs 81.1-87.5ms (stock) = unchanged within
+noise.** WHY: reth OVERLAPS recovery with execution, so `wait` is pipeline overlap, not waste;
+recovering eagerly makes it a serial barrier and gives back exactly what it saves. Reverted in full
+(evm.rs back to plain delegation, rayon dep dropped); kept `recovery_bench.rs`, `recovery-probe.sh`,
+the `PAY_EL<i>_ENV` per-validator hook, and this record. Post-revert both gates IDENTICAL + 200
+blocks / 952,200 txs with all 4 agreeing. **RULE: an EL optimisation only counts if
+`reth_consensus_engine_beacon_new_payload_latency` moves — sub-metrics can be relocated.**
+
+**❌ HYPOTHESIS #1 (engine-API ingestion) REFUTED — and it was the top-ranked open suspect
+(2026-08-08).** New `experiments/dual-el/height-decomp.sh` splits a height via reth's beacon-engine
+metrics. At 100M gas / 4,761 txs / 715ms height, stock: newPayload 113.3ms (15.8%) = exec 78.2 +
+root 29.3 + **other 5.8**; newPayload->FCU 342.5ms (47.9%, CL voting, EL IDLE); FCU 1.0ms;
+remainder 258.6ms (36.2%, next-proposer build + SSZ + streaming, EL IDLE). **EL busy 16%, idle
+84%.** The only place a hidden JSON-decode/ingestion cost could hide is that 5.8ms (~0.8% of the
+height) — so **IPC for the payment lane cannot move cadence** and that step is closed (CL<->EL is
+localhost in both topologies anyway). Independently reconfirms the 10/90 EL/non-EL split from a
+different metric family.
+
 **🎯 EAGER PARALLEL SENDER RECOVERY — payment-lane execution phase 4x faster, arc-evm only, NO reth
-fork (2026-08-08).** The `newPayload` execution loop was spending ~78% of its time NOT executing:
+fork (2026-08-08). ⚠️ SUPERSEDED — SEE THE CORRECTION ABOVE; THIS WAS REVERTED.** The `newPayload` execution loop was spending ~78% of its time NOT executing:
 blocked in `transactions.next()` waiting on sender recovery. Three measurements corrected three
 wrong assumptions before any code was written.
 - **It is not the line we thought.** `payload_validator.rs:323` (`try_into_recovered`) is the

@@ -271,6 +271,62 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## ❌ EAGER RECOVERY WAS A MEASUREMENT ARTIFACT — REVERTED (2026-08-08)
+
+**The previous iteration's "3.9x faster execution phase" was not real.** It was measured with
+`transaction_wait` + `transaction_execution`, which do NOT sum to the cost of `newPayload`. Eager
+recovery moved work OUT of the execution loop (into iterator construction) where those two
+histograms cannot see it.
+
+Caught by decomposing the height against an independent metric,
+`reth_consensus_engine_beacon_new_payload_latency`. Same box, same 4,761-tx blocks, **simultaneous**
+window, eager on val1 only, all four on `--engine.state-root-fallback`:
+
+| val | newPayload | exec | root | other | wait/tx |
+|-----|-----------|------|------|-------|---------|
+| 1 (eager) | **85.9 ms** | 19.9 | 22.7 | **43.2** | 0.94 us |
+| 2 | 87.5 ms | 58.2 | 25.1 | 4.1 | 8.72 us |
+| 3 | 81.1 ms | 55.1 | 22.3 | 3.8 | 8.15 us |
+| 4 | 81.7 ms | 55.4 | 22.6 | 3.7 | 8.50 us |
+
+Execution fell 58.2 -> 19.9 ms (-38) while `other` rose 4.1 -> 43.2 ms (+39). **Total newPayload
+was unchanged within noise** (85.9 vs 81.1-87.5). Exactly offsetting.
+
+**WHY: the `wait` histogram is pipeline OVERLAP, not waste.** reth streams recovery concurrently
+with execution, so the consumer's stall is time recovery is genuinely still working — overlapped
+with useful work. Recovering eagerly converts that overlap into a serial barrier before execution
+starts and returns precisely what it saves. `recovery_bench.rs` remains correct about the crypto
+(33.4 us/tx serial, ~4 us/tx on 16 threads) — the wrong step was assuming the live gap was idle.
+
+REVERTED in full (`crates/evm/src/evm.rs` back to plain delegation, rayon dep dropped). Kept: the
+`recovery_bench.rs` and `recovery-probe.sh` harnesses, the `PAY_EL<i>_ENV` per-validator env hook
+(genuinely useful for same-box A/B), and this record. Post-revert: both gates IDENTICAL, 200
+consecutive blocks / 952,200 txs with all 4 validators agreeing.
+
+**RULE ADDED TO THE PROTOCOL: an EL optimisation only counts if
+`reth_consensus_engine_beacon_new_payload_latency` moves.** Sub-metrics can be relocated.
+
+## ❌ Hypothesis #1 (engine-API ingestion) — REFUTED, and it was the top-ranked suspect
+
+`experiments/dual-el/height-decomp.sh` (new) splits a height using reth's beacon-engine metrics.
+At 100M gas / 4,761 txs, stock config, 715 ms height:
+
+| phase | ms | % | who |
+|-------|-----|---|-----|
+| newPayload (EL busy) | 113.3 | 15.8 | exec 78.2 + root 29.3 + **other 5.8** |
+| newPayload -> FCU (EL IDLE) | 342.5 | 47.9 | CL voting round |
+| forkchoiceUpdated (EL busy) | 1.0 | 0.1 | EL |
+| remainder (EL IDLE) | 258.6 | 36.2 | next proposer build + SSZ + streaming |
+
+**EL busy 16%, EL idle 84%.** The "unaccounted" slice inside newPayload — the only place a hidden
+JSON-decode/ingestion cost could live — is **5.8 ms**, ~0.8% of the height. There is no hidden
+ingestion cost to recover, so **switching the payment lane to IPC cannot move cadence** and STEP 2
+is closed. (CL<->EL is localhost in both the single-machine and fleet topologies, so transport
+before reth's timer starts is bounded small too.)
+
+This also independently reconfirms the 10/90 EL/non-EL split from a completely different metric
+family than the earlier measurement.
+
 ## 🎯 Block-size sweep at fixed 2 blk/s — RE-RUN AND VALID (2026-08-08)
 
 Harness fixed (all 3 bugs below), re-run on one chain with **all 4 payment ELs on the best-known

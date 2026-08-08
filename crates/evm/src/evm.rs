@@ -29,12 +29,6 @@ use alloy_evm::{
     Evm as AlloyEvmTrait, EvmFactory,
 };
 use alloy_rpc_types_engine::ExecutionData;
-use std::sync::OnceLock;
-use rayon::prelude::*;
-use alloy_consensus::transaction::Recovered;
-use alloy_eips::eip2718::Decodable2718;
-use reth_primitives_traits::transaction::signed::SignedTransaction;
-
 use arc_execution_config::hardforks::{ArcHardfork, ArcHardforkFlags};
 use arc_execution_config::native_coin_control::{
     compute_is_blocklisted_storage_slot, is_blocklisted_status,
@@ -1972,80 +1966,8 @@ impl ConfigureEngineEvm<ExecutionData> for ArcEvmConfig {
         &self,
         payload: &ExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
-        let txs = payload.payload.transactions().clone();
-        let items: Vec<PayloadTx> = if eager_recovery_enabled() && txs.len() >= EAGER_RECOVERY_MIN_TXS
-        {
-            txs.into_par_iter().map(|b| PayloadTx::Done(recover_payload_tx(b))).collect()
-        } else {
-            txs.into_iter().map(PayloadTx::Raw).collect()
-        };
-        Ok((items, |item: PayloadTx| match item {
-            PayloadTx::Done(result) => result,
-            PayloadTx::Raw(bytes) => recover_payload_tx(bytes),
-        }))
+        self.inner.tx_iterator_for_payload(payload)
     }
-}
-
-/// Recover payload senders up front on the whole rayon pool, rather than letting reth's engine
-/// stream them in one at a time.
-///
-/// reth's `newPayload` loop pulls transactions from an ordered channel fed by a recovery producer
-/// (`payload_processor::spawn_tx_iterator`). Measured on the 4-validator demo at ~9.3k-tx payment
-/// blocks, that loop spends ~78% of its time blocked in `transactions.next()` -- 10.0 us/tx with
-/// `--engine.state-root-fallback`, 12.9-14.1 us/tx stock -- against only 2.9-4.5 us/tx actually
-/// inside [`ArcBlockExecutor`]. The stall is not CPU contention (it holds steady across 2 and 8
-/// competing spammers, and across both state-root strategies).
-///
-/// `examples/recovery_bench.rs` measures the floor on the same box: RLP decode is 0.22 us/tx and
-/// ECDSA recovery is 33.4 us/tx serial but **4.0 us/tx across 16 threads (8.5x)**. The live loop
-/// only realises ~3.3x of that, so the pipeline -- not the cryptography -- is the limit.
-///
-/// Recovering the whole payload eagerly trades that per-transaction stall for one parallel pass,
-/// and leaves reth streaming an already-computed vector. This is EL-only: no reth fork, no
-/// consensus path touched.
-/// Below this transaction count, recover lazily and let upstream drive it.
-///
-/// Mirrors upstream's own `SMALL_BLOCK_TX_THRESHOLD`: for a handful of transactions, spinning up
-/// rayon costs more than just converting them. An idle lane at the 2 blk/s target produces mostly
-/// small blocks, so the guard keeps this change from regressing the common case.
-const EAGER_RECOVERY_MIN_TXS: usize = 30;
-
-fn eager_recovery_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("ARC_EAGER_RECOVERY").as_deref() == Ok("1"))
-}
-
-/// A payload transaction, either recovered ahead of time or still raw.
-///
-/// Both variants funnel through the same [`recover_payload_tx`], so a transaction is converted
-/// exactly once and a bad transaction surfaces at the same index either way. With eager recovery
-/// off the conversion stays lazy, exactly as upstream drives it.
-enum PayloadTx {
-    Done(Result<Recovered<TransactionSigned>, PayloadTxError>),
-    Raw(Bytes),
-}
-
-/// Decode + sender-recovery failure for one payload transaction.
-///
-/// Upstream reports these as `reth_storage_errors::any::AnyError`, which is not a dependency
-/// here. Either way the engine wraps it with `BlockExecutionError::other` and rejects the
-/// payload, so only the error text differs.
-#[derive(Debug)]
-pub struct PayloadTxError(String);
-
-impl core::fmt::Display for PayloadTxError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl core::error::Error for PayloadTxError {}
-
-fn recover_payload_tx(bytes: Bytes) -> Result<Recovered<TransactionSigned>, PayloadTxError> {
-    let err = |e: &dyn core::fmt::Display| PayloadTxError(e.to_string());
-    let tx = TransactionSigned::decode_2718_exact(bytes.as_ref()).map_err(|e| err(&e))?;
-    let signer = tx.try_recover().map_err(|e| err(&e))?;
-    Ok(tx.with_signer(signer))
 }
 
 #[cfg(test)]
