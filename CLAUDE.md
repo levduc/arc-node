@@ -533,6 +533,28 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🔬 WHERE A BIGGER BLOCK'S ms GO — MEASURED; MISSION 3 CLOSED (2026-08-09).** Used Arc's own
+`reth_arc_payload_total_duration_seconds` (proposer build) + beacon-engine metrics. Both points 100%
+full, 4 machines, distributed spam:
+| gas | txs/blk | height | build | newPayload | exec | root | voteGap | remainder | tps |
+|------|---------|--------|-------|-----------|------|------|---------|-----------|-----|
+| 50M | 2,380 | 515ms | 68.1 | 43.5 | 35.9 | 3.0 | 347.6 | 124.2 | 4,619 |
+| 200M | 9,523 | 1,216ms | 176.7 | 124.8 | 117.2 | 1.7 | 836.2 | 254.5 | 7,834 |
+- **50M REPRODUCES: 1.94 blk/s / 515ms / 4,619 tps** vs 1.92/522/4,563 on a different chain (1.5%).
+  Headline stands — this check mattered, an earlier single-run 50M claim had to be requalified.
+- **MARGINAL COST OF A TX = ~98us OF HEIGHT; only ~11us is our execution.** Split of the 50M→200M
+  growth: proposer build +108.6ms (15.2us/tx, 15.5%) · own newPayload +81.3ms (11.4us/tx, 11.6%) ·
+  **voteGap +488.6ms (68.4us/tx, 69.7%)** · remainder/stream+decode +130.3ms (18.2us/tx, 18.6%).
+- **~70% lands in the VOTE GAP** = newPayload-done → next FCU. NOT idle network: it contains the
+  other validators receiving/decoding/EXECUTING the same block + 2 vote rounds. Each tx is executed
+  **~5x across the network** (1 build + 4 validates), all on the round's critical path, quorum gated
+  by the SLOWEST. State root is 1.7-3.0ms and does NOT grow with block size (1.7ms @ 9,523 tx vs
+  3.0ms @ 2,380) — it cannot be the answer.
+- **MISSION 3 CLOSED. No further tps at 2 blk/s without touching consensus.** 88% of a tx's marginal
+  cost is outside our execution. CL-side levers (out of scope): ship tx HASHES not full txs (peers
+  already have them; the proposal duplicates ~1.2MB at 100M), pipeline exec of N against consensus of
+  N+1, homogenise validators so quorum isn't gated by the slowest box.
+
 **✅ MISSION 3 GOAL MET ON REAL HARDWARE (2026-08-09): 50M HOLDS 2 blk/s AT 4,563 TPS.** Measured the
 fleet's LOW-LATENCY end (all prior fleet points started at 200M). 4 machines, distributed spam, stock:
 | gas | spm | txs/blk | %full | blk/s | latency | tps |

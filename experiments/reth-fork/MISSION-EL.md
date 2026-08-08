@@ -271,6 +271,54 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🔬 WHERE A BIGGER BLOCK'S MILLISECONDS GO — MEASURED, AND MISSION 3 CLOSED (2026-08-09, iter 6)
+
+Two things this iteration: (a) the 50M "holds 2 blk/s" headline REPRODUCES, and (b) the marginal
+cost of a bigger block is now attributed, using Arc's own `reth_arc_payload_total_duration_seconds`
+(proposer build) alongside the beacon-engine metrics. Both points 100% full, 4 machines,
+distributed spam.
+
+| gas | txs/blk | height | build | newPayload | exec | root | vote gap | remainder | tps |
+|------|---------|--------|-------|-----------|------|------|----------|-----------|-----|
+| 50M | 2,380 | 515 ms | 68.1 | 43.5 | 35.9 | 3.0 | 347.6 | 124.2 | 4,619 |
+| 200M | 9,523 | 1,216 ms | 176.7 | 124.8 | 117.2 | 1.7 | 836.2 | 254.5 | 7,834 |
+
+**REPRODUCIBILITY CONFIRMED: 50M = 1.94 blk/s / 515 ms / 4,619 tps**, against 1.92 / 522 / 4,563
+measured on a different chain instance. Within 1.5%. The mission headline stands (this check
+mattered — an earlier single-run 50M claim had to be requalified when it failed to repeat).
+
+**THE MARGINAL COST OF A TRANSACTION IS ~98 us OF HEIGHT — and only ~11 us of it is our execution:**
+
+| component | +ms (50M -> 200M) | us / extra tx | share of the growth |
+|-----------|-------------------|---------------|---------------------|
+| proposer build | +108.6 | 15.2 | 15.5% |
+| newPayload (own execution) | +81.3 | 11.4 | 11.6% |
+| **vote gap** | **+488.6** | **68.4** | **69.7%** |
+| remainder (stream + decode) | +130.3 | 18.2 | 18.6% |
+
+**~70% of what a bigger block costs lands in the VOTE GAP** — the window from this validator
+finishing `newPayload` to the next forkchoiceUpdated arriving. That window is not idle network
+time: it contains the OTHER validators receiving, decoding and executing the same block, then two
+vote rounds. So each transaction is effectively executed ~5x across the network (proposer builds it
+once, four validators validate it) and every one of those executions sits on the critical path of
+the round, with the quorum gated by the SLOWEST of them.
+
+That is also why the state root cannot be the answer: it is 1.7-3.0 ms and it does not grow with
+block size (1.7 ms at 9,523 txs vs 3.0 ms at 2,380 — noise, not scaling).
+
+**MISSION 3 IS CLOSED.** Goal was "a block larger than 25M that still holds 2 blk/s": **50M does,
+at 4,619 tps (1.95x the 2,363 baseline), 100% full, all four validators agreeing.** Best overall
+operating point is 100M at 7,398 tps / 644 ms. All four ranked leads are closed: persistence is a
+measured negative (it inflates state-root cost), the fine-grained sweep found the knee, the
+delivery-bound flaw is fixed by distributed load, and state-root-fallback was applied throughout.
+
+**No further tps at 2 blk/s is reachable without touching consensus.** The evidence is the table
+above: 88% of the marginal cost of a transaction is outside our execution, in build + stream +
+vote. The addressable levers are all in the CL path — ship transaction hashes instead of full
+transactions (peers already hold them in their mempools, so the proposal duplicates ~1.2 MB at
+100M), pipeline execution of height N against consensus on N+1, and homogenise the validator set so
+the quorum is not gated by the slowest machine.
+
 ## ✅ MISSION 3 GOAL MET ON REAL HARDWARE — 50M HOLDS 2 blk/s AT 4,563 TPS (2026-08-09, iter 5)
 
 Measured the fleet's LOW-LATENCY end, which had never been tested (previous fleet points started at
