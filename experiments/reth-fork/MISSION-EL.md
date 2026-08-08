@@ -90,7 +90,29 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
       6 ms of it). The caches already took the cheap read win; reads are no longer the problem.
       Probe lives in `parallel_transfer_bench.rs` (prints a "decomposition" block) so this is
       re-checkable after any change.
-- [ ] **NEW TOP PRIORITY: cut receipt + commit overhead (78% of what remains).** Hypothesis: the
+- [x] **COMMIT-ONCE-PER-BLOCK LANDED + VERIFIED (iteration 4).** Per-block write overlay replaces
+      per-tx `db.commit`. Risk settled FIRST by a SAFETY PROBE (500 txs over 64 repeatedly-touched
+      accounts, both ways): full BundleState compared — **plain state IDENTICAL, reverts IDENTICAL**.
+      That was the check the normal gates could not do (a revert bug breaks reorg unwinding without
+      moving the state root).
+      * Both gates IDENTICAL on both workloads.
+      * Offline executor path, cumulative (pool / closed):
+        stock 107.7/94.9 -> fast path 64.1/58.4 -> +caches 54.1/45.4 -> **+overlay 45.3/35.3 ms**
+        = **2.23x / 2.51x vs stock**; 1.19x / 1.29x from the overlay alone.
+      * Live 4-validator demo at 1 Ggas: **123 consecutive heights (201..323), ZERO divergence**.
+        exec 71.2 ms @ 4,254 txs/blk = **16.7 us/tx**; block rate **1.61 blk/s** (previous iteration:
+        17.6 us/tx, 1.33 blk/s).
+      * HONEST READ: the live exec/tx gain (17.6 -> 16.7, ~1.05x) is far smaller than the offline
+        1.19-1.29x, because the executor is a MINORITY of live per-tx cost (state provider + engine
+        loop dominate). Block rate did move toward the 2 blk/s target. Neither pair of runs was a
+        controlled A/B (different block sizes/chain instances) — for a rigorous live claim use
+        `ab-fastpath.sh`.
+- [ ] **NEXT: the live/offline gap is now the story.** Offline the executor path is 45/35 ms for
+      47,618 transfers (~0.8 us/tx) but live exec is ~16.7 us/tx at a fifth the block size. So
+      ~95% of live per-tx execution cost is OUTSIDE ArcBlockExecutor — reth's state provider stack
+      and engine-tree per-tx loop. Further micro-optimisation INSIDE the executor has little left to
+      give (arithmetic is already 0.09 us/tx). MEASURE THAT GAP before optimising anything else.
+- [x] (done) cut receipt + commit overhead (78% of what remains). Hypothesis: the
       cost is `db.commit(state)` per transaction on `State<DB>` with bundle tracking — 3 accounts x
       47,618 txs = ~143k TransitionAccount records, each with allocations. Idea: keep a per-block
       overlay of pending account changes in the executor, serve fast-path reads from it, and commit

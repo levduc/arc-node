@@ -551,6 +551,15 @@ already tolerates receipts appearing only at finish(). Validation runs on all 4 
 1, so this still captures ~4/5 of network execution work. Verification on the fleet = the chain itself:
 all 4 validators must agree on the payment-lane state root every height (divergence halts consensus =
 loud safe failure). Full plan: experiments/reth-fork/README.md.
+**COMMIT-ONCE-PER-BLOCK (2026-08-08, MISSION-EL iter 4).** Per-block write overlay replaces per-tx
+`db.commit` (which was 51% of fast-path cost). Verified bundle-identical — plain state AND REVERTS —
+by a safety probe before writing executor code (a revert bug breaks reorgs without moving the state
+root, so the gates cannot catch it). Offline executor path cumulative: stock 107.7/94.9 -> fastpath
+64.1/58.4 -> +caches 54.1/45.4 -> **+overlay 45.3/35.3 ms = 2.23x/2.51x vs stock**. Live: 123 heights
+zero divergence, exec 16.7 us/tx, block rate 1.33 -> 1.61 blk/s. KEY GAP: offline the executor is
+~0.8 us/tx but live exec is ~16.7 us/tx => **~95% of live execution cost is OUTSIDE the executor**
+(reth state provider + engine-tree loop). Micro-optimising inside ArcBlockExecutor is now near
+exhausted; measure that gap next.
 **EXECUTOR COST DECOMPOSITION (2026-08-08, MISSION-EL iter 3) — measure before optimising paid off
 twice.** After the fast path + caches the ~54 ms executor path (47,618 transfers) splits:
 **db.commit() per tx 27.8 ms (51%)** | receipts+misc ~14.5 ms (27%) | 2 state reads 7.1 ms (13%) |
