@@ -50,7 +50,27 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 
 ## Status
 
-- [ ] **STEP 1: measure engine-API ingestion cost.** Timestamp the CL's `newPayload` request against
+- [x] **RECON DONE (iteration 1).** Established, from source:
+      * reth's `new_payload_v3` latency metric starts INSIDE the handler
+        (`rpc/rpc-engine-api/src/engine_api.rs:220`), i.e. AFTER jsonrpsee deserialises the params.
+        The `Block added to canonical chain elapsed=` log is engine-tree time, also post-parse.
+        **So neither existing metric sees the ~12 MB JSON parse — it is genuinely unmeasured.**
+      * The CL has NO engine-call duration metric (`malachite-app/src/metrics/app.rs` has
+        block_time / block_build_time / block_size_bytes but nothing per engine call), and adding
+        one would touch the CL => OFF LIMITS.
+      * **The payment lane ALREADY SUPPORTS IPC**: `config.rs` builds `EngineConfig::Ipc` when
+        `payment_eth_socket` + `payment_execution_socket` are set, and that branch takes PRIORITY
+        over the RPC branch. The EVM lane already runs IPC; the payment lane runs authrpc HTTP only
+        because that is how `launch-payment-els.sh` / the fleet `payment_el_cmd` configure it.
+        **=> switching the payment lane to IPC is CONFIG-ONLY and inside the constraint.**
+      CONSEQUENCE: rather than instrument the parse (which needs CL changes), run a TRANSPORT A/B —
+      HTTP vs IPC, same everything else — and read the difference in block time / cadence. That
+      measures the ingestion cost end-to-end without touching consensus.
+- [ ] **STEP 1 (revised): transport A/B — payment lane over HTTP vs IPC.** Needs: payment EL to
+      expose an IPC socket on a shared volume, CL flags `--payment-eth-socket` /
+      `--payment-execution-socket` pointing at it (both already exist), and the socket mounted into
+      both containers. Compare block time + cadence at full 1-Ggas blocks, same load.
+- [ ] (superseded) measure engine-API ingestion cost directly. Timestamp the CL's `newPayload` request against
       reth's reported `elapsed`, at full 1-Ggas blocks. Cheapest route: reth debug/trace logs on the
       authrpc handler, or compare CL-side round-trip time vs EL-side elapsed.
 - [ ] STEP 2: if large — try IPC for the payment lane (config-only) and re-measure.
