@@ -556,7 +556,13 @@ improved 37% but fleet tps was flat; do big blocks degrade it? ANSWER: **no — 
 and EXECUTION IS ONLY 10% OF BLOCK TIME.** Evidence: (a) tps is FLAT across an 8x block-size range
 (4,098 tx @1.65 blk/s = 6.8k tps; 8,916 @0.82 = 7.3k; 34,245 @0.28 = 9.7k) — cadence falls in
 proportion to size, so tps neither gains nor degrades; that is the signature of a PER-TRANSACTION
-serialized cost, not per-block overhead. (b) Direct split at FULL 1-Ggas blocks: reth's own
+serialized cost, not per-block overhead. (b) CLEAN same-fleet block-size sweep (runtime gas-limit flip, identical load — the earlier
+'flat tps' claim mixed single-machine and fleet runs and was NOT clean): **100M -> 1 Ggas (7.2x
+bigger blocks) gives tps 7,196 -> 9,690 (+35%) while block latency goes 662ms -> 3,571ms (6.6x
+WORSE)**. So bigger blocks are a modest THROUGHPUT win (per-block fixed costs amortize) and a large
+LATENCY loss. They do not degrade tps — but the +35% is far short of the 7.2x size increase because
+the dominant cost (SSZ encode + proposal streaming + voting on a ~6MB payload) scales LINEARLY with
+tx count, exactly as expected. (c) Direct split at FULL 1-Ggas blocks: reth's own
 newPayload handling = **357 ms** on a 47,618-tx block while block time = **3,750 ms** →
 **EL 10%, everything outside the EL 90%** (per-tx: 78.8 us budget, 7.5 us in the EL, 71.3 us
 outside). The 90% is CL/consensus: proposer getPayload for BOTH lanes, SSZ encode + proposal
