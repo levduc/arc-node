@@ -551,6 +551,17 @@ already tolerates receipts appearing only at finish(). Validation runs on all 4 
 1, so this still captures ~4/5 of network execution work. Verification on the fleet = the chain itself:
 all 4 validators must agree on the payment-lane state root every height (divergence halts consensus =
 loud safe failure). Full plan: experiments/reth-fork/README.md.
+**🎯 SIGNATURE RECOVERY IS THE REAL BOTTLENECK (2026-08-08, MISSION-EL iter 5).** reth already
+exposes the split — `transaction_execution_histogram` vs `transaction_wait_histogram` — so this
+needed NO code/rebuild. Live, 146 blocks / 870k txs @ ~5,962 txs/blk: execute_transactions loop
+15.48 us/tx = **wait-for-next-tx 10.18 (66%, SIG RECOVERY)** + executor 3.61 (23%) + loop overhead
+1.69 (11%). So four iterations of executor optimisation (fast path, read caches, commit-once) got
+our share to 3.61 us/tx and there is little left inside ArcBlockExecutor. ROOT CAUSE:
+`payload_validator.rs:323` `let convert = |tx| tx.try_into_recovered();` — reth re-derives the
+signer for EVERY tx in a payload and never consults the mempool, so each validator repeats ~47,618
+ECDSA recoveries per block for txs it already recovered at pool insertion. NEXT LEVER: reuse
+mempool-recovered senders (EL-side, needs the reth fork; up to ~10 us/tx = more than everything
+gained so far). A wrong sender moves the state root, so the gates + live agreement catch errors.
 **COMMIT-ONCE-PER-BLOCK (2026-08-08, MISSION-EL iter 4).** Per-block write overlay replaces per-tx
 `db.commit` (which was 51% of fast-path cost). Verified bundle-identical — plain state AND REVERTS —
 by a safety probe before writing executor code (a revert bug breaks reorgs without moving the state

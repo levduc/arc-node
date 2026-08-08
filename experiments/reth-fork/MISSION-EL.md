@@ -107,7 +107,32 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
         loop dominate). Block rate did move toward the 2 blk/s target. Neither pair of runs was a
         controlled A/B (different block sizes/chain instances) — for a rigorous live claim use
         `ab-fastpath.sh`.
-- [ ] **NEXT: the live/offline gap is now the story.** Offline the executor path is 45/35 ms for
+- [x] **GAP ATTRIBUTED (iteration 5) — SIGNATURE RECOVERY IS THE DOMINANT COST, NOT EXECUTION.**
+      No code and no rebuild needed: reth already exposes the split via
+      `reth_sync_execution_transaction_execution_histogram` (executor calls) and
+      `reth_sync_execution_transaction_wait_histogram` (waiting on the tx iterator). Measured live,
+      146 blocks / 870k txs at ~5,962 txs/blk:
+        whole execute_transactions loop ... 92.3 ms/blk  (15.48 us/tx)
+          waiting for next tx ............ 60.7 ms/blk  (**10.18 us/tx, 66%**) <- SIG RECOVERY
+          executor (our code) ............ 21.5 ms/blk  (3.61 us/tx, 23%)
+          loop overhead (receipt clone+send, metrics, atomics) 10.1 ms/blk (1.69 us/tx, 11%)
+      **Our executor is only 23% of the execution phase.** Four iterations of executor work
+      (fast path, read caches, commit-once) took it to 3.61 us/tx; there is little left there.
+      ROOT CAUSE FOUND: `payload_validator.rs:323` does `let convert = |tx| tx.try_into_recovered();`
+      — reth recovers the signer FROM SCRATCH for every tx in a payload and never consults the
+      mempool, even though those txs arrived by gossip and their senders were already recovered at
+      pool insertion. Every validator repeats ~47,618 ECDSA recoveries per block.
+- [ ] **NEW TOP PRIORITY: reuse mempool-recovered senders for newPayload txs.** Up to ~10 us/tx
+      (66% of the execution phase) — bigger than everything achieved so far combined. Lives in the
+      EL (reth's tx iterator), so it is INSIDE the constraint, but it does need the reth fork
+      (`experiments/reth-fork/apply-fork.sh`, already proven to build). Sketch: in
+      `tx_iterator_for`, look the tx hash up in the pool and reuse its recovered sender; fall back
+      to `try_into_recovered()` on a miss. Correctness is easy to keep — a wrong sender changes the
+      state root, so the existing gates + live root agreement catch it immediately.
+      CAVEAT on sizing: the `wait` metric is what PARALLEL recovery could not hide, measured on a
+      box also running 8 spammers, so the recoverable share may be smaller on the fleet. Re-measure
+      there before/after.
+- [ ] (superseded) the live/offline gap is now the story. Offline the executor path is 45/35 ms for
       47,618 transfers (~0.8 us/tx) but live exec is ~16.7 us/tx at a fifth the block size. So
       ~95% of live per-tx execution cost is OUTSIDE ArcBlockExecutor — reth's state provider stack
       and engine-tree per-tx loop. Further micro-optimisation INSIDE the executor has little left to
