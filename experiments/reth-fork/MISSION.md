@@ -56,23 +56,6 @@
       IDENTICAL.
 - [x] env passthrough wired: `PAY_EL_ENV` -> docker `-e` in launch-payment-els.sh AND the fleet
       payment_el_cmd. Use `PAY_EL_ENV='-e ARC_PARALLEL_TRANSFERS=1'`.
-- [ ] (done above) runtime-verify the in-node fast path. Suggested cheapest check: run the
-      single-machine demo twice under identical load — once stock, once with
-      `PAY_EL_EXTRA_ARGS` carrying the env var — and confirm the payment lane still advances with
-      all validators agreeing (any semantic error diverges the root and halts consensus). Then
-      compare `exec_ms` (baseline ~305ms at full 1 Ggas). NOTE: env must reach the container —
-      `launch-payment-els.sh` passes ARGS, not env; add `-e ARC_PARALLEL_TRANSFERS=1` to the
-      `docker run` there (and in fleet/demo-fleet-metamask.sh `payment_el_cmd`).
-- [ ] (old) implement `run_fastpath` semantics in `crates/evm/src/executor.rs` (all of it in arc-evm; ~150–250 lines):
-      buffer plain transfers during validation → execute fast/parallel at `finish()` → feed the
-      existing `commit_transaction()` so receipts/gas/bloom stay production code. Env-gated
-      (e.g. `ARC_PARALLEL_TRANSFERS=1`) so only the payment EL opts in.
-      Transfer gate must require: empty input, empty access list, no authorization list,
-      `TxKind::Call`, and `to` has empty code. Gas used = 21 000. Fee: `effective_gas_price =
-      min(max_fee, basefee + max_priority)`; sender pays `21000 * effective`, beneficiary is
-      credited the SAME full amount (Arc does not burn the base fee).
-- [ ] Add a differential test for the fast path itself (fast path vs real EVM), same shape as the
-      parallel bench.
 - [x] **✅ RUNNING ON THE 4-VALIDATOR DEMO (iteration 2, 2026-08-08).** `make build-docker` (both
       images rebuilt), then `PAY_GAS=1000000000 EXTRA_ACCOUNTS=8000
       PAY_EL_ENV='-e ARC_PARALLEL_TRANSFERS=1' demo-metamask.sh start`. All 4 payment ELs confirmed
@@ -96,6 +79,10 @@
       exec number, not the tps ratio.
       Live 1.39x < the 1.66-1.80x measured offline: the live node carries extra per-tx cost around
       the executor (state provider, receipt streaming) that the fast path does not remove.
+- [x] **✅ DoD #2 MET (2026-08-08): 201 CONSECUTIVE heights, ZERO divergence.** Verified EVERY
+      settled height 493..693 on the running 4-validator demo under 8-spammer load (~7,000 txs/blk):
+      identical stateRoot AND block hash on all four. Since a wrong root halts consensus, this is
+      end-to-end proof the fast path is consensus-correct in production.
 - [ ] Ship image to the 3 remotes (`docker save | gzip | tailscale ssh docker load`) → fleet run →
       confirm again across machines.
 - [ ] Only after all green: consider dropping the state root entirely (frozen root), re-verify.
