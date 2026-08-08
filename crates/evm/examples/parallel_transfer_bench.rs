@@ -346,6 +346,51 @@ fn run_parallel(
     t.elapsed()
 }
 
+/// Hand-written transfer semantics — NO EVM at all. This is what the in-executor fast path will
+/// do; the differential check below proves it matches revm exactly before it goes near consensus.
+///
+/// For a plain 21k transfer the semantics are fully determined:
+///   gas_used            = 21_000
+///   effective_gas_price = min(max_fee, basefee + max_priority)
+///   sender   -= value + 21_000 * effective   ; nonce += 1
+///   to       += value
+///   beneficiary += 21_000 * effective        (Arc credits the FULL fee; base fee is NOT burned)
+fn run_fastpath(
+    db: &mut InMemoryDB,
+    txs: &[Recovered<reth_ethereum_primitives::TransactionSigned>],
+) -> Duration {
+    use alloy_consensus::Transaction as _;
+    let t = Instant::now();
+    for tx in txs {
+        let sender = *tx.signer_ref();
+        let inner = tx.inner();
+        let to = match inner.kind() {
+            TxKind::Call(a) => a,
+            TxKind::Create => continue,
+        };
+        let value = inner.value();
+        let eff = core::cmp::min(
+            inner.max_fee_per_gas(),
+            (BASEFEE as u128).saturating_add(inner.max_priority_fee_per_gas().unwrap_or(0)),
+        );
+        let fee = U256::from(eff).saturating_mul(U256::from(21_000u64));
+
+        let mut si = db.basic(sender).ok().flatten().unwrap_or_default();
+        si.balance = si.balance.saturating_sub(value).saturating_sub(fee);
+        si.nonce += 1;
+        db.insert_account_info(sender, si);
+
+        let mut ti = db.basic(to).ok().flatten().unwrap_or_default();
+        ti.balance = ti.balance.saturating_add(value);
+        db.insert_account_info(to, ti);
+
+        let mut bi = db.basic(BENEFICIARY).ok().flatten().unwrap_or_default();
+        bi.balance = bi.balance.saturating_add(fee);
+        db.insert_account_info(BENEFICIARY, bi);
+    }
+    t.elapsed()
+}
+
 fn main() {
     let threads = rayon::current_num_threads();
     println!(
@@ -379,6 +424,12 @@ fn main() {
                 }
             }
         }
+        // ---- hand-written fast path (no EVM) vs the same serial oracle ----
+        let mut db_f = build_db();
+        let t_fast = run_fastpath(&mut db_f, &txs);
+        let fp_fast = fingerprint(&mut db_f, w);
+        let fast_diffs = fp_serial.iter().filter(|(a, s)| fp_fast.get(*a) != Some(*s)).count();
+
         let verdict = if diffs == 0 { "IDENTICAL ✓" } else { "DIVERGED ✗" };
         println!("{name}");
         println!(
@@ -395,6 +446,12 @@ fn main() {
             } else {
                 String::new()
             }
+        );
+        println!(
+            "  fastpath  {:>9.1?} (no EVM)          speedup {:.1}x   state {}",
+            t_fast,
+            t_serial.as_secs_f64() / t_fast.as_secs_f64(),
+            if fast_diffs == 0 { "IDENTICAL ✓".to_string() } else { format!("DIVERGED ✗ ({fast_diffs})") }
         );
         println!();
     }
