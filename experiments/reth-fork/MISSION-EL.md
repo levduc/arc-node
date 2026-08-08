@@ -66,7 +66,33 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
       CONSEQUENCE: rather than instrument the parse (which needs CL changes), run a TRANSPORT A/B —
       HTTP vs IPC, same everything else — and read the difference in block time / cadence. That
       measures the ingestion cost end-to-end without touching consensus.
-- [ ] **STEP 1 (revised): transport A/B — payment lane over HTTP vs IPC.** Needs: payment EL to
+- [ ] **STEP 1 (NEW TOP PRIORITY): BATCH EXECUTION inside ArcBlockExecutor.** This is the unlock
+      for every other execution win, and nothing fundamental blocks it — the earlier "can't batch"
+      note applied to reth's GENERIC side (it cannot construct `E::Result`); inside arc-evm the types
+      are concrete.
+      WHY: measured layering of live execution shows compute is ~1% of cost —
+        pure transfer arithmetic 0.09 us/tx | + executor machinery 1.35 | + live node 7-9.
+      ~85% is STATE READS + per-tx bookkeeping. The fast path does 5 reads/transfer:
+      basic(recipient), basic(sender), basic(beneficiary), blocklist SLOAD(sender),
+      blocklist SLOAD(recipient). **3 of the 5 are constant for the whole block** (beneficiary never
+      changes; the blocklist contract is not written by transfers) => cache once per block, 5 -> 2.
+      Batching additionally enables: ONE parallel prefetch pass for every touched account, the
+      verified 4.25x sender-partitioned parallel scheme (needs the full tx list), and amortised
+      receipt/bookkeeping work.
+      DESIGN (already validated in mission 1): buffer during VALIDATION only
+      (`!ctx.extra_data.is_empty()`, the discriminator Arc's own finish() uses) so the BUILDER — which
+      inspects per-tx results for inclusion — stays strictly per-tx; execute the batch in `finish()`;
+      feed results through the EXISTING `commit_transaction` in ORIGINAL tx order so receipts/gas/
+      bloom remain production code. The engine loop ignores the per-tx return value and tolerates
+      receipts appearing only at the end, and reth's receipt-root task FAILS CLOSED (0 streamed
+      receipts -> returns nothing -> validator computes the root from final receipts). All verified.
+      MUST PRESERVE EXACTLY (or the root diverges and consensus halts):
+        * per-tx block gas-limit check at the same position in the sequence;
+        * nonce order within each sender;
+        * identical error semantics — safest is: any ineligible/failing tx aborts the batch and the
+          whole block re-runs serially;
+        * receipt order + cumulative gas in ORIGINAL tx order.
+- [ ] (deprioritised) transport A/B — payment lane over HTTP vs IPC.** Needs: payment EL to
       expose an IPC socket on a shared volume, CL flags `--payment-eth-socket` /
       `--payment-execution-socket` pointing at it (both already exist), and the socket mounted into
       both containers. Compare block time + cadence at full 1-Ggas blocks, same load.
