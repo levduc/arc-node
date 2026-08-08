@@ -13,8 +13,9 @@ load-saturated.
 HONESTY NOTES baked into the chart, because they change how it should be read:
   * Hollow points MISS the 2 blk/s target. Every point here is 100% full, so unlike the earlier
     coarse sweep none of them are delivery-bound.
-  * 55M was swept LAST and carries the most chain state; some of its deficit vs 50M is chain age,
-    not block size. Sizes are swept sequentially on a growing chain.
+  * 50M is MARGINAL, not a holding point: 1.96 blk/s in a forward sweep, 1.72 in a reverse-order
+    repeat on a fresh chain. Run-to-run variance on this box is ~12-15%. 40M reproduced at 1.98.
+    A reverse-order sweep (60 -> 55 -> 50) ruled out chain age as the explanation.
   * 25M is carried over from the earlier 4-spammer sweep (it was 100% full, so comparable).
 """
 import sys
@@ -32,7 +33,7 @@ ROWS = [
     (25,   1190, 1.99,  504, 2363, 100, True),
     (30,   1428, 1.99,  504, 2835, 100, True),
     (40,   1904, 1.98,  504, 3777, 100, True),
-    (50,   2380, 1.96,  511, 4660, 100, True),
+    (50,   2380, 1.96,  511, 4660, 100, False),   # MARGINAL: 1.96 in one run, 1.72 in a repeat
     (55,   2618, 1.69,  591, 4427, 100, False),
     (60,   2856, 1.75,  573, 4986, 100, False),
     (75,   3571, 1.45,  689, 5186, 100, False),
@@ -66,7 +67,7 @@ a(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" he
   f'font-family="Inter,Helvetica,Arial,sans-serif">')
 a(f'<rect width="{W}" height="{H}" fill="#ffffff"/>')
 a(f'<text x="{L}" y="34" font-size="19" font-weight="700" fill="{INK}">'
-  f'Payment lane: 50M gas is the largest block that still holds 2 blocks/s</text>')
+  f'Payment lane: 40M gas reliably holds 2 blocks/s; 50M is marginal</text>')
 a(f'<text x="{L}" y="56" font-size="12.5" fill="{MUTED}">'
   f'One chain, gas limit flipped at runtime · 4 validators · every point load-saturated (100% full)</text>')
 
@@ -114,8 +115,11 @@ for g, txs, bps, ms, tps, full, solid in ROWS:
 x25 = px(25)
 a(f'<text x="{x25-4}" y="{py_t(2363)-14:.1f}" font-size="11" fill="{MUTED}">2,363 tps</text>')
 x50 = px(50)
-a(f'<text x="{x50}" y="{py_t(4660)-16:.1f}" font-size="12" font-weight="700" fill="{OK}" text-anchor="middle">'
-  f'50M · 4,660 tps @ 511 ms — 1.97x the 25M baseline</text>')
+a(f'<text x="{x50}" y="{py_t(4660)-16:.1f}" font-size="11.5" font-weight="700" fill="{MUTED}" text-anchor="middle">'
+  f'50M · 4,660 tps — MARGINAL (1.96 blk/s once, 1.72 on repeat)</text>')
+x40 = px(40)
+a(f'<text x="{x40}" y="{py_t(3777)+26:.1f}" font-size="12" font-weight="700" fill="{OK}" text-anchor="middle">'
+  f'40M · 3,777 tps @ 504 ms — reproducible</text>')
 
 # legend
 ly = H - 30

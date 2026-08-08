@@ -271,6 +271,47 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## ⚠️ REQUALIFICATION + THE LOAD GENERATOR IS NOW THE CEILING (2026-08-09, iteration 2)
+
+**50M does NOT reliably hold 2 blk/s — it is MARGINAL.** A reverse-order sweep on a fresh chain
+(60 -> 55 -> 50, so the biggest block got the freshest chain) gave:
+
+| gas | forward sweep | reverse sweep |
+|------|---------------|---------------|
+| 50M | **1.96 blk/s / 511 ms** | **1.72 blk/s / 582 ms** |
+| 55M | 1.69 / 591 ms | 1.62 / 615 ms |
+| 60M | 1.75 / 573 ms | 1.58 / 631 ms |
+
+Same size, same load, same config, ~12% apart. So the earlier chain-age suspicion was WRONG — the
+reverse order ruled it out — and the real explanation is plain run-to-run variance (this box has
+always shown +-15%). **The reproducible holding point is 40M: 1.98 blk/s, 504 ms, 3,777 tps.**
+50M should be quoted as "marginal, 1.7-2.0 blk/s", not as the ceiling. The headline from iteration 1
+was over-fitted to a single run.
+
+**THE 1 blk/s QUESTION CANNOT BE ANSWERED ON THIS BOX — the spammer, not the chain, is the limit.**
+Sweep at 100/200/300/400M with **12** spammers:
+
+| gas | txs/blk | blk/s | tps | %full |
+|------|---------|-------|------|-------|
+| 100M | 3,183 | 1.72 | 5,468 | **67%** |
+| 200M | 3,807 | 1.53 | 5,831 | **40%** |
+| 300M | 5,393 | 1.15 | 6,179 | **38%** |
+| 400M | 3,649 | 1.60 | 5,832 | **19%** |
+
+Every row is delivery-bound, and doubling spammers 6 -> 12 barely moved delivered tps (5,186 ->
+~5,500-6,200): local load generation saturates around **~6,000 tx/s** because the spammers compete
+with 12 containers for 16 cores. This reproduces the mission-1 finding that MORE spammers made it
+worse. Those cadence numbers (e.g. 300M at 1.15 blk/s) are produced by PARTIAL blocks and are
+therefore NOT capacity measurements — they must not be quoted as a 1 blk/s result.
+
+To answer it properly needs distributed load (fleet/spam-fleet-distributed.sh). Attempted; blocked
+because `tailscale ssh` now requires interactive re-auth. ginnythui and papaduck-alien2 are online,
+papaduck is absent from the tailnet.
+
+**BEST SATURATED tps MEASURED TO DATE: 7,164 tps at 100M / 665 ms / 1.50 blk/s, 100% full** (the
+earlier 4-spammer coarse sweep). Notably HIGHER than today's 12-spammer attempt at the same size —
+more load generators made the measurement worse, not better.
+
 ## 🎯 MISSION 3 RESULT: 50M GAS HOLDS 2 blk/s AT 4,660 TPS — 1.97x THE BASELINE (2026-08-09)
 
 Goal was "a block larger than 25M that still holds 2 blk/s". Achieved, and the win came from
@@ -285,7 +326,7 @@ Fine-grained sweep, one chain, gas flipped at runtime, all 4 payment ELs on
 | 25M | 1,190 | 1.99 | 504 ms | 2,363 | 3.8 | 10.5 | 49.0 | HOLDS (prior sweep) |
 | 30M | 1,428 | 1.99 | 504 ms | 2,835 | 15.0 | 12.5 | 54.9 | HOLDS |
 | 40M | 1,904 | 1.98 | 504 ms | 3,777 | 28.0 | 19.3 | 61.0 | HOLDS |
-| **50M** | **2,380** | **1.96** | **511 ms** | **4,660** | 42.4 | 27.8 | 70.4 | **HOLDS — the ceiling** |
+| **50M** | **2,380** | **1.96** | **511 ms** | **4,660** | 42.4 | 27.8 | 70.4 | MARGINAL — see requalification above (1.72 on repeat) |
 | 55M | 2,618 | 1.69 | 591 ms | 4,427 | 49.2 | 30.9 | 157.0 | degraded |
 | 60M | 2,856 | 1.75 | 573 ms | 4,986 | 57.3 | 31.7 | 77.3 | degraded |
 | 75M | 3,571 | 1.45 | 689 ms | 5,186 | 64.3 | 34.8 | 165.2 | degraded |

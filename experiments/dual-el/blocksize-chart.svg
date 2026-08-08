@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560" font-family="Inter,Helvetica,Arial,sans-serif">
 <rect width="960" height="560" fill="#ffffff"/>
-<text x="78" y="34" font-size="19" font-weight="700" fill="#1a1f2e">Payment lane: 50M gas is the largest block that still holds 2 blocks/s</text>
+<text x="78" y="34" font-size="19" font-weight="700" fill="#1a1f2e">Payment lane: 40M gas reliably holds 2 blocks/s; 50M is marginal</text>
 <text x="78" y="56" font-size="12.5" fill="#7b8394">One chain, gas limit flipped at runtime · 4 validators · every point load-saturated (100% full)</text>
 <line x1="78" y1="468.0" x2="882" y2="468.0" stroke="#e6e9ef" stroke-width="1"/>
 <text x="68" y="472.0" font-size="11" fill="#2563eb" text-anchor="end">0</text>
@@ -40,8 +40,8 @@
 <text x="422.0" y="488" font-size="11.5" font-weight="600" fill="#1a1f2e" text-anchor="middle">40M</text>
 <text x="422.0" y="503" font-size="10" fill="#7b8394" text-anchor="middle">1,904 tx</text>
 <text x="422.0" y="516" font-size="10" fill="#1a1f2e" text-anchor="middle">100% full</text>
-<circle cx="585.3" cy="163.5" r="5.2" fill="#2563eb" stroke="#2563eb" stroke-width="2.2"/>
-<circle cx="585.3" cy="217.6" r="5.2" fill="#e0562d" stroke="#e0562d" stroke-width="2.2"/>
+<circle cx="585.3" cy="163.5" r="5.2" fill="#ffffff" stroke="#2563eb" stroke-width="2.2"/>
+<circle cx="585.3" cy="217.6" r="5.2" fill="#ffffff" stroke="#e0562d" stroke-width="2.2"/>
 <text x="585.3" y="488" font-size="11.5" font-weight="600" fill="#1a1f2e" text-anchor="middle">50M</text>
 <text x="585.3" y="503" font-size="10" fill="#7b8394" text-anchor="middle">2,380 tx</text>
 <text x="585.3" y="516" font-size="10" fill="#1a1f2e" text-anchor="middle">100% full</text>
@@ -61,7 +61,8 @@
 <text x="882.0" y="503" font-size="10" fill="#7b8394" text-anchor="middle">3,571 tx</text>
 <text x="882.0" y="516" font-size="10" fill="#1a1f2e" text-anchor="middle">100% full</text>
 <text x="74.0" y="299.6" font-size="11" fill="#7b8394">2,363 tps</text>
-<text x="585.2675218714517" y="147.5" font-size="12" font-weight="700" fill="#15803d" text-anchor="middle">50M · 4,660 tps @ 511 ms — 1.97x the 25M baseline</text>
+<text x="585.2675218714517" y="147.5" font-size="11.5" font-weight="700" fill="#7b8394" text-anchor="middle">50M · 4,660 tps — MARGINAL (1.96 blk/s once, 1.72 on repeat)</text>
+<text x="421.96385495714196" y="247.2" font-size="12" font-weight="700" fill="#15803d" text-anchor="middle">40M · 3,777 tps @ 504 ms — reproducible</text>
 <line x1="78" y1="526" x2="104" y2="526" stroke="#2563eb" stroke-width="2.6"/>
 <text x="110" y="530" font-size="11.5" fill="#1a1f2e">throughput</text>
 <line x1="198" y1="526" x2="224" y2="526" stroke="#e0562d" stroke-width="2.6" stroke-dasharray="5 3"/>

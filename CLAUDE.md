@@ -533,6 +533,22 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**⚠️ REQUALIFIED (2026-08-09 iter 2): 50M is MARGINAL, not the ceiling; 40M is the reproducible
+2 blk/s point.** Reverse-order sweep on a fresh chain (60→55→50, biggest block gets freshest chain)
+gave 50M **1.72 blk/s / 582ms** vs the forward sweep's **1.96 / 511ms** — same size/load/config, ~12%
+apart. So chain age was NOT the explanation (reverse order ruled it out); it is plain run-to-run
+variance (±15% on this box). **Quote 40M: 1.98 blk/s, 504ms, 3,777 tps, reproducible.** 50M = "marginal,
+1.7-2.0 blk/s". The iteration-1 headline was over-fitted to one run.
+**THE 1 blk/s QUESTION IS UNANSWERABLE ON THIS BOX — the SPAMMER is the ceiling, not the chain.**
+100/200/300/400M with 12 spammers: 67%/40%/38%/19% full, delivered tps stuck at 5.5-6.2k. Doubling
+spammers 6→12 barely moved delivery (local generation saturates ~6k tx/s; they compete with 12
+containers for 16 cores — reproduces the mission-1 "more spammers made it worse" finding). Those
+cadences (300M @ 1.15 blk/s) come from PARTIAL blocks and are NOT capacity numbers. Needs
+fleet/spam-fleet-distributed.sh; attempted but `tailscale ssh` requires interactive re-auth
+(ginnythui + alien2 online, papaduck absent from the tailnet).
+**BEST SATURATED tps TO DATE: 7,164 @ 100M / 665ms / 1.50 blk/s, 100% full** (earlier 4-spammer
+sweep) — higher than today's 12-spammer run at the same size.
+
 **🎯 MISSION 3: 50M GAS HOLDS 2 blk/s AT 4,660 TPS = 1.97x THE BASELINE (2026-08-09).** The win came
 from FIXING THE MEASUREMENT, not from optimising. Fine-grained sweep (one chain, runtime gas flips,
 all 4 pay ELs on `--engine.state-root-fallback`, 75s windows, **6 spammers so every point is 100%
