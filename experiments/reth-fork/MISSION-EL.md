@@ -106,3 +106,30 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Small verified increments; never leave the repo broken or a chain half-deployed.
 - Tear down cleanly if the box is left idle.
 - Record findings here and in CLAUDE.md every iteration, including negative results.
+
+
+## Block-size sweep at fixed 2 blk/s — ATTEMPTED, INVALID, 3 harness bugs found (2026-08-08)
+
+Goal: hold latency at Arc mainnet's 500 ms and find the largest payment block the CL sustains.
+`experiments/dual-el/blocksize-sweep.sh` sweeps the on-chain gas limit at runtime. **The run produced
+numbers, and they are WRONG — do not quote them.** Tell-tale: "3026% full", i.e. gasUsed far above
+the limit the row claimed to test. Every row actually measured 1 Ggas.
+
+Three separate harness bugs, all now understood:
+1. **Polled a hardcoded val1.** val1's CL parked, so the sweep read STALLED at every size while the
+   chain ran fine on 3-of-4 quorum. FIXED: poll the highest-head validator.
+2. **The governance tx never landed under saturating load.** `updateFeeParams` competes with ~47k
+   spam txs that all pay the SAME fixed 20 gwei (our own fixed-fee design), so it is effectively
+   FIFO behind a huge backlog and never gets included. => the sweep must set the gas limit with
+   load OFF, then apply load, then measure — per size.
+3. **`set-lane-economics.sh` targets `127.0.0.1`** = val1 only. With val1 parked, the controller tx
+   went to a node not following the chain and sat there forever. => point governance txs at a
+   HEALTHY validator (or heal val1 first); consider an env override for the RPC target.
+
+NOTE this is a genuine operational finding, not just a test artifact: **on a saturated fixed-fee
+lane, governance transactions cannot get in.** A fixed fee removes the fee market that would
+normally let an urgent tx bid its way in. Worth a design note — an exempt/priority path for
+controller txs, or admin submission via a reserved lane.
+
+NEXT ITERATION should re-run the sweep as: for each size -> stop load -> set gas limit against a
+healthy validator -> verify it took -> start load -> measure 70 s -> record.
