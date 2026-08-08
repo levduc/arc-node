@@ -100,8 +100,30 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
       BundleState records reverts/original_info. The final PLAIN state (hence the state root) should
       be identical, but revert data matters for reorgs — verify with the gates AND by inspecting the
       bundle, not just balances. Also confirm nothing between txs reads committed state directly.
-      CHEAP PRE-CHECK: time `db.commit()` alone vs receipt building alone, to confirm which half of
-      the 42 ms dominates before touching anything.
+      **PRE-CHECK DONE (iteration 3) — hypothesis CONFIRMED.** Isolated `db.commit()` with a
+      realistic 3-account diff per tx, bundle tracking on. Full decomposition of the ~54 ms:
+        * **db.commit() per tx ..... 27.8 ms (51%)  <- THE single biggest cost**
+        * receipts + misc .......... ~14.5 ms (27%)
+        * 2 state reads/tx ......... 7.1 ms (13%)
+        * pure arithmetic .......... 4.6 ms (9%)
+      => Committing once per BLOCK instead of once per TX targets 51% of the executor path.
+      47,618 commits x 3 accounts = ~143k TransitionAccount records collapse to ~16k (one per
+      touched account). Plausible saving ~25 ms of 54 ms (~2x on top of what we already have).
+
+      DESIGN for next iteration (not yet implemented):
+        * per-block overlay `HashMap<Address, (AccountInfo original_at_block_start, AccountInfo current)>`
+          in the executor; fast path reads overlay-first then DB; fast path writes ONLY the overlay.
+        * `commit_transaction` still builds the receipt per tx (cheap, and cumulative-gas order must
+          be preserved) but skips `db.commit`.
+        * at `finish()`, emit ONE EvmState from the overlay — `Account::from(original_at_block_start)`
+          with `info = current` — and commit it once, BEFORE the existing system-contract calls.
+        * INVALIDATION: any general-EVM tx must flush the overlay to the DB first (same rule the
+          blocklist/beneficiary caches already use), because arbitrary code reads live state.
+      WHY THE REVERT SEMANTICS SHOULD HOLD (verify, do not assume): reth keeps reverts per BLOCK
+      (`merge_transitions` runs per block), not per tx, and a revert is against the block-start
+      value — which the overlay preserves via `original_at_block_start`. Per-tx transition
+      granularity is not needed for block-level unwinding. VERIFY by inspecting the bundle
+      (reverts + plain state), not just balances, in addition to both gates.
 - [ ] (deprioritised, was STEP 1) BATCH EXECUTION
 
  inside ArcBlockExecutor.** This is the unlock

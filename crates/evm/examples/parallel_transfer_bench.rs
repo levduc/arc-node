@@ -417,9 +417,32 @@ fn main() {
             if let Ok(Some(i)) = state.basic(to) { sink = sink.wrapping_add(i.nonce); }
         }
         let t_reads = t.elapsed();
+
+        // isolate db.commit(): apply a realistic 3-account transfer diff per tx, nothing else
+        use revm::state::{Account, EvmState};
+        let bene = BENEFICIARY;
+        let t = Instant::now();
+        for (i, tx) in txs.iter().enumerate() {
+            let to = match tx.inner().kind() { TxKind::Call(a) => a, _ => continue };
+            let mut st = EvmState::default();
+            for a in [*tx.signer_ref(), to, bene] {
+                let mut info = revm::state::AccountInfo::default();
+                info.balance = U256::from(1_000_000u64 + i as u64);
+                let mut acct = Account::from(info.clone());
+                acct.info = info;
+                acct.mark_touch();
+                st.insert(a, acct);
+            }
+            state.commit(st);
+        }
+        let t_commit = t.elapsed();
         println!(
             "decomposition (pool, {N_TX} txs), executor path is ~54ms total:\n  2 state reads/tx  {:>8.1?}  ({:.2} us/tx)\n  pure arithmetic   ~4.6ms\n  => remainder (receipts + State/bundle commit) is the rest  [sink {}]\n",
             t_reads, t_reads.as_secs_f64()*1e6/N_TX as f64, sink & 1
+        );
+        println!(
+            "  db.commit only     {:>8.1?}  ({:.2} us/tx)  <- 3-account diff per tx, bundle tracking on",
+            t_commit, t_commit.as_secs_f64()*1e6/N_TX as f64
         );
     }
 

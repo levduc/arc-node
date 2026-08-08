@@ -551,6 +551,13 @@ already tolerates receipts appearing only at finish(). Validation runs on all 4 
 1, so this still captures ~4/5 of network execution work. Verification on the fleet = the chain itself:
 all 4 validators must agree on the payment-lane state root every height (divergence halts consensus =
 loud safe failure). Full plan: experiments/reth-fork/README.md.
+**EXECUTOR COST DECOMPOSITION (2026-08-08, MISSION-EL iter 3) — measure before optimising paid off
+twice.** After the fast path + caches the ~54 ms executor path (47,618 transfers) splits:
+**db.commit() per tx 27.8 ms (51%)** | receipts+misc ~14.5 ms (27%) | 2 state reads 7.1 ms (13%) |
+arithmetic 4.6 ms (9%). CONSEQUENCE: the planned ~250-line BATCH EXECUTION change was DEPRIORITISED
+— its prefetch only attacks the 13%. The real target is committing ONCE PER BLOCK instead of per tx
+(~143k TransitionAccount records -> ~16k). Probe is in `parallel_transfer_bench.rs` ("decomposition"
+block) so it is re-checkable. Design + revert-semantics caveat in experiments/reth-fork/MISSION-EL.md.
 **PER-BLOCK READ CACHES (2026-08-08, MISSION-EL iter 2).** ~85% of live exec cost is state reads;
 3 of the 5 a transfer does are block-constant. Cached in ArcBlockExecutor: blocklist status (map)
 + fee beneficiary (full AccountInfo tracked in memory, NOT just balance — a default would reset
