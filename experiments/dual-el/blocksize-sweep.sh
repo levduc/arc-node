@@ -33,11 +33,26 @@ for m in $SIZES; do
   python3 - "$gas" "$WINDOW" "$TARGET_BLKS" <<'PY' | tee -a "$OUT"
 import json,urllib.request,sys,time
 gas,window,target=int(sys.argv[1]),int(sys.argv[2]),float(sys.argv[3])
-def rpc(m,p=None):
-    r=urllib.request.Request("http://127.0.0.1:19545",
+HOSTS={1:"127.0.0.1",2:"100.85.150.119",3:"100.70.62.92",4:"100.86.97.40"}
+def _rpc(ip,port,m,p=None):
+    r=urllib.request.Request(f"http://{ip}:{port}",
         data=json.dumps({"jsonrpc":"2.0","id":1,"method":m,"params":p or []}).encode(),
         headers={"content-type":"application/json"})
     return json.load(urllib.request.urlopen(r,timeout=10))["result"]
+# Poll the validator with the HIGHEST head. A single stuck validator (the chain still runs on
+# 3-of-4 BFT quorum) must not be mistaken for a stalled chain -- that exact blind spot made an
+# earlier sweep report STALLED at every size while the chain was healthy.
+def _leader():
+    best=(None,-1)
+    for v,ip in HOSTS.items():
+        try:
+            h=int(_rpc(ip,19545+(v-1)*100,"eth_blockNumber"),16)
+            if h>best[1]: best=(v,h)
+        except Exception: pass
+    return best[0]
+LEAD=_leader()
+def rpc(m,p=None):
+    return _rpc(HOSTS[LEAD],19545+(LEAD-1)*100,m,p)
 h0=int(rpc("eth_blockNumber"),16); t0=time.time()
 time.sleep(window)
 h1=int(rpc("eth_blockNumber"),16); dt=time.time()-t0
