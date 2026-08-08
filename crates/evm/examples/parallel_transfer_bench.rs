@@ -244,6 +244,24 @@ fn run_serial(
     let d = t.elapsed();
     let (mut evm_after, res) = ex.finish().expect("finish");
     assert_eq!(res.receipts.len(), txs.len());
+
+    // RECEIPTS, not just state. A live 4-validator A/B (2026-08-08) rejected a block with
+    // "receipt root mismatch" while post-state was byte-identical -- this gate compared only
+    // accounts, so it passed a change that forks the chain against unmodified peers. Receipts
+    // carry type, status, cumulative gas and logs; any of those can differ with state intact.
+    // Both gates must print the SAME digest.
+    let receipts_digest = {
+        let mut buf = String::new();
+        for r in &res.receipts {
+            buf.push_str(&format!("{r:?}|"));
+        }
+        alloy_primitives::keccak256(buf.as_bytes())
+    };
+    let nlogs: usize = res.receipts.iter().map(|r| r.logs.len()).sum();
+    println!(
+        "  receipts    digest {:#x}  gas {}  logs {}",
+        receipts_digest, res.gas_used, nlogs
+    );
     // flush the executor's accumulated state into the backing InMemoryDB so we can fingerprint it.
     // State keeps changes as *transitions* until merged; without this the bundle is empty.
     evm_after

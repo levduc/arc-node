@@ -271,6 +271,63 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🚨 CONSENSUS BUG IN THE FAST PATH — FOUND, FIXED, AND THE "1.58x" WAS MOSTLY THE BUG (2026-08-08)
+
+**`ARC_PARALLEL_TRANSFERS=1` was forking the chain against unmodified nodes.** Arc emits a log for
+EVERY native value transfer (`ArcEvm::before_frame_init` -> `crate::log`). The fast path bypasses
+the interpreter and emitted **none**, so its receipts and the block logs bloom differed from stock
+while post-state was byte-identical.
+
+Found by running the first-ever A/B against UNMODIFIED peers (val1 fast path, val2-4 stock). val1
+rejected the first non-empty block outright:
+
+```
+Invalid block error on new payload number=100
+validation_err=receipt root mismatch:
+  got 0xe67e6405... (val1, fast path)  expected 0xafdca43b... (network, stock)
+```
+
+**Why every previous validation missed it — two independent blind spots:**
+1. The offline gate compared post-STATE only. Receipts carry type/status/cumulative-gas/**logs**;
+   all of those can differ with state intact.
+2. Every live run enabled the fast path on ALL FOUR validators via the global `PAY_EL_ENV`. Four
+   nodes running the same modified code agree with each other perfectly — and all four diverge
+   from stock. **An optimisation must be A/B'd against unmodified peers, never against copies of
+   itself.**
+
+Beyond consensus this also silently dropped the `Transfer` events wallets and indexers consume.
+
+**FIX** (`executor.rs`): emit the same log the interpreter would — EIP-7708 `Transfer` from Zero5
+onward with self-transfers suppressed, legacy `NativeCoinTransferred` before that — reusing
+`crate::log` and the same `is_arc_fork_active` gate so it is correct by construction.
+
+**GATE STRENGTHENED**: `parallel_transfer_bench` now prints a receipts digest + log count. Before
+the fix: stock `0x93a9…`/`0x9c0b…` with 47,618 logs vs fast path `0x21e2…` with 0 logs (and the
+same digest for both workloads — the tell, since receipts should depend on the recipients). After:
+digests match exactly. **Both gates must now agree on the receipts digest, not just state.**
+
+**HONEST PERF — the fast path is worth ~3%, not 1.58x.** Once it correctly builds the 4,761 logs
+per block, simultaneous same-block A/B (val1 fast path vs 3 stock):
+
+| metric | stock | fast path | ratio |
+|--------|-------|-----------|-------|
+| exec (sub-metric) | 87.1 ms | 79.5 ms | 1.10x |
+| per-tx exec | ~7.6 us | 3.77 us | 2.0x |
+| **newPayload (the metric)** | **118.3 ms** | **115.0 ms** | **1.03x** |
+
+The previously-claimed 1.39x-1.58x was substantially the cost of the logs it was not emitting.
+Log construction (`encode_log_data`) is a large share of what revm was doing for a transfer. At
+1.03x of newPayload — itself ~16% of a height — this is ~0.5% of block time. **Keep it gated OFF
+by default; it is not worth deploying for 0.5%.**
+
+**VALIDATED AFTER THE FIX:** 200 consecutive blocks / 952,200 txs, mixed config (val1 fast path vs
+3 stock peers), all 4 identical on stateRoot + blockHash + receiptsRoot + **logsBloom**, zero
+invalid-block errors.
+
+This retroactively invalidates the "✅ MISSION COMPLETE — 1.58x, 120 heights zero divergence"
+claim from mission 1: that run had the fast path on all 4 machines, so it proved self-consistency,
+not correctness.
+
 ## ❌ EAGER RECOVERY WAS A MEASUREMENT ARTIFACT — REVERTED (2026-08-08)
 
 **The previous iteration's "3.9x faster execution phase" was not real.** It was measured with

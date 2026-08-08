@@ -427,6 +427,30 @@ where
             stage(self, beneficiary, folded);
         }
 
+        // Arc emits a log for EVERY native value transfer (`ArcEvm::before_frame_init` ->
+        // `crate::log`). Skipping the interpreter must NOT skip the log: it lands in the receipt
+        // and the block's logs bloom, so omitting it changes the receipts root and forks the chain
+        // against unmodified peers — and it silently drops the Transfer events wallets and
+        // indexers consume. A live 4-validator A/B caught exactly this ("receipt root mismatch")
+        // once the fast path ran against stock nodes instead of against other fast-path nodes.
+        //
+        // Mirrors the interpreter's rules exactly: EIP-7708 `Transfer` from Zero5 onward, with
+        // self-transfers emitting NOTHING, and the legacy `NativeCoinTransferred` before that.
+        let transfer_logs = if is_arc_fork_active(
+            &self.chain_spec,
+            ArcHardfork::Zero5,
+            self.block_number_u64()?,
+            self.block_timestamp_u64()?,
+        ) {
+            if signer == to {
+                Vec::new()
+            } else {
+                vec![crate::log::create_eip7708_transfer_log(signer, to, value)]
+            }
+        } else {
+            vec![crate::log::create_native_transfer_log(signer, to, value)]
+        };
+
         Ok(Some(ResultAndState {
             result: revm::context_interface::result::ExecutionResult::Success {
                 reason: revm::context_interface::result::SuccessReason::Stop,
@@ -437,7 +461,7 @@ where
                     0,
                     TRANSFER_GAS,
                 ),
-                logs: Vec::new(),
+                logs: transfer_logs,
                 output: revm::context_interface::result::Output::Call(Default::default()),
             },
             state,

@@ -533,6 +533,33 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🚨 CONSENSUS BUG FOUND + FIXED IN THE NATIVE-TRANSFER FAST PATH — AND ITS "1.58x" WAS MOSTLY THE
+BUG (2026-08-08).** `ARC_PARALLEL_TRANSFERS=1` was FORKING THE CHAIN against unmodified nodes. Arc
+emits a log for EVERY native value transfer (`ArcEvm::before_frame_init` → `crate::log`); the fast
+path bypassed the interpreter and emitted NONE, so receipts + logsBloom differed from stock while
+post-state was byte-identical. Caught by the first-ever A/B against UNMODIFIED peers (val1 fast
+path, val2-4 stock): val1 rejected the first non-empty block with `receipt root mismatch`.
+- **Why 6 prior "validations" missed it:** (1) the offline gate compared post-STATE only — receipts
+  carry type/status/cumulative-gas/**logs**, all of which can differ with state intact; (2) every
+  live run set the fast path on ALL 4 validators via the global `PAY_EL_ENV`, so four nodes running
+  identical modified code agreed with each other while all diverging from stock. **RULE: A/B an
+  optimisation against UNMODIFIED peers, never against copies of itself.** It also silently dropped
+  the Transfer events wallets/indexers consume.
+- **FIX (executor.rs):** emit the same log the interpreter would — EIP-7708 `Transfer` from Zero5
+  on (self-transfers suppressed), legacy `NativeCoinTransferred` before — via `crate::log` + the
+  same `is_arc_fork_active` gate, so it is correct by construction.
+- **GATE STRENGTHENED:** `parallel_transfer_bench` now prints a receipts digest + log count; both
+  gates must MATCH. Pre-fix: stock 0x93a9…/0x9c0b… with 47,618 logs vs fast path 0x21e2… with 0
+  logs (identical digest across both workloads was the tell). Post-fix: exact match.
+- **HONEST PERF — ~3%, not 1.58x.** Correctly emitting logs, simultaneous same-block A/B: exec
+  87.1→79.5ms (1.10x), per-tx 7.6→3.77us (2.0x), but **newPayload 118.3→115.0ms = 1.03x** — ~0.5%
+  of a height. Log construction is a big share of what revm does for a transfer, so the old
+  1.39-1.58x was largely the omitted work. **KEEP IT GATED OFF; not worth deploying for 0.5%.**
+- **VALIDATED POST-FIX:** 200 consecutive blocks / 952,200 txs, MIXED config (val1 fast path vs 3
+  stock), all 4 identical on stateRoot+blockHash+receiptsRoot+**logsBloom**, zero invalid blocks.
+- Retroactively invalidates the mission-1 "✅ MISSION COMPLETE — 1.58x / 120 heights zero
+  divergence": that run proved self-consistency across 4 identically-modified nodes, not correctness.
+
 **❌ CORRECTION: THE "EAGER RECOVERY 4x" BELOW WAS A MEASUREMENT ARTIFACT — REVERTED (2026-08-08).**
 It was measured with `transaction_wait` + `transaction_execution`, which do NOT sum to the cost of
 newPayload; eager recovery moved work OUT of the execution loop (into iterator construction) where
