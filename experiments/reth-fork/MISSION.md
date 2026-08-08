@@ -73,7 +73,18 @@
       credited the SAME full amount (Arc does not burn the base fee).
 - [ ] Add a differential test for the fast path itself (fast path vs real EVM), same shape as the
       parallel bench.
-- [ ] `make build-docker` → single-machine 4-validator demo → confirm 100–1000 blocks of agreement.
+- [x] **✅ RUNNING ON THE 4-VALIDATOR DEMO (iteration 2, 2026-08-08).** `make build-docker` (both
+      images rebuilt), then `PAY_GAS=1000000000 EXTRA_ACCOUNTS=8000
+      PAY_EL_ENV='-e ARC_PARALLEL_TRANSFERS=1' demo-metamask.sh start`. All 4 payment ELs confirmed
+      carrying the env var. Under 8-spammer load the chain ran from height 71 to 890+ with **ZERO
+      divergence and zero halts** — ~820 blocks, comfortably inside the 100–1000 target.
+      Root agreement verified explicitly:
+        * height 203, ALL FOUR on the fast path: identical stateRoot AND block hash;
+        * height 890, the three still on it: identical stateRoot.
+      Because a wrong root halts consensus instantly, "the chain kept advancing" is itself the proof.
+      Live numbers at 4,098 txs/block (small blocks — one box can't fill 1 Ggas): exec 75.6 ms,
+      state-root 11.2 ms, persist 89.8 ms, 6.8k tps avg / 7.4k peak, 1.65 blk/s.
+- [ ] Clean same-box A/B of exec_ms (fast path vs stock) — FIRST ATTEMPT FAILED, see gotcha below.
 - [ ] Ship image to the 3 remotes (`docker save | gzip | tailscale ssh docker load`) → fleet run →
       confirm again across machines.
 - [ ] Only after all green: consider dropping the state root entirely (frozen root), re-verify.
@@ -83,3 +94,13 @@
 - Never leave the repo uncommitted-broken or a chain half-deployed. `apply-fork.sh revert` before
   any Docker build (the fork is no longer needed at all).
 - If blocked, write the finding into this file + `CLAUDE.md` so the next iteration starts informed.
+
+## Gotcha found in iteration 2 (cost ~30 min)
+
+Recreating a payment EL mid-run to A/B it triggers **finding #7**: the fresh EL lost its unpersisted
+blocks, the CL tip was far ahead, and value-sync could not backfill (`p2p` peers alone did not do it)
+— val1 sat at height 497 while the chain ran on to 890 on 3-of-4 BFT quorum. `docker restart
+validator1_cl` is the documented heal and did restart progress (497 -> 517), but recovery is slow.
+**Do not A/B by recreating an EL on a running chain.** Instead start two separate runs, or set the
+env var on a subset of validators AT START (`PAY_EL1_EXTRA_ARGS`-style, but for env). Note the mixed
+config is *safe* — the fast path is state-identical — it is purely an ops/resync problem.
