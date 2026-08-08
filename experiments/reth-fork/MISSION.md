@@ -84,7 +84,18 @@
       Because a wrong root halts consensus instantly, "the chain kept advancing" is itself the proof.
       Live numbers at 4,098 txs/block (small blocks — one box can't fill 1 Ggas): exec 75.6 ms,
       state-root 11.2 ms, persist 89.8 ms, 6.8k tps avg / 7.4k peak, 1.65 blk/s.
-- [ ] Clean same-box A/B of exec_ms (fast path vs stock) — FIRST ATTEMPT FAILED, see gotcha below.
+- [x] **✅ CLEAN A/B DONE (`experiments/dual-el/ab-fastpath.sh`, results /tmp/ab-fastpath-results.txt).**
+      Two separate full runs, identical config + 8-spammer load, 120 s window each:
+        config     exec/blk   txs/blk   us/tx     tps    4-way root agreement
+        stock       121.4ms      5363   22.64   3,346    ALL 4 AGREE
+        fastpath    145.6ms      8916   16.33   7,336    ALL 4 AGREE
+      **Per-tx execution 22.64 -> 16.33 us = 1.39x faster, with all 4 validators agreeing in BOTH
+      runs.** Note exec/blk is higher for the fast path only because its blocks carry 66% more txs;
+      per-tx is the honest comparison. tps 3.3k -> 7.3k is partly confounded (persist was 656ms in
+      the stock run vs 100ms in the fast-path run — single-box disk variance), so quote the per-tx
+      exec number, not the tps ratio.
+      Live 1.39x < the 1.66-1.80x measured offline: the live node carries extra per-tx cost around
+      the executor (state provider, receipt streaming) that the fast path does not remove.
 - [ ] Ship image to the 3 remotes (`docker save | gzip | tailscale ssh docker load`) → fleet run →
       confirm again across machines.
 - [ ] Only after all green: consider dropping the state root entirely (frozen root), re-verify.

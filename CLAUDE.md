@@ -551,6 +551,26 @@ already tolerates receipts appearing only at finish(). Validation runs on all 4 
 1, so this still captures ~4/5 of network execution work. Verification on the fleet = the chain itself:
 all 4 validators must agree on the payment-lane state root every height (divergence halts consensus =
 loud safe failure). Full plan: experiments/reth-fork/README.md.
+**🎯 NATIVE-TRANSFER FAST PATH — IMPLEMENTED, VERIFIED, RUNNING (2026-08-08, commits 8225038 +
+37ca3cc).** `ARC_PARALLEL_TRANSFERS=1` makes `ArcBlockExecutor::execute_transaction_without_commit`
+return a hand-built `ResultAndState` for plain transfers instead of invoking revm; `commit_transaction`
+/`finish()` are UNTOUCHED so receipts/gas/bloom stay production code, and the BUILDER path is unaffected
+(it inspects per-tx results, which are identical). NO reth fork needed. Gate: empty input/access-list/
+auth-list, TxKind::Call, gas_limit>=21k, sender+recipient have no code, nonce matches, funds suffice;
+anything else falls through to revm. Arc's blocklist reads are replicated. Key detail: `Account::from(pre)`
+seeds `original_info` (revm's bundle diff needs the PRE-state), then `info`=post + `mark_touch()`.
+VERIFICATION (both gates must pass for any change here): `cargo run --release -p arc-evm --example
+parallel_transfer_bench` AND the same with `ARC_PARALLEL_TRANSFERS=1` must print IDENTICAL — the second
+form works because the bench's `run_serial` uses the REAL ArcBlockExecutor while `run_parallel`
+(direct EVM) stays the oracle. LIVE RESULT on the 4-validator demo at 1 Ggas: ran ~820 blocks with ZERO
+divergence, root+block-hash identical across all 4 at h203. Clean two-run A/B
+(`experiments/dual-el/ab-fastpath.sh`): **per-tx exec 22.64us -> 16.33us = 1.39x**, all 4 agreeing in
+both runs. Offline the executor path is 1.66-1.80x (106->64ms); the standalone arithmetic is 24x
+(4.7ms) — so the REMAINING cost is receipt building + State/bundle commit, NOT the EVM. That is the
+next optimization target. Env reaches containers via `PAY_EL_ENV='-e ARC_PARALLEL_TRANSFERS=1'`
+(wired into launch-payment-els.sh + fleet payment_el_cmd). GOTCHA: never A/B by recreating a payment EL
+mid-run — triggers finding #7 (EL loses unpersisted blocks, CL ahead, no backfill; heal =
+`docker restart validator<n>_cl`, slow). Use two separate runs.
 **RETH FORK STOOD UP (2026-08-07):** `~/reth-fork` (cp of `~/reth-2.3-ref`, v2.3.0). `experiments/reth-fork/apply-fork.sh`
 appends a `[patch."https://github.com/paradigmxyz/reth"]` section (41 crates → absolute local paths) to
 Cargo.toml — DEV-BOX ONLY, never commit (breaks Docker/CI); `apply-fork.sh revert` is a verified clean
