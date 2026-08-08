@@ -372,10 +372,14 @@ where
         }
 
         // ---- validation: anything off-nominal goes back to revm for exact error semantics ----
-        let effective = core::cmp::min(
-            tx.max_fee_per_gas(),
-            basefee.saturating_add(tx.max_priority_fee_per_gas().unwrap_or_default()),
-        );
+        // Ask the transaction for its own effective price rather than assuming EIP-1559 shape.
+        // A LEGACY (type 0) transfer with no calldata is fast-path eligible, and its effective
+        // price is `gas_price` outright, NOT `min(max_fee, basefee + priority)` -- for legacy
+        // `max_priority_fee_per_gas()` is None, so the old formula collapsed to `basefee`,
+        // under-charging the sender and under-crediting the beneficiary. Receipts were unaffected
+        // (still 21k gas, same log), so it surfaced only as a STATE ROOT divergence -- which is
+        // exactly how a live mixed-load A/B against unmodified peers failed at block 50.
+        let effective = tx.effective_gas_price(Some(basefee as u64));
         let fee = U256::from(effective).saturating_mul(U256::from(TRANSFER_GAS));
         let Some(after_fee) = sender.balance.checked_sub(fee) else { return Ok(None) };
         let Some(new_sender_balance) = after_fee.checked_sub(value) else { return Ok(None) };

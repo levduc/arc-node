@@ -81,7 +81,17 @@ enum Workload {
     Pool,
     /// Ring: every recipient is also a sender (adversarial for the delta scheme).
     Closed,
+    /// Transfers interleaved with general-EVM txs (calldata present => fast path ineligible).
+    ///
+    /// This is the invalidation path: a general tx must flush the per-block overlay and drop the
+    /// blocklist/beneficiary caches before arbitrary code reads live state. Neither gate covered
+    /// it -- both ran pure-transfer blocks -- and a live mixed-load A/B against unmodified peers
+    /// diverged on the STATE ROOT at block 50, so this workload exists to reproduce that offline.
+    Mixed,
 }
+
+/// Every Nth transaction in `Mixed` carries calldata and therefore takes the general-EVM path.
+const MIXED_EVERY: usize = 7;
 
 fn build_db() -> InMemoryDB {
     let chain_spec = LOCAL_DEV.clone();
@@ -136,30 +146,58 @@ fn build_db() -> InMemoryDB {
 }
 
 fn build_txs(w: Workload) -> Vec<Recovered<reth_ethereum_primitives::TransactionSigned>> {
+    build_txs_n(w, N_TX)
+}
+
+fn build_txs_n(w: Workload, n: usize) -> Vec<Recovered<reth_ethereum_primitives::TransactionSigned>> {
     let chain_id = LOCAL_DEV.chain_id();
     let sig = Signature::new(U256::from(1), U256::from(1), false);
-    (0..N_TX)
+    (0..n)
         .map(|i| {
             let s = i % N_SENDERS;
             let to = match w {
                 Workload::Pool => pool_recipient(i),
                 Workload::Closed => sender_addr((s + 1) % N_SENDERS),
+                Workload::Mixed => pool_recipient(i),
             };
+            // Every 5th Mixed tx is LEGACY (type 0). A legacy transfer with no calldata IS
+            // fast-path eligible, and its effective gas price is `gas_price` outright -- not
+            // `min(max_fee, basefee + priority)`. Getting that wrong moves balances without
+            // changing any receipt, i.e. a pure state-root divergence.
+            let legacy = w == Workload::Mixed && i % 5 == 0 && i % MIXED_EVERY != 0;
+            // calldata makes the tx ineligible for the fast path -> general EVM path
+            let input: alloy_primitives::Bytes = if w == Workload::Mixed && i % MIXED_EVERY == 0 {
+                alloy_primitives::Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef])
+            } else {
+                Default::default()
+            };
+            let gas_limit = if input.is_empty() { 21_000 } else { 100_000 };
             let tx = TxEip1559 {
                 chain_id,
                 nonce: (i / N_SENDERS) as u64,
-                gas_limit: 21_000,
+                gas_limit,
                 max_fee_per_gas: MAX_FEE,
                 max_priority_fee_per_gas: TIP,
                 to: TxKind::Call(to),
                 value: U256::from(1_000u64),
                 access_list: Default::default(),
-                input: Default::default(),
+                input,
             };
-            Recovered::new_unchecked(
-                reth_ethereum_primitives::TransactionSigned::new_unhashed(tx.into(), sig),
-                sender_addr(s),
-            )
+            let envelope: reth_ethereum_primitives::TransactionSigned = if legacy {
+                let l = alloy_consensus::TxLegacy {
+                    chain_id: Some(chain_id),
+                    nonce: tx.nonce,
+                    gas_price: BASEFEE as u128 * 3,
+                    gas_limit: tx.gas_limit,
+                    to: tx.to,
+                    value: tx.value,
+                    input: Default::default(),
+                };
+                reth_ethereum_primitives::TransactionSigned::new_unhashed(l.into(), sig)
+            } else {
+                reth_ethereum_primitives::TransactionSigned::new_unhashed(tx.into(), sig)
+            };
+            Recovered::new_unchecked(envelope, sender_addr(s))
         })
         .collect()
 }
@@ -200,7 +238,7 @@ fn fingerprint(db: &mut InMemoryDB, w: Workload) -> Fingerprint {
     for i in 0..N_SENDERS {
         add(db, sender_addr(i));
     }
-    if w == Workload::Pool {
+    if w == Workload::Pool || w == Workload::Mixed {
         for i in 0..N_TX.min(4096) {
             add(db, pool_recipient(i));
         }
@@ -564,6 +602,34 @@ fn main() {
                           if let Some(d)=x.iter().zip(y).find(|(p,q)| p!=q) { println!("      e.g. {} vs {}", d.0, d.1); } break; }
             }
         }
+        println!();
+    }
+
+    // ---- MIXED workload: the invalidation path the gates never covered ----
+    // A live A/B against UNMODIFIED peers diverged on the state root at block 50 under mixed
+    // load. Pure-transfer blocks never make the executor flush the overlay or drop its caches,
+    // so both gates passed a broken general-EVM path. Here every 7th tx carries calldata, which
+    // makes it fast-path-ineligible and forces exactly that transition. The digests below must be
+    // IDENTICAL between the two gate runs (stock vs ARC_PARALLEL_TRANSFERS=1).
+    {
+        const N_MIXED: usize = 7_000; // calldata txs cost more gas; stay under the 1 Ggas budget
+        let txs = build_txs_n(Workload::Mixed, N_MIXED);
+        use alloy_consensus::Transaction as _;
+        let n_evm = txs.iter().filter(|t| !t.inner().input().is_empty()).count();
+        let mut db = build_db();
+        let _ = run_serial(&mut db, &txs);
+        let fp = fingerprint(&mut db, Workload::Mixed);
+        let mut buf = String::new();
+        for (a, v) in &fp {
+            buf.push_str(&format!("{a:?}{v:?}|"));
+        }
+        let digest = alloy_primitives::keccak256(buf.as_bytes());
+        println!(
+            "mixed (every {MIXED_EVERY}th tx has calldata -> general EVM path)\n  \
+             {N_MIXED} txs, {n_evm} general-EVM, {} accounts\n  \
+             state       digest {digest:#x}",
+            fp.len()
+        );
         println!();
     }
 

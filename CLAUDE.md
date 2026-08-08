@@ -533,6 +533,31 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🚨 SECOND CONSENSUS BUG IN THE FAST PATH — LEGACY-TX FEES (2026-08-08).** Same blind-spot class
+as the log bug: both gates only ran PURE EIP-1559 TRANSFER blocks. Live mixed load
+(`--mix transfer=60,erc20=25,guzzler=10,legacy=5`), val1 fast path vs 3 stock → val1 diverged at
+block 50 on the **STATE ROOT** (receipts matched!) and stalled at 49 while the network reached 125.
+- **CAUSE:** fast path hardcoded 1559 shape `min(max_fee, basefee + max_priority.unwrap_or(0))`. A
+  LEGACY (type-0) transfer with no calldata IS fast-path eligible, has no priority field → formula
+  collapsed to `min(gas_price, basefee)` = **basefee**, but legacy's effective price is `gas_price`
+  outright. Sender under-charged, beneficiary (Arc credits the FULL fee) under-credited. Gas still
+  21k, log unchanged → **receipts identical, only the state root moved** — invisible to the
+  receipts digest added hours earlier.
+- **FIX:** `tx.effective_gas_price(Some(basefee))` — ask the tx, don't assume a shape. Correct for
+  legacy/2930/1559 by construction.
+- **GATE EXTENDED (`Workload::Mixed`):** 7,000 txs, every 7th with calldata (forces general-EVM
+  path → overlay flush + cache drop), every 5th of the rest LEGACY; prints a post-state digest for
+  cross-gate comparison. Reproduced the bug instantly (0xefd6… vs 0x1769…), matches after the fix.
+  NOTE: the calldata/invalidation half alone reproduced NOTHING — overlay/cache invalidation is
+  fine; it was purely the fee shape.
+- **VALIDATED:** 200 consecutive blocks, 497,531 txs, confirmed-mixed composition (19,038 type-2,
+  1,032 type-0, 6,885 with calldata), all 4 identical on stateRoot+blockHash+receiptsRoot+logsBloom,
+  zero invalid blocks.
+- **PATTERN — 3 bugs, ONE shape: every fast-path bug came from ASSUMING what a tx is instead of
+  asking it** (assumed no logs; assumed 1559 fees). Still-uncovered fast-path-ELIGIBLE shapes:
+  EIP-2930 with empty access list, and zero-value transfers. Add these before ever considering
+  default-on.
+
 **🚨 CONSENSUS BUG FOUND + FIXED IN THE NATIVE-TRANSFER FAST PATH — AND ITS "1.58x" WAS MOSTLY THE
 BUG (2026-08-08).** `ARC_PARALLEL_TRANSFERS=1` was FORKING THE CHAIN against unmodified nodes. Arc
 emits a log for EVERY native value transfer (`ArcEvm::before_frame_init` → `crate::log`); the fast

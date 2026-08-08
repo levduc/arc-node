@@ -271,6 +271,51 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🚨 SECOND CONSENSUS BUG IN THE FAST PATH: LEGACY-TX FEES — FOUND, FIXED (2026-08-08)
+
+Hunting the same class of blind spot as the log bug (both gates only ever ran **pure EIP-1559
+transfer** blocks) turned up a second fork.
+
+Live mixed load (`--mix transfer=60,erc20=25,guzzler=10,legacy=5`), val1 fast path vs val2-4 stock:
+val1 diverged at block 50 on the **STATE ROOT** (not receipts) and stalled at 49 while the network
+ran on to 125.
+
+```
+mismatched block state root:
+  got 0x552d6799…  expected 0x8a4de677…
+```
+
+**ROOT CAUSE:** the fast path hardcoded EIP-1559 fee shape:
+```rust
+effective = min(max_fee_per_gas, basefee + max_priority_fee_per_gas().unwrap_or_default())
+```
+A **LEGACY (type 0) transfer with no calldata is fast-path eligible**, but legacy has no priority
+field, so `unwrap_or_default()` = 0 and the formula collapses to `min(gas_price, basefee)` =
+**basefee**. The correct effective price for legacy is `gas_price` outright. The sender was
+under-charged and the beneficiary (which Arc credits the FULL fee) under-credited. Gas stayed
+21,000 and the log was unchanged, so **receipts matched perfectly and only the state root moved** —
+invisible to the receipts digest added earlier that same day.
+
+**FIX:** ask the transaction for its own price instead of assuming a shape —
+`tx.effective_gas_price(Some(basefee))`. Correct for legacy, 2930 and 1559 by construction.
+
+**GATE EXTENDED — `Workload::Mixed`:** 7,000 txs where every 7th carries calldata (forcing the
+general-EVM path, which flushes the overlay and drops the caches) and every 5th of the rest is
+LEGACY. Prints a post-state digest so the two gate runs can be compared directly. It reproduced
+the bug immediately (`0xefd6…` stock vs `0x1769…` fast path) and matches after the fix. Note the
+calldata/invalidation half alone did NOT reproduce anything — the overlay/cache invalidation is
+fine; it was purely the fee shape.
+
+**VALIDATED:** rebuilt, re-ran the same mixed live load — 200 consecutive blocks, 497,531 txs,
+composition confirmed mixed (19,038 type-2, 1,032 type-0, 6,885 with calldata), all 4 identical on
+stateRoot + blockHash + receiptsRoot + logsBloom, zero invalid blocks.
+
+**PATTERN — three bugs, one shape.** Every fast-path bug so far came from *assuming* what a
+transaction is instead of asking it: assumed no logs, assumed 1559 fees. The gate now covers
+state + receipts + logs + legacy + general-EVM interleaving. Remaining unmodelled shapes that are
+fast-path *eligible* and still uncovered: EIP-2930 with an empty access list, and zero-value
+transfers. Worth adding before this flag is ever considered for default-on.
+
 ## 🚨 CONSENSUS BUG IN THE FAST PATH — FOUND, FIXED, AND THE "1.58x" WAS MOSTLY THE BUG (2026-08-08)
 
 **`ARC_PARALLEL_TRANSFERS=1` was forking the chain against unmodified nodes.** Arc emits a log for
