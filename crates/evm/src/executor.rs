@@ -115,6 +115,22 @@ pub struct ArcBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     gas_used: u64,
     /// Total blob gas used by transactions in this block.
     blob_gas_used: u64,
+    /// Per-block caches for the transfer fast path (see `try_transfer_fast_path`).
+    ///
+    /// Measured layering says ~85% of live execution cost is state reads, and 3 of the 5 reads a
+    /// transfer performs are CONSTANT for a whole block:
+    ///   * the two blocklist SLOADs — `NATIVE_COIN_CONTROL` storage is not written by transfers, so
+    ///     an address's blocklist status cannot change mid-block;
+    ///   * the fee beneficiary — the address is fixed for the block, and its balance only ever
+    ///     changes by fees WE add, so it can be tracked in memory instead of re-read.
+    ///
+    /// Both are invalidated the moment any transaction takes the general EVM path, because
+    /// arbitrary code could write `NATIVE_COIN_CONTROL` storage or move the beneficiary's balance.
+    blocklist_cache: alloy_primitives::map::HashMap<Address, bool>,
+    /// Running beneficiary account; `None` until first read or after invalidation. The FULL
+    /// `AccountInfo` is cached, not just the balance — using a default here would silently reset
+    /// the beneficiary's nonce/code_hash in the state diff and diverge the state root.
+    beneficiary_info: Option<revm::state::AccountInfo>,
 }
 
 impl<'a, Evm, Spec, R> ArcBlockExecutor<'a, Evm, Spec, R>
@@ -134,6 +150,8 @@ where
             blob_gas_used: 0,
             system_caller: SystemCaller::new(spec.clone()),
             receipt_builder,
+            blocklist_cache: Default::default(),
+            beneficiary_info: None,
         }
     }
 
@@ -274,15 +292,27 @@ where
         }
 
         // ---- Arc blocklist (same reads `ArcEvmHandler::pre_execution` performs) ----
-        let mut blocklisted = |db: &mut E::DB, a: Address| -> Result<bool, BlockExecutionError> {
-            db.storage(
-                arc_precompiles::NATIVE_COIN_CONTROL_ADDRESS,
-                compute_is_blocklisted_storage_slot(a).into(),
-            )
-            .map(is_blocklisted_status)
-            .map_err(|e| BlockExecutionError::msg(format!("fast-path blocklist read: {e}")))
+        // memoised per block: an address's blocklist status cannot change while only transfers run
+        let mut blocklisted = |cache: &mut alloy_primitives::map::HashMap<Address, bool>,
+                               db: &mut E::DB,
+                               a: Address|
+         -> Result<bool, BlockExecutionError> {
+            if let Some(hit) = cache.get(&a) {
+                return Ok(*hit);
+            }
+            let v = db
+                .storage(
+                    arc_precompiles::NATIVE_COIN_CONTROL_ADDRESS,
+                    compute_is_blocklisted_storage_slot(a).into(),
+                )
+                .map(is_blocklisted_status)
+                .map_err(|e| BlockExecutionError::msg(format!("fast-path blocklist read: {e}")))?;
+            cache.insert(a, v);
+            Ok(v)
         };
-        if blocklisted(db, signer)? || (!value.is_zero() && blocklisted(db, to)?) {
+        if blocklisted(&mut self.blocklist_cache, db, signer)?
+            || (!value.is_zero() && blocklisted(&mut self.blocklist_cache, db, to)?)
+        {
             return Err(BlockValidationError::msg(ERR_BLOCKED_ADDRESS).into());
         }
 
@@ -327,9 +357,15 @@ where
             touch(&mut state, to, ti_pre, ti);
         }
         if beneficiary != signer && beneficiary != to {
-            let bi_pre = read(db, beneficiary)?.unwrap_or_default();
+            // balance tracked in-memory: only our own fee credits move it while transfers run
+            // cached => no DB read at all (the 3rd of the 3 reads this saves per transfer)
+            let bi_pre = match &self.beneficiary_info {
+                Some(info) => info.clone(),
+                None => read(db, beneficiary)?.unwrap_or_default(),
+            };
             let mut bi = bi_pre.clone();
             bi.balance = bi.balance.saturating_add(fee);
+            self.beneficiary_info = Some(bi.clone());
             touch(&mut state, beneficiary, bi_pre, bi);
         } else if let Some(existing) = state.get_mut(&beneficiary) {
             // self-payment / beneficiary is already a party: fold the fee into that entry
@@ -605,6 +641,12 @@ where
                 });
             }
         }
+
+        // General EVM path: arbitrary code may write NATIVE_COIN_CONTROL storage or move the
+        // beneficiary's balance, so both per-block fast-path caches must be dropped. Conservative
+        // and cheap — a payment-lane block of pure transfers never reaches here.
+        self.blocklist_cache.clear();
+        self.beneficiary_info = None;
 
         // Execute transaction.
         let result = self
