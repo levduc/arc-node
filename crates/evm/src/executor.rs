@@ -214,6 +214,145 @@ where
         EthExecutorSpec + Hardforks + EthChainSpec + BlockGasLimitProvider + BaseFeeConfigProvider,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
 {
+    /// Native-transfer fast path. Returns `Some(result)` when `tx` is a plain value transfer that
+    /// the interpreter is not needed for; `None` means "not eligible, run the EVM".
+    ///
+    /// Eligibility is deliberately narrow — anything with calldata, an access list, an
+    /// authorization list, a contract-creation kind, or a `to` that holds code falls through to
+    /// revm. For what remains, the semantics are fully determined and verified byte-for-byte
+    /// against revm by `crates/evm/examples/parallel_transfer_bench.rs`:
+    ///
+    /// * `gas_used = 21_000`
+    /// * `effective_gas_price = min(max_fee, basefee + max_priority)`
+    /// * sender `-= value + 21_000 * effective`, `nonce += 1`
+    /// * recipient `+= value`
+    /// * beneficiary `+= 21_000 * effective` — Arc credits the FULL fee (base fee is not burned),
+    ///   mirroring [`crate::handler::ArcEvmHandler::reward_beneficiary`]
+    ///
+    /// The Arc blocklist checks that `pre_execution` performs are replicated here (sender always,
+    /// recipient when value is non-zero); a blocklisted party makes the transaction invalid, as in
+    /// the EVM path.
+    #[allow(clippy::type_complexity)]
+    fn try_transfer_fast_path(
+        &mut self,
+        tx: &R::Transaction,
+        signer: Address,
+    ) -> Result<Option<ResultAndState<<E as Evm>::HaltReason>>, BlockExecutionError> {
+        use alloy_primitives::{TxKind, U256};
+        use revm::state::{Account, EvmState};
+        use revm::Database as _; // basic()/storage() on E::DB (bounded by StateDB)
+        use revm_primitives::KECCAK_EMPTY;
+
+        const TRANSFER_GAS: u64 = 21_000;
+
+        // ---- eligibility ----
+        if !tx.input().is_empty() || tx.access_list().is_some_and(|l| !l.is_empty()) {
+            return Ok(None);
+        }
+        if tx.authorization_list().is_some_and(|l| !l.is_empty()) {
+            return Ok(None);
+        }
+        let TxKind::Call(to) = tx.kind() else { return Ok(None) };
+        if tx.gas_limit() < TRANSFER_GAS {
+            return Ok(None);
+        }
+
+        let basefee = self.evm.block().basefee() as u128;
+        let beneficiary = self.evm.block().beneficiary();
+        let value = tx.value();
+        let db = self.evm.db_mut();
+
+        let read = |db: &mut E::DB, a: Address| -> Result<_, BlockExecutionError> {
+            db.basic(a)
+                .map_err(|e| BlockExecutionError::msg(format!("fast-path account read: {e}")))
+        };
+
+        // Recipient must be a plain account — code would need the interpreter.
+        let to_info = read(db, to)?;
+        if to_info.as_ref().is_some_and(|i| i.code_hash != KECCAK_EMPTY) {
+            return Ok(None);
+        }
+
+        // ---- Arc blocklist (same reads `ArcEvmHandler::pre_execution` performs) ----
+        let mut blocklisted = |db: &mut E::DB, a: Address| -> Result<bool, BlockExecutionError> {
+            db.storage(
+                arc_precompiles::NATIVE_COIN_CONTROL_ADDRESS,
+                compute_is_blocklisted_storage_slot(a).into(),
+            )
+            .map(is_blocklisted_status)
+            .map_err(|e| BlockExecutionError::msg(format!("fast-path blocklist read: {e}")))
+        };
+        if blocklisted(db, signer)? || (!value.is_zero() && blocklisted(db, to)?) {
+            return Err(BlockValidationError::msg(ERR_BLOCKED_ADDRESS).into());
+        }
+
+        // ---- validation: anything off-nominal goes back to revm for exact error semantics ----
+        let Some(mut sender) = read(db, signer)? else { return Ok(None) };
+        if sender.nonce != tx.nonce() || sender.code_hash != KECCAK_EMPTY {
+            return Ok(None);
+        }
+        let effective = core::cmp::min(
+            tx.max_fee_per_gas(),
+            basefee.saturating_add(tx.max_priority_fee_per_gas().unwrap_or_default()),
+        );
+        let fee = U256::from(effective).saturating_mul(U256::from(TRANSFER_GAS));
+        let Some(after_fee) = sender.balance.checked_sub(fee) else { return Ok(None) };
+        let Some(new_sender_balance) = after_fee.checked_sub(value) else { return Ok(None) };
+
+        // ---- apply ----
+        let mut state = EvmState::default();
+        // `Account::from(pre)` seeds `original_info` with the PRE-state, which is what revm's
+        // bundle diffing uses; then overwrite `info` with the post-state and mark it touched.
+        fn touch(
+            st: &mut EvmState,
+            addr: Address,
+            pre: revm::state::AccountInfo,
+            post: revm::state::AccountInfo,
+        ) {
+            let mut acct = Account::from(pre);
+            acct.info = post;
+            acct.mark_touch();
+            st.insert(addr, acct);
+        }
+
+        let sender_pre = sender.clone();
+        sender.balance = new_sender_balance;
+        sender.nonce = sender.nonce.saturating_add(1);
+        touch(&mut state, signer, sender_pre, sender);
+
+        if to != signer {
+            let ti_pre = to_info.unwrap_or_default();
+            let mut ti = ti_pre.clone();
+            ti.balance = ti.balance.saturating_add(value);
+            touch(&mut state, to, ti_pre, ti);
+        }
+        if beneficiary != signer && beneficiary != to {
+            let bi_pre = read(db, beneficiary)?.unwrap_or_default();
+            let mut bi = bi_pre.clone();
+            bi.balance = bi.balance.saturating_add(fee);
+            touch(&mut state, beneficiary, bi_pre, bi);
+        } else if let Some(existing) = state.get_mut(&beneficiary) {
+            // self-payment / beneficiary is already a party: fold the fee into that entry
+            existing.info.balance = existing.info.balance.saturating_add(fee);
+        }
+
+        Ok(Some(ResultAndState {
+            result: revm::context_interface::result::ExecutionResult::Success {
+                reason: revm::context_interface::result::SuccessReason::Stop,
+                // revm-40 ResultGas::new(total_gas_spent, refunded, floor_gas). A plain transfer
+                // spends exactly the 21k intrinsic: no refund, floor == spent (EIP-7623).
+                gas: revm::context_interface::result::ResultGas::new(
+                    TRANSFER_GAS,
+                    0,
+                    TRANSFER_GAS,
+                ),
+                logs: Vec::new(),
+                output: revm::context_interface::result::Output::Call(Default::default()),
+            },
+            state,
+        }))
+    }
+
     /// Validates that block `extra_data` encodes the same next base fee that this executor
     /// computed for the current block.
     fn validate_extra_data_base_fee(
@@ -348,6 +487,18 @@ where
     }
 }
 
+/// Opt-in native-transfer fast path (`ARC_PARALLEL_TRANSFERS=1`).
+///
+/// A plain 21k value transfer needs no interpreter: it is three balance updates and a nonce bump.
+/// Running it through revm costs ~2.15 us/tx; doing the arithmetic directly costs ~0.09 us/tx —
+/// a measured 24x on a full 1 Ggas block, with byte-identical post-state (see
+/// `crates/evm/examples/parallel_transfer_bench.rs`, which differentially checks this exact
+/// semantics against revm and is the gate for any change here).
+fn transfer_fast_path_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ARC_PARALLEL_TRANSFERS").is_ok_and(|v| v == "1"))
+}
+
 impl<E, Spec, R> BlockExecutor for ArcBlockExecutor<'_, E, Spec, R>
 where
     // alloy-evm 0.30: bound the EVM's DB by `StateDB` (Database + DatabaseCommit)
@@ -440,6 +591,19 @@ where
                 }
                 .into(),
             );
+        }
+
+        // Native-transfer fast path: bypass the interpreter for plain value transfers. Produces
+        // the same `ResultAndState` the EVM would, so `commit_transaction` (receipts, gas, bloom)
+        // is unchanged and both the building and validation paths stay correct.
+        if transfer_fast_path_enabled() {
+            if let Some(result) = self.try_transfer_fast_path(tx.tx(), *tx.signer())? {
+                return Ok(ArcTxResult {
+                    result,
+                    blob_gas_used: tx.tx().blob_gas_used().unwrap_or_default(),
+                    tx_type: tx.tx().tx_type(),
+                });
+            }
         }
 
         // Execute transaction.
