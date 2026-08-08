@@ -18,6 +18,30 @@ next lever, not execution.** MEASURED 2026-08-08: at full 1-Ggas blocks reth's n
 (per tx: 7.5 us in the EL vs 71.3 us outside). tps is also FLAT across an 8x block-size sweep, so
 big blocks neither help nor hurt. Even instant execution would add only ~10% tps.
 
+## Re-verification 2026-08-08 (iteration 4) — MISSION STILL HOLDS
+
+* Regression gates: BOTH `parallel_transfer_bench` runs (stock and `ARC_PARALLEL_TRANSFERS=1`)
+  print **IDENTICAL** on both workloads. ✓
+* Fast path confirmed enabled on all 4 payment ELs; fleet restored to 1 Ggas.
+* Live: **115 consecutive heights (2846..2960), ZERO divergence** — identical stateRoot AND block
+  hash on all 4 machines under distributed load. ✓
+* Throughput: 11.0k tps avg / 14.0k peak at 37,963 txs/blk.
+
+**CAVEAT worth carrying forward — perf numbers are STATE-DEPENDENT, so re-measurements are not
+directly comparable:**
+
+| run | chain age | exec/blk | txs/blk | us/tx | root | persist |
+|---|---|---|---|---|---|---|
+| fast path (iteration 3) | ~400 blk | 239.6 ms | 34,245 | **7.00** | 4.7 ms | 116 ms |
+| fast path (now) | ~2,960 blk | 344.7 ms | 37,963 | **9.08** | 14.5 ms | 189 ms |
+| stock baseline | young chain | 379.0 ms | 34,363 | **11.03** | — | — |
+
+state-root (4.7 -> 14.5 ms) and persist (116 -> 189 ms) rose too, i.e. EVERYTHING got slower as the
+chain accumulated ~2,960 blocks of state — this is state growth, not a code regression (the offline
+gates are unchanged and byte-identical). But it means the headline **1.58x is only valid against a
+same-age chain**; to re-assert it, A/B stock vs fast path at the SAME chain height (use
+`ab-fastpath.sh`, which starts both runs from a fresh chain).
+
 **Definition of done (all must hold):**
 1. Payment-lane ELs execute native transfers via the fast/parallel path (not reth's serial per-tx loop).
 2. The 4-validator demo runs under load with **all 4 validators agreeing on the payment-lane state
