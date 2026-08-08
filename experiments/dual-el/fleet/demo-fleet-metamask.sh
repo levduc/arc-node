@@ -45,7 +45,7 @@ payment_el_cmd(){ # payment_el_cmd <n> <base>
   # command string to the remote.
   local per_val_extra; eval "per_val_extra=\${PAY_EL${n}_EXTRA_ARGS:-}"
   local extra_args="${PAY_EL_EXTRA_ARGS:-} ${per_val_extra}"
-  echo "docker rm -f validator${n}_el_pay 2>/dev/null; docker run -d --name validator${n}_el_pay --network arc_testnet_host-access \
+  echo "docker rm -f validator${n}_el_pay 2>/dev/null; docker run -d --name validator${n}_el_pay --network arc_testnet_host-access ${PAY_EL_ENV:-} \
   --entrypoint /app/assets/entrypoint_el.sh \
   -v $base/validator${n}/reth-pay:/data/reth/execution-data -v $base/assets:/app/assets \
   -p ${rpc}:8545 -p ${ws}:8546 -p ${auth}:8551 -p ${met}:9001 -p ${p2p}:30303 \

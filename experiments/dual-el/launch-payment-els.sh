@@ -30,6 +30,7 @@ for i in 1 2 3 4; do sleep ${STAGGER:-0};
   extra_args="${PAY_EL_EXTRA_ARGS:-} ${per_val_extra}"
   docker rm -f "$name" >/dev/null 2>&1
   docker run -d --name "$name" --network "$NET" \
+    ${PAY_EL_ENV:+$PAY_EL_ENV} \
     --entrypoint /app/assets/entrypoint_el.sh \
     -v "$dd":/data/reth/execution-data \
     -v "$ASSETS":/app/assets \
