@@ -122,7 +122,63 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
       — reth recovers the signer FROM SCRATCH for every tx in a payload and never consults the
       mempool, even though those txs arrived by gossip and their senders were already recovered at
       pool insertion. Every validator repeats ~47,618 ECDSA recoveries per block.
-- [ ] **NEW TOP PRIORITY: reuse mempool-recovered senders for newPayload txs.** Up to ~10 us/tx
+- [x] **🎯 EAGER PARALLEL SENDER RECOVERY — DONE, 4.0x on the execution phase, NO reth fork (2026-08-08).**
+      The item below was right that recovery dominates, but WRONG about the line and the fix, and
+      its caveat was wrong too. All three corrections came from measuring first.
+
+      **Correction 1 — wrong line.** `payload_validator.rs:323` is the `BlockOrPayload::Block`
+      branch. `newPayload` takes the OTHER branch: `EthEvmConfig::tx_iterator_for_payload`
+      (`ethereum/evm/src/lib.rs:300`), which does RLP-decode + `try_recover` per tx. `ArcEvmConfig`
+      merely DELEGATED to it — so Arc can override it in arc-evm. **The fork was never needed.**
+
+      **Correction 2 — the caveat was wrong; it is not contention.** `recovery-probe.sh` (new)
+      diffs reth's `transaction_execution` / `transaction_wait` histograms per validator. wait/tx
+      held at 10.05 vs 10.86 us going from 2 to 8 competing spammers, and at ~10 us under BOTH
+      state-root strategies, while our executor's own time moved 2.87 -> 4.14. Structural, not CPU.
+
+      **Correction 3 — it was never "recovery is expensive", it was the PIPELINE.**
+      `examples/recovery_bench.rs` (new) measures the floor on this box: decode 0.22 us/tx, ECDSA
+      recover 33.42 us/tx serial, **4.02 us/tx across 16 threads (8.5x)**. The live loop realised
+      only ~3.3x of that. reth streams recovery through an ordered per-tx channel
+      (`spawn_tx_iterator` -> `for_each_ordered_in`), and that delivery — not the cryptography —
+      was the limit.
+
+      **Fix (arc-evm only, ~40 lines, env-gated `ARC_EAGER_RECOVERY=1`):** override
+      `tx_iterator_for_payload` to recover the whole payload up front on rayon and hand reth an
+      already-computed vector. Items are a two-state `PayloadTx::{Done,Raw}`; both funnel through
+      one `recover_payload_tx`, so a bad tx surfaces at the same index and the flag-off path stays
+      lazy exactly as upstream drives it. Guarded by `EAGER_RECOVERY_MIN_TXS = 30`, mirroring
+      upstream's own small-block threshold, so an idle 2 blk/s lane is untouched.
+
+      **MEASURED — same box, same blocks, 4-way A/B (val1 eager+fallback, val2 fallback-only
+      control, val3/4 stock):**
+      | val | config | loop/tx | wait/tx | exec/tx | exec ms/blk |
+      |-----|--------|---------|---------|---------|-------------|
+      | 1   | eager + fallback | **3.90 us** | **0.85** | 3.04 | **18.9** |
+      | 2   | fallback only    | 15.36 us | 11.99 | 3.37 | 74.6 |
+      | 3/4 | stock            | 20.8-21.6 us | 15.8-16.4 | 5.0-5.2 | 101-105 |
+
+      → **3.9x vs the same-config control, ~5.4x vs stock; wait/tx down 93%.** Earlier run at
+      ~10.3k txs/blk: 36.9 vs 175.7 ms/blk (4.8x). The execution phase is no longer
+      recovery-dominated: wait fell from ~78% to 22% of the loop, and OUR executor is now the
+      majority of what remains.
+
+      **Consensus-validated:** 350 consecutive blocks, 1,567,888 txs, all 4 validators identical on
+      stateRoot + blockHash + receiptsRoot at EVERY height, with val1 eager against 3 non-eager
+      peers. 34 of those blocks fell below the 30-tx threshold, so both branches were exercised.
+      A 200-block/1.47M-tx run before the threshold guard also agreed everywhere. Both offline
+      gates IDENTICAL, no DIVERGED.
+
+      **Not done / open:** cadence did NOT move (0.76-1.5 blk/s) — as with every EL win so far, it
+      shows up in per-block exec_ms, not fleet tps, because ~2.4 s/height is consensus coordination
+      (OUT OF SCOPE by the hard constraint). Not yet measured on the 4-machine fleet. Still gated
+      off by default. Eager recovery does full recovery work even when tx 0 is invalid, but reth's
+      own parallel path already recovers ahead speculatively, so this is not a new DoS surface.
+
+- [ ] ~~NEW TOP PRIORITY: reuse mempool-recovered senders for newPayload txs.~~ **SUPERSEDED above.**
+      Still theoretically the last ~4 us/tx (recovery that is now parallel but still performed),
+      and it WOULD need the fork plus pool plumbing the payload validator does not currently have.
+      Much smaller prize now that the pipeline stall is gone. Original note: up to ~10 us/tx
       (66% of the execution phase) — bigger than everything achieved so far combined. Lives in the
       EL (reth's tx iterator), so it is INSIDE the constraint, but it does need the reth fork
       (`experiments/reth-fork/apply-fork.sh`, already proven to build). Sketch: in

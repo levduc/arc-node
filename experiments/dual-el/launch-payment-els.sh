@@ -28,9 +28,12 @@ for i in 1 2 3 4; do sleep ${STAGGER:-0};
   # node, so a single-validator A/B on identical blocks is valid).
   eval "per_val_extra=\${PAY_EL${i}_EXTRA_ARGS:-}"
   extra_args="${PAY_EL_EXTRA_ARGS:-} ${per_val_extra}"
+  # Same split for docker -e: PAY_EL_ENV applies to every payment EL, PAY_EL<i>_ENV to one.
+  # Per-validator env is what makes a same-box A/B possible (one EL differs, same blocks).
+  eval "per_val_env=\${PAY_EL${i}_ENV:-}"
   docker rm -f "$name" >/dev/null 2>&1
   docker run -d --name "$name" --network "$NET" \
-    ${PAY_EL_ENV:+$PAY_EL_ENV} \
+    ${PAY_EL_ENV:+$PAY_EL_ENV} ${per_val_env:+$per_val_env} \
     --entrypoint /app/assets/entrypoint_el.sh \
     -v "$dd":/data/reth/execution-data \
     -v "$ASSETS":/app/assets \

@@ -502,6 +502,41 @@ verdict predates the 1 Ggas fleet finding where exec DOMINATES (379ms vs persist
 at full blocks, so the win case is stronger than the old verdict suggests. Cherry-picked onto this
 branch as the baseline. NEXT: wire parallel execution into the real payment-EL path (grevm/reth or
 Arc's executor) and re-measure fleet tps at 1 Ggas.
+**🎯 EAGER PARALLEL SENDER RECOVERY — payment-lane execution phase 4x faster, arc-evm only, NO reth
+fork (2026-08-08).** The `newPayload` execution loop was spending ~78% of its time NOT executing:
+blocked in `transactions.next()` waiting on sender recovery. Three measurements corrected three
+wrong assumptions before any code was written.
+- **It is not the line we thought.** `payload_validator.rs:323` (`try_into_recovered`) is the
+  `BlockOrPayload::Block` branch. newPayload takes the other one:
+  `EthEvmConfig::tx_iterator_for_payload`. `ArcEvmConfig` only DELEGATED to it → Arc can override
+  it in arc-evm. **The reth fork was never needed for this.**
+- **It is not CPU contention.** New `experiments/dual-el/recovery-probe.sh` diffs reth's
+  `transaction_execution`/`transaction_wait` histograms per validator: wait/tx was 10.05 vs 10.86us
+  at 2 vs 8 competing spammers, ~10us under both state-root strategies, while our executor's own
+  time moved 2.87→4.14us. Structural.
+- **It is not the cryptography — it is reth's ordered per-tx delivery.** New
+  `crates/evm/examples/recovery_bench.rs`: decode 0.22us/tx, ECDSA recover **33.42us/tx serial but
+  4.02us/tx on 16 threads (8.5x)**. The live loop realised only ~3.3x, because
+  `spawn_tx_iterator` streams recovery through `for_each_ordered_in` one tx at a time.
+- **FIX (~40 lines, `ARC_EAGER_RECOVERY=1`):** override `tx_iterator_for_payload` to recover the
+  whole payload up front on rayon and hand reth a precomputed vector. Two-state `PayloadTx::{Done,
+  Raw}`, both through one `recover_payload_tx` → a bad tx surfaces at the same index; flag-off stays
+  lazy as upstream drives it. `EAGER_RECOVERY_MIN_TXS = 30` mirrors upstream's small-block
+  threshold so an idle 2 blk/s lane is untouched. Also added `PAY_EL<i>_ENV` to
+  launch-payment-els.sh (per-validator docker `-e`) — that is what makes a same-box A/B possible.
+- **MEASURED (same box, same blocks, 4-way A/B):** val1 eager+fallback **3.90us/tx loop, 0.85 wait,
+  18.9ms/blk** vs val2 fallback-only control 15.36/11.99/74.6 vs val3-4 stock ~21/16/101-105.
+  **3.9x vs same-config control, ~5.4x vs stock, wait/tx −93%** (at ~10.3k txs/blk: 36.9 vs
+  175.7ms). Execution is no longer recovery-dominated — wait fell 78%→22% and our executor is now
+  the majority of what is left.
+- **VALIDATED:** 350 consecutive blocks / 1,567,888 txs, all 4 validators identical on
+  stateRoot+blockHash+receiptsRoot at EVERY height, val1 eager against 3 non-eager peers; 34 blocks
+  below the threshold so both branches ran. Both offline gates IDENTICAL.
+- **HONEST LIMIT:** cadence did NOT move (0.76–1.5 blk/s). Like every EL win here, it lands in
+  per-block exec_ms, not fleet tps — ~2.4s/height is consensus coordination, which the mission's
+  hard constraint puts out of scope. Not yet measured on the 4-machine fleet; still gated off by
+  default.
+
 **MEASURED (2026-08-07, commit 55d3a60): the EVM/executor layer is NOT the bottleneck.**
 `crates/evm/examples/transfer_bench.rs` runs the REAL ArcBlockExecutor on a full 1-Ggas block
 (47,618×21k transfers, 16k closed accounts, bundle tracking on): **102.5ms = 2.15 µs/tx** (465k tx/s
