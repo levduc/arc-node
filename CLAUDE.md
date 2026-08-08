@@ -551,6 +551,19 @@ already tolerates receipts appearing only at finish(). Validation runs on all 4 
 1, so this still captures ~4/5 of network execution work. Verification on the fleet = the chain itself:
 all 4 validators must agree on the payment-lane state root every height (divergence halts consensus =
 loud safe failure). Full plan: experiments/reth-fork/README.md.
+**🔬 WHY FASTER EXECUTION DID NOT RAISE TPS — MEASURED, DEFINITIVE (2026-08-08).** Question: exec
+improved 37% but fleet tps was flat; do big blocks degrade it? ANSWER: **no — big blocks are neutral,
+and EXECUTION IS ONLY 10% OF BLOCK TIME.** Evidence: (a) tps is FLAT across an 8x block-size range
+(4,098 tx @1.65 blk/s = 6.8k tps; 8,916 @0.82 = 7.3k; 34,245 @0.28 = 9.7k) — cadence falls in
+proportion to size, so tps neither gains nor degrades; that is the signature of a PER-TRANSACTION
+serialized cost, not per-block overhead. (b) Direct split at FULL 1-Ggas blocks: reth's own
+newPayload handling = **357 ms** on a 47,618-tx block while block time = **3,750 ms** →
+**EL 10%, everything outside the EL 90%** (per-tx: 78.8 us budget, 7.5 us in the EL, 71.3 us
+outside). The 90% is CL/consensus: proposer getPayload for BOTH lanes, SSZ encode + proposal
+streaming of a ~6 MB payload to 3 machines, decode, prevote/precommit round trips — and it scales
+with block size, which is exactly why bigger blocks buy nothing. **CONSEQUENCE: even INSTANT
+execution would raise tps only ~10%. Execution is DONE as a lever; the next lever is the consensus
+coordination path (payload streaming/encoding + voting), not the EVM.**
 **✅ MISSION COMPLETE — PARALLEL/FAST-PATH PAYMENT LANE LIVE ON ALL 4 MACHINES (2026-08-08).**
 Fleet at FULL 1-Ggas blocks: **120 consecutive heights, ZERO divergence** (identical stateRoot AND
 block hash on all 4 PHYSICAL machines); single-machine: 201 heights, zero divergence. Perf, apples

@@ -13,7 +13,10 @@ Fleet numbers at full 1-Ggas blocks: 34,245 txs/blk, exec 239.6 ms, state-root 4
 persist 116.4 ms, 9.7k tps avg / 14.7k peak. tps is ~unchanged vs the stock fleet run because
 cadence is CONSENSUS-COORDINATION-bound (~2.9 s/block vs ~0.36 s of measured work) — exactly as
 predicted; execution work dropped 37 % but the coordination overhead now dominates. **That is the
-next lever, not execution.**
+next lever, not execution.** MEASURED 2026-08-08: at full 1-Ggas blocks reth's newPayload takes
+**357 ms** while a block takes **3,750 ms** — the EL is **10%** of block time, consensus is **90%**
+(per tx: 7.5 us in the EL vs 71.3 us outside). tps is also FLAT across an 8x block-size sweep, so
+big blocks neither help nor hurt. Even instant execution would add only ~10% tps.
 
 **Definition of done (all must hold):**
 1. Payment-lane ELs execute native transfers via the fast/parallel path (not reth's serial per-tx loop).
