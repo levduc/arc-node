@@ -551,6 +551,17 @@ already tolerates receipts appearing only at finish(). Validation runs on all 4 
 1, so this still captures ~4/5 of network execution work. Verification on the fleet = the chain itself:
 all 4 validators must agree on the payment-lane state root every height (divergence halts consensus =
 loud safe failure). Full plan: experiments/reth-fork/README.md.
+**✅ MISSION COMPLETE — PARALLEL/FAST-PATH PAYMENT LANE LIVE ON ALL 4 MACHINES (2026-08-08).**
+Fleet at FULL 1-Ggas blocks: **120 consecutive heights, ZERO divergence** (identical stateRoot AND
+block hash on all 4 PHYSICAL machines); single-machine: 201 heights, zero divergence. Perf, apples
+to apples vs the recorded stock fleet baseline (near-identical block composition 34,363 vs 34,245
+txs): **exec 379ms -> 239.6ms/blk = 11.03 -> 7.00 us/tx = 1.58x, -37%**; state-root 4.7ms, persist
+116.4ms, 9.7k tps avg / 14.7k peak. tps barely moved because cadence is CONSENSUS-COORDINATION-bound
+(~2.9s/block vs ~0.36s of measured work) — execution is no longer the fleet bottleneck; coordination
+is. Deploy recipe: `make build-docker` -> `fleet/ship-images.sh` (verifies the sha256 of the BINARY
+inside the image; docker image IDs differ across daemon versions even when content is identical —
+that produced a false MISMATCH) -> `PAY_GAS=1000000000 EXTRA_ACCOUNTS=16000
+PAY_EL_ENV='-e ARC_PARALLEL_TRANSFERS=1' fleet/demo-fleet-metamask.sh start`.
 **🎯 NATIVE-TRANSFER FAST PATH — IMPLEMENTED, VERIFIED, RUNNING (2026-08-08, commits 8225038 +
 37ca3cc).** `ARC_PARALLEL_TRANSFERS=1` makes `ArcBlockExecutor::execute_transaction_without_commit`
 return a hand-built `ResultAndState` for plain transfers instead of invoking revm; `commit_transaction`

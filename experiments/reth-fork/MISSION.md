@@ -1,5 +1,20 @@
 # MISSION: parallel payment lane, running and proven
 
+# ✅ MISSION COMPLETE (2026-08-08) — all four criteria met
+
+| # | criterion | result |
+|---|---|---|
+| 1 | payment ELs run the fast path | yes — all 4 machines, `ARC_PARALLEL_TRANSFERS=1` confirmed in every container |
+| 2 | 100–1000 blocks of 4-way root agreement under load | **120 heights on the fleet + 201 on single-machine, ZERO divergence** (stateRoot AND block hash) |
+| 3 | exec_ms materially below the stock baseline | **379 ms → 239.6 ms/blk = 11.03 → 7.00 µs/tx = 1.58× faster, −37%** (block composition nearly identical: 34,363 vs 34,245 txs) |
+| 4 | nothing else regressed | EVM lane stock, block production healthy, fee/cadence config intact |
+
+Fleet numbers at full 1-Ggas blocks: 34,245 txs/blk, exec 239.6 ms, state-root 4.7 ms,
+persist 116.4 ms, 9.7k tps avg / 14.7k peak. tps is ~unchanged vs the stock fleet run because
+cadence is CONSENSUS-COORDINATION-bound (~2.9 s/block vs ~0.36 s of measured work) — exactly as
+predicted; execution work dropped 37 % but the coordination overhead now dominates. **That is the
+next lever, not execution.**
+
 **Definition of done (all must hold):**
 1. Payment-lane ELs execute native transfers via the fast/parallel path (not reth's serial per-tx loop).
 2. The 4-validator demo runs under load with **all 4 validators agreeing on the payment-lane state
@@ -83,8 +98,14 @@
       settled height 493..693 on the running 4-validator demo under 8-spammer load (~7,000 txs/blk):
       identical stateRoot AND block hash on all four. Since a wrong root halts consensus, this is
       end-to-end proof the fast path is consensus-correct in production.
-- [ ] Ship image to the 3 remotes (`docker save | gzip | tailscale ssh docker load`) → fleet run →
-      confirm again across machines.
+- [x] **✅ SHIPPED + VERIFIED ON THE 4-MACHINE FLEET (2026-08-08).** `fleet/ship-images.sh` (new;
+      verifies by the sha256 of the binary INSIDE the image — image IDs differ across docker
+      versions even when content is identical, which produced a false "MISMATCH" first run).
+      Fleet started with `PAY_GAS=1000000000 EXTRA_ACCOUNTS=16000
+      PAY_EL_ENV='-e ARC_PARALLEL_TRANSFERS=1' fleet/demo-fleet-metamask.sh start`; fast path
+      confirmed enabled on all four payment ELs. Under distributed load at FULL 1-Ggas blocks:
+      **120 consecutive heights (295..414), ZERO divergence — identical stateRoot AND block hash on
+      all 4 PHYSICAL MACHINES at every height.**
 - [ ] Only after all green: consider dropping the state root entirely (frozen root), re-verify.
 
 ## Rules for each iteration
