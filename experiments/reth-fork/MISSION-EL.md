@@ -271,6 +271,53 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🎯 2-D SWEEP: BLOCK TIME x GAS — BLOCK TIME IS NOT A THROUGHPUT KNOB (2026-08-09, iteration 3)
+
+First sweep where EVERY point is 100% full: distributed load (2 local + 8 ginnythui + 5
+papaduck-alien2 spammers over tailscale, against this box's payment EL). Local-only load saturates
+at ~6,000 tx/s and could never fill 100M+ blocks, which is what invalidated every previous
+high-gas row. Harness: `experiments/dual-el/blocktime-sweep.sh`, chart `blocktime-chart.py`.
+
+| target | gas | txs/blk | blk/s | latency | tps | exec | root | persist | verdict |
+|--------|-----|---------|-------|---------|-----|------|------|---------|---------|
+| 250 ms | 50M | 2,380 | 1.61 | 620 ms | 3,840 | 33.7 | 30.5 | 63.0 | missed |
+| 250 ms | 100M | 4,761 | 1.10 | 910 ms | 5,234 | 83.9 | 44.5 | 86.5 | missed |
+| 250 ms | 200M | 9,523 | 0.71 | 1404 ms | **6,785** | 174.1 | 47.9 | 127.2 | missed |
+| 500 ms | 50M | 2,380 | 1.47 | 680 ms | 3,500 | 32.5 | 31.5 | 160.2 | missed |
+| 500 ms | 100M | 4,761 | 1.06 | 947 ms | 5,025 | 78.5 | 44.1 | 161.6 | missed |
+| 500 ms | 200M | 9,523 | 0.68 | 1460 ms | 6,522 | 160.6 | 51.7 | 243.7 | missed |
+| 1000 ms | 50M | 2,380 | 1.00 | 1001 ms | 2,378 | 21.7 | 20.7 | 66.1 | **HELD** |
+| **1000 ms** | **100M** | **4,761** | **1.00** | **1003 ms** | **4,748** | 75.5 | 45.7 | 111.1 | **HELD** |
+| 1000 ms | 200M | 9,523 | 0.67 | 1492 ms | 6,382 | 162.7 | 49.1 | 265.4 | missed |
+
+**FINDING 1 — the target block time buys NOTHING.** Under saturation the chain runs at its natural
+cadence, set by the GAS LIMIT. Compare the same gas across targets: 50M gives 1.61 / 1.47 / 1.00
+blk/s at 250 / 500 / 1000 ms. Asking for 250 ms instead of 500 ms changes nothing (the chain is
+already slower than both); asking for 1000 ms actively THROTTLES it (50M could do ~1.5 blk/s and is
+paced down to exactly 1.00, costing ~1,100 tps). **`targetBlockTimeMs` is a ceiling, never a floor.**
+It is a product/latency-predictability knob, not a performance one.
+
+**FINDING 2 — the gas limit IS the frontier, with steep diminishing returns.** Natural cadence
+(averaging the unpaced 250/500 rows): 50M ~1.54 blk/s / ~3,670 tps; 100M ~1.08 / ~5,130; 200M ~0.70
+/ ~6,650. So **4x the gas buys 1.8x the tps and costs 2.2x the latency.**
+
+**FINDING 3 — offered load beyond what fills a block STILL costs cadence.** At 50M with 6 LOCAL
+spammers the chain did 1.96 blk/s; at the same 50M and the same 100%-full blocks, with 15
+distributed spammers, it does 1.47-1.61. Block composition is identical, so the delta is pure
+INGRESS cost: RPC/mempool admission and gossip for transactions that will not fit anyway. This
+retro-explains why the earlier "40M holds 2 blk/s" reading was obtained under light load — it is
+real, but it is a light-load number.
+
+**FINDING 4 — the only configuration that both saturates and HOLDS its target is 100M @ 1000 ms:
+4,748 tps at a stable, predictable 1.00 blk/s**, with ~8% cadence headroom (natural ~1.08). That
+headroom is what makes it hold. 200M is faster on paper (6,785 tps) but holds no target at all and
+lands at 1.4-1.5 s blocks.
+
+**ANSWER TO "best tps at 1 blk/s": 4,748 tps at 100M gas, held at exactly 1.00 blk/s.**
+**ANSWER TO "2 blk/s": NOT reachable at any gas size under saturating distributed load** — the
+fastest saturated point in the whole sweep is 1.61 blk/s (620 ms) at 50M, and that one misses its
+own 250 ms target. 2 blk/s remains reachable only at <=40M with light offered load.
+
 ## ⚠️ REQUALIFICATION + THE LOAD GENERATOR IS NOW THE CEILING (2026-08-09, iteration 2)
 
 **50M does NOT reliably hold 2 blk/s — it is MARGINAL.** A reverse-order sweep on a fresh chain

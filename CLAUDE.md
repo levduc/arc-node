@@ -533,6 +533,30 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🎯 2-D SWEEP (BLOCK TIME x GAS): BLOCK TIME IS NOT A THROUGHPUT KNOB (2026-08-09).** First sweep
+with EVERY point 100% full — distributed load (2 local + 8 ginnythui + 5 alien2 spammers over
+tailscale against this box's pay EL); local-only load saturates ~6k tx/s and can't fill 100M+ blocks.
+Harness `experiments/dual-el/blocktime-sweep.sh`, chart `blocktime-chart.py`.
+| target | 50M | 100M | 200M |
+|--------|-----|------|------|
+| 250ms | 1.61 blk/s, 3,840 tps | 1.10, 5,234 | 0.71, **6,785** |
+| 500ms | 1.47, 3,500 | 1.06, 5,025 | 0.68, 6,522 |
+| 1000ms | **1.00 HELD**, 2,378 | **1.00 HELD, 4,748** | 0.67, 6,382 |
+- **`targetBlockTimeMs` is a CEILING, never a floor.** Same gas across targets: 50M → 1.61/1.47/1.00
+  blk/s at 250/500/1000ms. A shorter target changes nothing (chain already slower); a longer one
+  THROTTLES (50M paced from ~1.5 down to exactly 1.00, costing ~1,100 tps). It is a latency-
+  predictability knob, not a performance one.
+- **The GAS LIMIT is the frontier, with steep diminishing returns:** natural cadence 50M ~1.54 blk/s
+  /~3,670 tps · 100M ~1.08/~5,130 · 200M ~0.70/~6,650. **4x gas = 1.8x tps, 2.2x latency.**
+- **Offered load beyond what FILLS a block still costs cadence:** 50M did 1.96 blk/s with 6 local
+  spammers vs 1.47-1.61 with 15 distributed ones at IDENTICAL 100%-full composition — pure ingress
+  cost (RPC/mempool admission + gossip for txs that won't fit). This is why the earlier "40M holds
+  2 blk/s" is a LIGHT-LOAD number.
+- **BEST ANSWERS: "1 blk/s" → 4,748 tps @ 100M, held at exactly 1.00 blk/s** (the only config that
+  both saturates AND holds its target, ~8% headroom is why). **"2 blk/s" → NOT reachable at any gas
+  under saturating load**; fastest saturated point is 1.61 blk/s @ 50M. Peak tps 6,785 @ 200M but
+  1.4s blocks and holds no target.
+
 **⚠️ REQUALIFIED (2026-08-09 iter 2): 50M is MARGINAL, not the ceiling; 40M is the reproducible
 2 blk/s point.** Reverse-order sweep on a fresh chain (60→55→50, biggest block gets freshest chain)
 gave 50M **1.72 blk/s / 582ms** vs the forward sweep's **1.96 / 511ms** — same size/load/config, ~12%

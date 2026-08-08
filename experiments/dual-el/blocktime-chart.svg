@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 580" width="980" height="580" font-family="Inter,Helvetica,Arial,sans-serif">
+<rect width="980" height="580" fill="#ffffff"/>
+<text x="84" y="34" font-size="19" font-weight="700" fill="#1a1f2e">Payment lane: the gas limit sets the frontier — block time is only a throttle</text>
+<text x="84" y="56" font-size="12.5" fill="#7b8394">4 validators, distributed load, every point 100% full · a longer target slows the chain; a shorter one changes nothing</text>
+<line x1="84" y1="484.0" x2="940" y2="484.0" stroke="#e6e9ef"/>
+<text x="74" y="488.0" font-size="11" fill="#7b8394" text-anchor="end">0</text>
+<line x1="84" y1="403.6" x2="940" y2="403.6" stroke="#e6e9ef"/>
+<text x="74" y="407.6" font-size="11" fill="#7b8394" text-anchor="end">1,600</text>
+<line x1="84" y1="323.2" x2="940" y2="323.2" stroke="#e6e9ef"/>
+<text x="74" y="327.2" font-size="11" fill="#7b8394" text-anchor="end">3,200</text>
+<line x1="84" y1="242.8" x2="940" y2="242.8" stroke="#e6e9ef"/>
+<text x="74" y="246.8" font-size="11" fill="#7b8394" text-anchor="end">4,800</text>
+<line x1="84" y1="162.4" x2="940" y2="162.4" stroke="#e6e9ef"/>
+<text x="74" y="166.4" font-size="11" fill="#7b8394" text-anchor="end">6,400</text>
+<line x1="84" y1="82.0" x2="940" y2="82.0" stroke="#e6e9ef"/>
+<text x="74" y="86.0" font-size="11" fill="#7b8394" text-anchor="end">8,000</text>
+<line x1="217.8" y1="82" x2="217.8" y2="484" stroke="#e6e9ef"/>
+<text x="217.8" y="502" font-size="11" fill="#7b8394" text-anchor="middle">250</text>
+<line x1="351.5" y1="82" x2="351.5" y2="484" stroke="#e6e9ef"/>
+<text x="351.5" y="502" font-size="11" fill="#7b8394" text-anchor="middle">500</text>
+<line x1="485.2" y1="82" x2="485.2" y2="484" stroke="#e6e9ef"/>
+<text x="485.2" y="502" font-size="11" fill="#7b8394" text-anchor="middle">750</text>
+<line x1="619.0" y1="82" x2="619.0" y2="484" stroke="#e6e9ef"/>
+<text x="619.0" y="502" font-size="11" fill="#7b8394" text-anchor="middle">1000</text>
+<line x1="752.8" y1="82" x2="752.8" y2="484" stroke="#e6e9ef"/>
+<text x="752.8" y="502" font-size="11" fill="#7b8394" text-anchor="middle">1250</text>
+<line x1="886.5" y1="82" x2="886.5" y2="484" stroke="#e6e9ef"/>
+<text x="886.5" y="502" font-size="11" fill="#7b8394" text-anchor="middle">1500</text>
+<text x="512.0" y="524" font-size="12.5" font-weight="600" fill="#1a1f2e" text-anchor="middle">achieved block latency (ms)</text>
+<text x="26" y="283.0" font-size="12.5" font-weight="600" fill="#1a1f2e" transform="rotate(-90 26 283.0)" text-anchor="middle">throughput (tx/s)</text>
+<line x1="351.5" y1="82" x2="351.5" y2="484" stroke="#15803d" stroke-width="1.6" stroke-dasharray="7 4"/>
+<text x="358.5" y="96" font-size="11.5" font-weight="600" fill="#15803d">2 blk/s target — unreachable at any size under this load</text>
+<polyline points="415.7,291.0 447.8,308.1 619.5,364.5" fill="none" stroke="#2563eb" stroke-width="2.2" opacity="0.55"/>
+<polyline points="570.8,221.0 590.6,231.5 620.6,245.4" fill="none" stroke="#7c3aed" stroke-width="2.2" opacity="0.55"/>
+<polyline points="835.1,143.1 865.1,156.3 882.2,163.3" fill="none" stroke="#db2777" stroke-width="2.2" opacity="0.55"/>
+<circle cx="415.7" cy="291.0" r="7" fill="#ffffff" stroke="#2563eb" stroke-width="2.4"/>
+<text x="415.7" y="278.0" font-size="9.5" fill="#7b8394" text-anchor="middle">250ms</text>
+<circle cx="570.8" cy="221.0" r="7" fill="#ffffff" stroke="#7c3aed" stroke-width="2.4"/>
+<text x="570.8" y="208.0" font-size="9.5" fill="#7b8394" text-anchor="middle">250ms</text>
+<circle cx="835.1" cy="143.1" r="7" fill="#ffffff" stroke="#db2777" stroke-width="2.4"/>
+<text x="835.1" y="130.1" font-size="9.5" fill="#7b8394" text-anchor="middle">250ms</text>
+<circle cx="447.8" cy="308.1" r="7" fill="#ffffff" stroke="#2563eb" stroke-width="2.4"/>
+<text x="447.8" y="295.1" font-size="9.5" fill="#7b8394" text-anchor="middle">500ms</text>
+<circle cx="590.6" cy="231.5" r="7" fill="#ffffff" stroke="#7c3aed" stroke-width="2.4"/>
+<text x="590.6" y="218.5" font-size="9.5" fill="#7b8394" text-anchor="middle">500ms</text>
+<circle cx="865.1" cy="156.3" r="7" fill="#ffffff" stroke="#db2777" stroke-width="2.4"/>
+<text x="865.1" y="143.3" font-size="9.5" fill="#7b8394" text-anchor="middle">500ms</text>
+<circle cx="619.5" cy="364.5" r="7" fill="#2563eb" stroke="#2563eb" stroke-width="2.4"/>
+<text x="619.5" y="351.5" font-size="9.5" fill="#7b8394" text-anchor="middle">1000ms</text>
+<circle cx="620.6" cy="245.4" r="7" fill="#7c3aed" stroke="#7c3aed" stroke-width="2.4"/>
+<text x="620.6" y="232.4" font-size="9.5" fill="#7b8394" text-anchor="middle">1000ms</text>
+<circle cx="882.2" cy="163.3" r="7" fill="#ffffff" stroke="#db2777" stroke-width="2.4"/>
+<text x="882.2" y="150.3" font-size="9.5" fill="#7b8394" text-anchor="middle">1000ms</text>
+<text x="634.6" y="249.4" font-size="12" font-weight="700" fill="#15803d">sweet spot: 100M @ 1.00 blk/s — 4,748 tps, target HELD</text>
+<text x="835.1" y="123.1" font-size="11.5" font-weight="600" fill="#b45309" text-anchor="middle">best tps 6,785 — but 1.4 s blocks</text>
+<text x="631.5" y="368.5" font-size="11" fill="#7b8394">throttled: could do ~1.5 blk/s, paced to 1.0</text>
+<circle cx="84" cy="542" r="6" fill="#2563eb"/>
+<text x="96" y="546" font-size="11.5" fill="#1a1f2e">50M gas</text>
+<circle cx="202" cy="542" r="6" fill="#7c3aed"/>
+<text x="214" y="546" font-size="11.5" fill="#1a1f2e">100M gas</text>
+<circle cx="320" cy="542" r="6" fill="#db2777"/>
+<text x="332" y="546" font-size="11.5" fill="#1a1f2e">200M gas</text>
+<circle cx="456" cy="542" r="6" fill="#ffffff" stroke="#7b8394" stroke-width="2.2"/>
+<text x="468" y="546" font-size="11.5" fill="#7b8394">hollow = did not hold its target (chain already slower than asked)</text>
+</svg>
