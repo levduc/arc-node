@@ -271,6 +271,34 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## ✅ MISSION 3 GOAL MET ON REAL HARDWARE — 50M HOLDS 2 blk/s AT 4,563 TPS (2026-08-09, iter 5)
+
+Measured the fleet's LOW-LATENCY end, which had never been tested (previous fleet points started at
+200M). 4 machines, distributed spam, stock config:
+
+| gas | spammers | txs/blk | %full | blk/s | latency | tps | exec | root | persist |
+|------|----------|---------|-------|-------|---------|-----|------|------|---------|
+| 25M | 16 | 1,190 | 100% | 1.89 | 529 ms | 2,249 | 11.4 | 0.9 | 48.2 |
+| **50M** | 16 | **2,380** | **100%** | **1.92** | **522 ms** | **4,563** | 22.9 | 1.2 | 52.9 |
+| 100M | 16 | 2,845 | 60% | 1.81 | 553 ms | 5,144 | 29.6 | 2.3 | 91.1 |
+| **100M** | 32 | **4,761** | **100%** | 1.55 | **644 ms** | **7,398** | 50.0 | 2.3 | 109.3 |
+
+**GOAL MET: 50M gas — twice the 25M baseline — holds 2 blk/s at 1.92 blk/s / 522 ms with 100% full
+blocks, at 4,563 tps (1.93x the 2,363 tps baseline).** All four validators agreeing throughout.
+This is the mission's success criterion, on real hardware, load-saturated.
+
+**BEST OVERALL POINT: 100M saturated — 7,398 tps at 644 ms.** That beats every larger block on BOTH
+axes: more tps than 200M (7,150 @ 864 ms) and than 1 Ggas (7,272 @ 5,478 ms), at a fraction of the
+latency. **100M -> 1 Ggas is 10x the block for ZERO extra throughput and 8.5x the latency.**
+
+So the fleet frontier has a knee at ~100M, and everything beyond it is pure latency cost. The
+operating rule is "smallest block that reaches the plateau", not "biggest block that fits".
+
+Note the two 100M rows are the over-offering tradeoff again, and here it is worth taking: 16 -> 32
+spammers costs 553 -> 644 ms (+16%) and buys 5,144 -> 7,398 tps (+44%). At 200M the same doubling
+bought only +6% tps for +45% latency. The tradeoff is favourable at the knee and unfavourable past
+it, which is another way of saying where the knee is.
+
 ## 🎯 FLEET FRONTIER — RECONCILES THE "10k tps" CLAIM WITH THE 4.7k SINGLE-BOX NUMBER (2026-08-09, iter 4)
 
 Question raised: the deck says 9.5k tps at 1 Ggas, the single-box sweep tops out at 4,748. Both are

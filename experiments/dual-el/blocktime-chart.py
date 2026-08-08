@@ -34,6 +34,10 @@ ROWS = [
 # 4-MACHINE FLEET, distributed spam (one spammer set per machine against its LOCAL payment EL).
 # gas(M), txs/blk, blk/s, ms/blk, tps, %full, saturated?
 FLEET = [
+    ( 25,  1190, 1.89,  529, 2249, 100, True),    # 16 spammers, saturated
+    ( 50,  2380, 1.92,  522, 4563, 100, True),    # 16 spammers -- HOLDS 2 blk/s, saturated
+    (100,  2845, 1.81,  553, 5144,  60, False),   # 16 spammers -- delivery-bound
+    (100,  4761, 1.55,  644, 7398, 100, True),    # 32 spammers -- BEST: most tps at lowest latency
     (200,  6175, 1.16,  864, 7150,  65, False),   # 16 spammers
     (200,  9523, 0.80, 1250, 7616, 100, True),    # 32 spammers -- filled, but SLOWER
     (500, 15430, 0.53, 1876, 8226,  65, False),
@@ -56,9 +60,9 @@ a(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" he
   f'font-family="Inter,Helvetica,Arial,sans-serif">')
 a(f'<rect width="{W}" height="{H}" fill="#ffffff"/>')
 a(f'<text x="{L}" y="34" font-size="19" font-weight="700" fill="{INK}">'
-  f'Payment lane: throughput saturates near 7-8k tx/s; only latency changes</text>')
+  f'Payment lane on 4 machines: 7,398 tx/s at 644 ms — bigger blocks add latency, not throughput</text>')
 a(f'<text x="{L}" y="56" font-size="12.5" fill="{MUTED}">'
-  f'One box (blue/purple/pink) vs 4 machines (teal) · on the fleet a 5x bigger block buys NO tps, just 6x the latency</text>')
+  f'One box (blue/purple/pink) vs 4 machines (teal) · 100M -> 1 Ggas is 10x the block for ZERO tps and 8.5x the latency</text>')
 
 for i in range(6):
     v = TPS_MAX * i / 5; y = py(v)
@@ -76,7 +80,7 @@ a(f'<text x="{L-58}" y="{T+PH/2}" font-size="12.5" font-weight="600" fill="{INK}
 # 2 blk/s reference
 a(f'<line x1="{px(500):.1f}" y1="{T}" x2="{px(500):.1f}" y2="{T+PH}" stroke="{OK}" stroke-width="1.6" stroke-dasharray="7 4"/>')
 a(f'<text x="{px(500)+7:.1f}" y="{T+14}" font-size="11.5" font-weight="600" fill="{OK}">'
-  f'2 blk/s target — unreachable at any size under this load</text>')
+  f'2 blk/s target — reached on the fleet at 50M</text>')
 
 # one line per gas limit: the frontier the gas limit puts you on
 for gas in (50, 100, 200):
@@ -100,10 +104,12 @@ for gas, txs, bps, ms, tps, full, sat in FLEET:
     a(f'<rect x="{x-6:.1f}" y="{y-6:.1f}" width="12" height="12" '
       f'fill="{"#0f766e" if sat else "#ffffff"}" stroke="#0f766e" stroke-width="2.4"/>')
     a(f'<text x="{x:.1f}" y="{y-13:.1f}" font-size="9.5" fill="#0f766e" text-anchor="middle">{gas}M</text>')
-a(f'<text x="{px(864)+14:.1f}" y="{py(7150)-2:.1f}" font-size="12" font-weight="700" fill="#0f766e">'
-  f'FLEET 200M: 7,150 tx/s @ 864 ms</text>')
+a(f'<text x="{px(644)+16:.1f}" y="{py(7398)-4:.1f}" font-size="12" font-weight="700" fill="#0f766e">'
+  f'BEST: fleet 100M — 7,398 tx/s @ 644 ms, blocks 100% full</text>')
+a(f'<text x="{px(522)+14:.1f}" y="{py(4563)+16:.1f}" font-size="11.5" font-weight="700" fill="{OK}">'
+  f'fleet 50M: 1.92 blk/s (522 ms), 4,563 tx/s — HOLDS the 2 blk/s target</text>')
 a(f'<text x="{px(1876):.1f}" y="{py(8226)-16:.1f}" font-size="11" fill="#0f766e" text-anchor="middle">'
-  f'fleet peak 8,226</text>')
+  f'8,226 but 1.9 s</text>')
 
 # callouts
 r = [x for x in ROWS if x[0] == 1000 and x[1] == 100][0]

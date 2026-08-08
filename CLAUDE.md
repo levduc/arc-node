@@ -533,6 +533,24 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**✅ MISSION 3 GOAL MET ON REAL HARDWARE (2026-08-09): 50M HOLDS 2 blk/s AT 4,563 TPS.** Measured the
+fleet's LOW-LATENCY end (all prior fleet points started at 200M). 4 machines, distributed spam, stock:
+| gas | spm | txs/blk | %full | blk/s | latency | tps |
+|------|-----|---------|-------|-------|---------|-----|
+| 25M | 16 | 1,190 | 100% | 1.89 | 529ms | 2,249 |
+| **50M** | 16 | **2,380** | **100%** | **1.92** | **522ms** | **4,563** |
+| 100M | 16 | 2,845 | 60% | 1.81 | 553ms | 5,144 |
+| **100M** | 32 | **4,761** | **100%** | 1.55 | **644ms** | **7,398** |
+- **GOAL MET: 50M (2x the 25M baseline) holds 2 blk/s** — 1.92 blk/s, 522ms, 100% full, **4,563 tps
+  = 1.93x the 2,363 baseline**, all 4 validators agreeing.
+- **BEST POINT: 100M saturated = 7,398 tps @ 644ms** — beats every larger block on BOTH axes (200M
+  7,150@864ms; 1Ggas 7,272@5,478ms). **100M→1Ggas = 10x block, ZERO tps gain, 8.5x latency.**
+  The frontier has a KNEE at ~100M; past it is pure latency cost. Rule: "smallest block that reaches
+  the plateau", NOT "biggest block that fits".
+- The two 100M rows re-show the over-offering tradeoff, and here it PAYS: 16→32 spammers costs +16%
+  latency for +44% tps. At 200M the same doubling bought +6% tps for +45% latency. Favourable at the
+  knee, unfavourable past it — which is another way to locate the knee.
+
 **🎯 FLEET FRONTIER — RECONCILES "10k tps" vs the 4.7k single-box number (2026-08-09).** 4-machine
 fleet, stock config, distributed spam (one set per machine on its LOCAL pay EL):
 | gas | spammers | txs/blk | %full | blk/s | latency | tps |

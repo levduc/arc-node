@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 580" width="980" height="580" font-family="Inter,Helvetica,Arial,sans-serif">
 <rect width="980" height="580" fill="#ffffff"/>
-<text x="84" y="34" font-size="19" font-weight="700" fill="#1a1f2e">Payment lane: throughput saturates near 7-8k tx/s; only latency changes</text>
-<text x="84" y="56" font-size="12.5" fill="#7b8394">One box (blue/purple/pink) vs 4 machines (teal) · on the fleet a 5x bigger block buys NO tps, just 6x the latency</text>
+<text x="84" y="34" font-size="19" font-weight="700" fill="#1a1f2e">Payment lane on 4 machines: 7,398 tx/s at 644 ms — bigger blocks add latency, not throughput</text>
+<text x="84" y="56" font-size="12.5" fill="#7b8394">One box (blue/purple/pink) vs 4 machines (teal) · 100M -> 1 Ggas is 10x the block for ZERO tps and 8.5x the latency</text>
 <line x1="84" y1="484.0" x2="940" y2="484.0" stroke="#e6e9ef"/>
 <text x="74" y="488.0" font-size="11" fill="#7b8394" text-anchor="end">0</text>
 <line x1="84" y1="403.6" x2="940" y2="403.6" stroke="#e6e9ef"/>
@@ -29,7 +29,7 @@
 <text x="512.0" y="524" font-size="12.5" font-weight="600" fill="#1a1f2e" text-anchor="middle">achieved block latency (ms)</text>
 <text x="26" y="283.0" font-size="12.5" font-weight="600" fill="#1a1f2e" transform="rotate(-90 26 283.0)" text-anchor="middle">throughput (tx/s)</text>
 <line x1="157.8" y1="82" x2="157.8" y2="484" stroke="#15803d" stroke-width="1.6" stroke-dasharray="7 4"/>
-<text x="164.8" y="96" font-size="11.5" font-weight="600" fill="#15803d">2 blk/s target — unreachable at any size under this load</text>
+<text x="164.8" y="96" font-size="11.5" font-weight="600" fill="#15803d">2 blk/s target — reached on the fleet at 50M</text>
 <polyline points="175.5,312.5 184.4,327.7 231.7,377.8" fill="none" stroke="#2563eb" stroke-width="2.2" opacity="0.55"/>
 <polyline points="218.3,250.2 223.8,259.5 232.0,271.9" fill="none" stroke="#7c3aed" stroke-width="2.2" opacity="0.55"/>
 <polyline points="291.2,180.9 299.5,192.7 304.2,198.9" fill="none" stroke="#db2777" stroke-width="2.2" opacity="0.55"/>
@@ -51,7 +51,15 @@
 <text x="232.0" y="258.9" font-size="9.5" fill="#7b8394" text-anchor="middle">1000ms</text>
 <circle cx="304.2" cy="198.9" r="7" fill="#ffffff" stroke="#db2777" stroke-width="2.4"/>
 <text x="304.2" y="185.9" font-size="9.5" fill="#7b8394" text-anchor="middle">1000ms</text>
-<polyline points="211.5,164.6 268.5,143.8 360.9,116.6 892.5,159.2" fill="none" stroke="#0f766e" stroke-width="2.8"/>
+<polyline points="161.0,280.2 162.1,383.5 165.6,254.2 179.0,153.6 211.5,164.6 268.5,143.8 360.9,116.6 892.5,159.2" fill="none" stroke="#0f766e" stroke-width="2.8"/>
+<rect x="156.1" y="377.5" width="12" height="12" fill="#0f766e" stroke="#0f766e" stroke-width="2.4"/>
+<text x="162.1" y="370.5" font-size="9.5" fill="#0f766e" text-anchor="middle">25M</text>
+<rect x="155.0" y="274.2" width="12" height="12" fill="#0f766e" stroke="#0f766e" stroke-width="2.4"/>
+<text x="161.0" y="267.2" font-size="9.5" fill="#0f766e" text-anchor="middle">50M</text>
+<rect x="159.6" y="248.2" width="12" height="12" fill="#ffffff" stroke="#0f766e" stroke-width="2.4"/>
+<text x="165.6" y="241.2" font-size="9.5" fill="#0f766e" text-anchor="middle">100M</text>
+<rect x="173.0" y="147.6" width="12" height="12" fill="#0f766e" stroke="#0f766e" stroke-width="2.4"/>
+<text x="179.0" y="140.6" font-size="9.5" fill="#0f766e" text-anchor="middle">100M</text>
 <rect x="205.5" y="158.6" width="12" height="12" fill="#ffffff" stroke="#0f766e" stroke-width="2.4"/>
 <text x="211.5" y="151.6" font-size="9.5" fill="#0f766e" text-anchor="middle">200M</text>
 <rect x="262.5" y="137.8" width="12" height="12" fill="#0f766e" stroke="#0f766e" stroke-width="2.4"/>
@@ -60,8 +68,9 @@
 <text x="360.9" y="103.6" font-size="9.5" fill="#0f766e" text-anchor="middle">500M</text>
 <rect x="886.5" y="153.2" width="12" height="12" fill="#ffffff" stroke="#0f766e" stroke-width="2.4"/>
 <text x="892.5" y="146.2" font-size="9.5" fill="#0f766e" text-anchor="middle">1000M</text>
-<text x="225.5" y="162.6" font-size="12" font-weight="700" fill="#0f766e">FLEET 200M: 7,150 tx/s @ 864 ms</text>
-<text x="360.9" y="100.6" font-size="11" fill="#0f766e" text-anchor="middle">fleet peak 8,226</text>
+<text x="195.0" y="149.6" font-size="12" font-weight="700" fill="#0f766e">BEST: fleet 100M — 7,398 tx/s @ 644 ms, blocks 100% full</text>
+<text x="175.0" y="296.2" font-size="11.5" font-weight="700" fill="#15803d">fleet 50M: 1.92 blk/s (522 ms), 4,563 tx/s — HOLDS the 2 blk/s target</text>
+<text x="360.9" y="100.6" font-size="11" fill="#0f766e" text-anchor="middle">8,226 but 1.9 s</text>
 <text x="246.0" y="275.9" font-size="12" font-weight="700" fill="#15803d">sweet spot: 100M @ 1.00 blk/s — 4,748 tps, target HELD</text>
 <text x="291.2" y="160.9" font-size="11.5" font-weight="600" fill="#b45309" text-anchor="middle">best tps 6,785 — but 1.4 s blocks</text>
 <text x="243.7" y="381.8" font-size="11" fill="#7b8394">throttled: could do ~1.5 blk/s, paced to 1.0</text>
