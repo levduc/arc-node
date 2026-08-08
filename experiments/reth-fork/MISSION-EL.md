@@ -271,6 +271,48 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🚨 PAYMENT-EL MEMORY GROWS UNBOUNDED UNDER SUSTAINED LOAD — OOM REPRODUCED AND PREDICTED (2026-08-09, iter 9)
+
+Followed up the OOM flagged last iteration instead of chasing more tps. It is real, systematic, and
+a bigger problem than any throughput number here.
+
+45 min of continuous load at the recommended 100M operating point (~8.5k tx/s offered, blocks
+100% full), sampling every payment EL's container memory once a minute
+(`experiments/dual-el/fleet/mem-soak.sh`):
+
+| node | RAM | start | after 35 min | rate | per 1000 blocks | verdict |
+|------|-----|-------|--------------|------|-----------------|---------|
+| ginny (local) | 62 GB | 4,298 MiB | 11,766 MiB | +233 MiB/min | +2,525 MiB | STILL CLIMBING |
+| ginnythui | 62 GB | 5,585 | 14,356 | +274 MiB/min | +2,965 MiB | STILL CLIMBING |
+| papaduck | 78 GB | 8,011 | **18,340** | +323 MiB/min | +3,492 MiB | STILL CLIMBING |
+| papaduck-alien2 | 15 GB, **11 GiB cap** | 4,328 | **OOM-KILLED** | — | — | `oom=true exit=137` |
+
+**PREDICTED THEN CONFIRMED.** At minute 20 alien2 sat at 8,964 MiB and was climbing ~194 MiB/min,
+so I predicted it would cross its 11,264 MiB cap around minute 32-35 — it did, `oom=true exit=137`.
+That is the same failure that corrupted the 200M frontier row, so the earlier OOM was not a fluke.
+
+**GROWTH DECELERATES BUT DOES NOT PLATEAU.** Local went 288 -> 209 -> 168 MiB/min across the run,
+yet the last third still added +2,100 MiB. After 2,958 blocks / 35 min nothing had flattened, and
+papaduck reached 18.3 GiB for a chain of 16k accounts and ~3k blocks. Whether this is a true leak
+or cache growth that eventually bounds, it is far past any reasonable working set for this workload.
+
+**CONSEQUENCES**
+- **Any node capped below the trajectory dies.** 11 GiB is not enough at 100M; the three uncapped
+  nodes were at 11.8-18.3 GiB after 35 min and rising. Budget >=24 GB for a payment EL at this
+  load, or find the cause.
+- **It invalidates long-run measurements silently.** A dying node slows the fleet, which makes
+  blocks fill, which looks like a *capacity* result. That is exactly how the 200M row came out as
+  "100% full at 0.61 blk/s, sd 17.4%, -20.4% drift". Any sustained run from now on must sample
+  memory alongside throughput.
+- **It is EL-side and therefore in scope** — unlike everything else remaining on this mission.
+
+**NOT YET DIAGNOSED.** Hypotheses in rough order: reth's in-memory canonical block/state buffer
+growing faster than persistence retires it; per-block bundle/trie overlays retained; and (weakest)
+mempool backlog from the ~1,700 tx/s of surplus offered load, which the 200k pending/queued caps
+should bound to a few hundred MiB. NOTE the earlier persistence experiment RAISED the threshold
+(64/128) and made cadence worse; the untested direction is LOWERING it so the in-memory buffer is
+retired sooner. That is the obvious next test and it is config-only.
+
 ## 🎯 SUSTAINED FRONTIER — 15 MIN PER SIZE, 4 MACHINES (2026-08-09, iter 8)
 
 The definitive measurement: one gas limit at a time, held under continuous load for a full 15
