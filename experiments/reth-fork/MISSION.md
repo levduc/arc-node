@@ -43,7 +43,20 @@
       both building and validation paths stay correct. Much simpler than buffering: no `finish()`
       surgery, no reth fork. Key detail: `Account::from(pre)` seeds `original_info` (revm's bundle
       diff needs the PRE-state), then `info` = post-state + `mark_touch()`.
-- [ ] **NEXT: runtime-verify the in-node fast path.** Suggested cheapest check: run the
+- [x] **IN-EXECUTOR FAST PATH VERIFIED CORRECT (iteration 2).** Trick: the bench's `run_serial`
+      uses the REAL `ArcBlockExecutor`, so running it with `ARC_PARALLEL_TRANSFERS=1` exercises the
+      in-node code while `run_parallel` (direct EVM) stays as the oracle. Result: **IDENTICAL ✓** on
+      both workloads, and the executor path measurably speeds up, proving the gate engages:
+        pool   106.2ms -> 64.1ms (1.66x)   closed  93.8ms -> 52.2ms (1.80x)
+      HONEST NUMBER: 1.66-1.80x in-executor, NOT the 24x of the standalone arithmetic (4.7ms). The
+      ~60ms that remains is receipt building + `State`/bundle commit, NOT the EVM — that is the next
+      optimization target once this is deployed and proven.
+      Regression gate for every future change: BOTH `cargo run --release -p arc-evm --example
+      parallel_transfer_bench` and the same command with `ARC_PARALLEL_TRANSFERS=1` must print
+      IDENTICAL.
+- [x] env passthrough wired: `PAY_EL_ENV` -> docker `-e` in launch-payment-els.sh AND the fleet
+      payment_el_cmd. Use `PAY_EL_ENV='-e ARC_PARALLEL_TRANSFERS=1'`.
+- [ ] (done above) runtime-verify the in-node fast path. Suggested cheapest check: run the
       single-machine demo twice under identical load — once stock, once with
       `PAY_EL_EXTRA_ARGS` carrying the env var — and confirm the payment lane still advances with
       all validators agreeing (any semantic error diverges the root and halts consensus). Then
