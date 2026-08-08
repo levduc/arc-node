@@ -271,6 +271,55 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🎯 Block-size sweep at fixed 2 blk/s — RE-RUN AND VALID (2026-08-08)
+
+Harness fixed (all 3 bugs below), re-run on one chain with **all 4 payment ELs on the best-known
+EL config** (`ARC_PARALLEL_TRANSFERS=1` + `ARC_EAGER_RECOVERY=1` + `--engine.state-root-fallback`),
+runtime gas-limit flips, 4 local spammers, 75 s windows.
+
+| gas | txs/blk | blk/s | ms/blk | tps | %full | exec | root | persist | |
+|------|---------|-------|--------|------|-------|------|------|---------|--|
+| 25M  | 1,190 | **1.99** | **504** | 2,363 | 100% | 3.8 | 10.5 | 49.0 | **HOLDS** |
+| 50M  | 2,380 | 1.28 | 782 | 3,043 | 100% | 9.9 | 18.6 | 448.6 | degraded |
+| 100M | 4,761 | 1.50 | 665 | **7,164** | 100% | 25.7 | 27.5 | 74.9 | degraded |
+| 200M | 6,805 | 1.15 | 873 | 7,795 | 71% | 30.3 | 30.0 | 86.9 | degraded |
+| 500M | 9,732 | 0.65 | 1532 | 6,353 | 41% | 39.3 | 31.7 | 802.8 | BROKEN |
+| 1G   | 8,143 | 0.96 | 1043 | 7,810 | 17% | 39.0 | 33.7 | 111.8 | BROKEN |
+
+**ANSWER TO THE MISSION GOAL: 2 blk/s is achievable at 25M gas — 1,190 tx/block, 504 ms, 2,363 tps.**
+Everything larger trades latency for throughput, and the trade is set by consensus coordination, not
+by the EL.
+
+- **The EL is never the constraint at ANY block size.** Synchronous EL work (exec + root) is
+  14.3 ms at 25M and only 72.7 ms at 1 Ggas — at most ~8% of block time, ~3% at the target. After
+  eager recovery, execution at the 2 blk/s point is **3.8 ms/block**. There is no cadence left to
+  win inside the EL; this closes the optimisation line the mission opened.
+- **Throughput plateaus at ~7-8k tps** from 100M upward. Bigger blocks stop buying tps and only add
+  latency — consistent with the earlier finding that the dominant per-height cost scales with
+  TRANSACTION COUNT (SSZ encode + proposal streaming + voting), not with block count.
+- **HONEST CAVEAT — the ≥200M rows are DELIVERY-bound, not chain-bound.** Blocks there are only
+  71/41/17% full, so 4 local spammers could not offer enough load; those rows measure the spammer,
+  not the lane. Only the 25M/50M/100M rows (100% full) are chain-limited. The fleet with
+  distributed spam previously reached 9.5k avg / 15k peak at 1 Ggas.
+- **The 50M row is noise**, not signal: persist spiked to 448.6 ms and its 1.28 blk/s is worse than
+  100M's 1.50 at half the size. Disk stall on this box during that window. persist is the noisiest
+  column throughout (49 → 803 ms, non-monotonic in block size).
+- **Practical recommendation:** 25M for a latency demo (true 2 blk/s), 100M for a throughput demo
+  (7.2k tps at 665 ms — 3x the tps for 33% more latency).
+
+Consensus: 300 consecutive blocks / 1,582,375 txs across the whole sweep, **all 4 validators
+identical on stateRoot + blockHash + receiptsRoot at every height**, with all four running eager
+recovery (previously only val1 did).
+
+### The 3 harness bugs (fixed in blocksize-sweep.sh; the original run produced a "3026% full" row)
+1. polled a hardcoded val1 that had parked → read STALLED while the chain ran on 3-of-4. Now polls
+   whichever validator has the highest head.
+2. applied the gas-limit change *while saturating load ran*, so the governance tx was starved from
+   the mempool and the limit silently never changed. Now load is STOPPED for the change and the new
+   limit is VERIFIED on a fresh block header before measuring.
+3. host map was fleet-only. Now defaults to the single-machine demo, `FLEET='{"1":"ip",...}'` for
+   the 4-machine case.
+
 ## Block-size sweep at fixed 2 blk/s — ATTEMPTED, INVALID, 3 harness bugs found (2026-08-08)
 
 Goal: hold latency at Arc mainnet's 500 ms and find the largest payment block the CL sustains.

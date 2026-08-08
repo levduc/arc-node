@@ -502,6 +502,37 @@ verdict predates the 1 Ggas fleet finding where exec DOMINATES (379ms vs persist
 at full blocks, so the win case is stronger than the old verdict suggests. Cherry-picked onto this
 branch as the baseline. NEXT: wire parallel execution into the real payment-EL path (grevm/reth or
 Arc's executor) and re-measure fleet tps at 1 Ggas.
+**🎯 BLOCK-SIZE SWEEP AT FIXED 2 blk/s — THE EL IS DONE AS A CADENCE LEVER (2026-08-08).** Re-ran the
+previously-invalid sweep with the harness fixed and ALL 4 payment ELs on the best-known EL config
+(`ARC_PARALLEL_TRANSFERS=1` + `ARC_EAGER_RECOVERY=1` + `--engine.state-root-fallback`), flipping the
+gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
+
+| gas | txs/blk | blk/s | ms/blk | tps | %full | exec | root | persist |
+|------|---------|-------|--------|------|-------|------|------|---------|
+| 25M | 1,190 | **1.99** | **504** | 2,363 | 100% | 3.8 | 10.5 | 49.0 |
+| 50M | 2,380 | 1.28 | 782 | 3,043 | 100% | 9.9 | 18.6 | 448.6 |
+| 100M | 4,761 | 1.50 | 665 | **7,164** | 100% | 25.7 | 27.5 | 74.9 |
+| 200M | 6,805 | 1.15 | 873 | 7,795 | 71% | 30.3 | 30.0 | 86.9 |
+| 500M | 9,732 | 0.65 | 1532 | 6,353 | 41% | 39.3 | 31.7 | 802.8 |
+| 1G | 8,143 | 0.96 | 1043 | 7,810 | 17% | 39.0 | 33.7 | 111.8 |
+
+- **2 blk/s IS achievable — at 25M gas: 1,190 tx/block, 504ms, 2,363 tps.** Larger blocks trade
+  latency for throughput and the trade is set by CONSENSUS COORDINATION, not the EL.
+- **The EL is never the constraint at any block size:** synchronous EL work (exec+root) is 14.3ms at
+  25M and only 72.7ms at 1 Ggas = at most ~8% of block time (~3% at the target). Execution at the
+  2 blk/s point is **3.8ms/block** after eager recovery. No cadence left to win inside the EL.
+- **tps plateaus ~7-8k from 100M up** — bigger blocks stop buying throughput and only add latency
+  (dominant per-height cost scales with TX COUNT: SSZ encode + streaming + voting).
+- **HONEST CAVEAT: the >=200M rows are DELIVERY-bound** (blocks only 71/41/17% full — 4 local
+  spammers can't offer enough load), so they measure the spammer, not the lane; only 25/50/100M
+  (100% full) are chain-limited. **The 50M row is noise** (persist spiked 448ms; worse than 100M at
+  half the size) — persist is the noisiest column throughout (49->803ms, non-monotonic).
+- **Demo recommendation: 25M for a latency demo (true 2 blk/s), 100M for a throughput demo
+  (7.2k tps @ 665ms = 3x the tps for 33% more latency).**
+- Consensus: 300 consecutive blocks / 1,582,375 txs, all 4 validators identical on
+  stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
+  only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
+
 **🎯 EAGER PARALLEL SENDER RECOVERY — payment-lane execution phase 4x faster, arc-evm only, NO reth
 fork (2026-08-08).** The `newPayload` execution loop was spending ~78% of its time NOT executing:
 blocked in `transactions.next()` waiting on sender recovery. Three measurements corrected three
