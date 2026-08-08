@@ -397,6 +397,32 @@ fn main() {
         "parallel_transfer_bench — {N_TX} transfers, {N_SENDERS} senders, 1 Ggas block, {threads} threads\n"
     );
 
+    // ---- decomposition: what is left in the executor path after the fast path + caches? ----
+    // The fast path still does 2 state reads per transfer (sender, recipient); everything else is
+    // receipt building + State/bundle commit. This isolates the read half so we know whether
+    // batch-prefetching those 2 reads is worth a ~250-line consensus-critical change.
+    {
+        use alloy_consensus::Transaction as _;
+        let txs = build_txs(Workload::Pool);
+        let mut db = build_db();
+        let mut state = revm::database::State::builder()
+            .with_database(&mut db)
+            .with_bundle_update()
+            .build();
+        let t = Instant::now();
+        let mut sink = 0u64;
+        for tx in &txs {
+            let to = match tx.inner().kind() { TxKind::Call(a) => a, _ => continue };
+            if let Ok(Some(i)) = state.basic(*tx.signer_ref()) { sink = sink.wrapping_add(i.nonce); }
+            if let Ok(Some(i)) = state.basic(to) { sink = sink.wrapping_add(i.nonce); }
+        }
+        let t_reads = t.elapsed();
+        println!(
+            "decomposition (pool, {N_TX} txs), executor path is ~54ms total:\n  2 state reads/tx  {:>8.1?}  ({:.2} us/tx)\n  pure arithmetic   ~4.6ms\n  => remainder (receipts + State/bundle commit) is the rest  [sink {}]\n",
+            t_reads, t_reads.as_secs_f64()*1e6/N_TX as f64, sink & 1
+        );
+    }
+
     for (name, w) in [("pool  (recipients NOT senders — real spammer)", Workload::Pool),
                       ("closed(ring: every recipient is a sender)   ", Workload::Closed)]
     {

@@ -81,7 +81,28 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
         `ab-fastpath.sh` for a rigorous live claim.
       * CORRECTNESS BUG CAUGHT PRE-TEST: the beneficiary cache must hold the FULL AccountInfo —
         rebuilding a default would reset its nonce/code_hash in the state diff and diverge the root.
-- [ ] **BATCH EXECUTION
+- [x] **MEASURED (iteration 3): BATCH EXECUTION IS THE WRONG NEXT TARGET — deprioritised.**
+      After the fast path + per-block caches, the ~54 ms executor path (47,618 transfers) splits as:
+        * 2 state reads/tx ......... **7.2 ms (13%)**  <- all that batch-prefetching could attack
+        * pure arithmetic .......... 4.6 ms (9%)
+        * **receipts + State/bundle commit ... ~42 ms (78%)**  <- THE REMAINING COST
+      So the ~250-line, consensus-critical batch-execution change would chase 13% (and save maybe
+      6 ms of it). The caches already took the cheap read win; reads are no longer the problem.
+      Probe lives in `parallel_transfer_bench.rs` (prints a "decomposition" block) so this is
+      re-checkable after any change.
+- [ ] **NEW TOP PRIORITY: cut receipt + commit overhead (78% of what remains).** Hypothesis: the
+      cost is `db.commit(state)` per transaction on `State<DB>` with bundle tracking — 3 accounts x
+      47,618 txs = ~143k TransitionAccount records, each with allocations. Idea: keep a per-block
+      overlay of pending account changes in the executor, serve fast-path reads from it, and commit
+      ONCE at `finish()` — ~16k transitions instead of 143k. Receipts stay per-tx (they are cheap
+      and must keep cumulative-gas order).
+      RISK TO SETTLE FIRST (measure before writing): committing once at the end changes how
+      BundleState records reverts/original_info. The final PLAIN state (hence the state root) should
+      be identical, but revert data matters for reorgs — verify with the gates AND by inspecting the
+      bundle, not just balances. Also confirm nothing between txs reads committed state directly.
+      CHEAP PRE-CHECK: time `db.commit()` alone vs receipt building alone, to confirm which half of
+      the 42 ms dominates before touching anything.
+- [ ] (deprioritised, was STEP 1) BATCH EXECUTION
 
  inside ArcBlockExecutor.** This is the unlock
       for every other execution win, and nothing fundamental blocks it — the earlier "can't batch"
