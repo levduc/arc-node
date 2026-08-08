@@ -271,6 +271,50 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🎯 SUSTAINED FRONTIER — 15 MIN PER SIZE, 4 MACHINES (2026-08-09, iter 8)
+
+The definitive measurement: one gas limit at a time, held under continuous load for a full 15
+minutes, chain sampled every 60 s, demand tuned per size to ~1.15x its expected capacity.
+Harness `experiments/dual-el/fleet/frontier-long.sh`, chart `frontier-long-chart.py`.
+
+| gas | txs/blk | %full | latency (min-max) | throughput | spread | exec | root | persist |
+|------|---------|-------|-------------------|------------|--------|------|------|---------|
+| 25M | 1,190 | 100% | **520 ms** (505-532) | 2,287 tx/s | 1.6% | 12.0 | 1.3 | 48.6 |
+| 50M | 2,380 | 100% | 537 ms (527-566) | 4,430 tx/s | 1.8% | 26.0 | 2.2 | 61.7 |
+| **100M** | 4,761 | 100% | **697 ms** (662-779) | **6,827 tx/s** | 3.6% | 56.9 | 2.6 | 97.2 |
+| 200M | 4,892 | 51% | 690 ms (524-1176) | 7,092 tx/s | 3.2% | 63.2 | 3.4 | 203.6 |
+
+All four validators agreed at every size (50-block check per size).
+
+**FINDING 1 — THE GAS LIMIT IS A DIAL THAT ONLY ACTS WHILE IT BINDS.** At 200M the same demand no
+longer fills the block, so 200M lands on top of 100M: 4,892 vs 4,761 txs/block, 690 vs 697 ms,
+7,092 vs 6,827 tx/s. **Raising the limit past what demand can fill changes nothing at all.** This
+reframes every earlier "bigger blocks" result: the limit is a CAP, and only the binding case is a
+measurement of the limit. Forcing 200M to bind (2x demand, short runs) gives 9,523 txs at ~1,230 ms
+and ~7,700 tx/s -- latency nearly doubles for ~10% more throughput.
+
+**FINDING 2 — LONG WINDOWS MATTER, AND THEY REFINE THE HEADLINE.** Spread over 15 min is 1.6-3.6%,
+against the +-12-15% short windows carry here. The refined numbers move: 50M is **537 ms / 1.86
+blk/s**, not the 1.92-1.94 short runs suggested, so **25M (520 ms) is the only size that holds
+2 blk/s** and even it is 1.92, not 2.00. The earlier "50M holds 2 blk/s" claim is hereby corrected
+for the second and final time -- it is a 537 ms operating point.
+
+**FINDING 3 — A LONG-RUN MEMORY LEAK ON THE SMALLEST NODE, NOT A BLOCK-SIZE CLIFF.** During the
+first 200M window val4's payment EL (papaduck-alien2, 15 GB RAM, 11 GB container cap) was
+OOM-killed (`oom=true exit=137`) ~6 min in, after surviving 15-min windows at 25/50/100M. That run
+is therefore INVALID -- its "100% full at 0.61 blk/s, sd 17.4%, -20.4% drift" was the signature of
+a dying node, not of 200M. **The OOM did NOT reproduce**: a fresh process at 200M ran 13 min clean
+(sd 3.2%, no drift). So it is cumulative memory growth over ~1.5 h of sustained load crossing an
+11 GB cap, not a property of 200M. Worth tracking, but do not report it as a block-size limit.
+
+**FINDING 4 — the commitment still never enters the tradeoff.** State root 1.3-3.4 ms at every
+size, flat across a 8x range of block size. Persistence is the EL cost that actually scales
+(48.6 -> 203.6 ms).
+
+**OPERATING RECOMMENDATION: 100M / ~6,800 tx/s / ~700 ms** as the throughput point, or **25M /
+2,287 tx/s / 520 ms** if the promise is literally 2 blocks per second. Both sustained for 15
+minutes with all validators agreeing.
+
 ## 📊 DECK ALIGNED WITH THE MEASUREMENTS (2026-08-09, iter 7)
 
 The deck had been headlining 1 Ggas at "9.5k / 15k tx/s" as the throughput achievement. That is the
