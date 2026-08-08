@@ -75,6 +75,9 @@ pub struct ArcTxResult<H, T> {
     pub blob_gas_used: u64,
     /// Type of the transaction.
     pub tx_type: T,
+    /// True when produced by the transfer fast path, whose state change is already staged in the
+    /// executor's per-block overlay — `commit_transaction` must NOT commit it again.
+    pub from_fast_path: bool,
 }
 
 // alloy-evm 0.36's `TxResult` requires `Self: Send + 'static` and
@@ -127,10 +130,17 @@ pub struct ArcBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     /// Both are invalidated the moment any transaction takes the general EVM path, because
     /// arbitrary code could write `NATIVE_COIN_CONTROL` storage or move the beneficiary's balance.
     blocklist_cache: alloy_primitives::map::HashMap<Address, bool>,
-    /// Running beneficiary account; `None` until first read or after invalidation. The FULL
-    /// `AccountInfo` is cached, not just the balance — using a default here would silently reset
-    /// the beneficiary's nonce/code_hash in the state diff and diverge the state root.
-    beneficiary_info: Option<revm::state::AccountInfo>,
+    /// Per-block write overlay: `address -> (info at block start, current info)`.
+    ///
+    /// `db.commit()` per transaction is 51% of the fast path's cost (~143k TransitionAccount
+    /// records for a full 1 Ggas block). The overlay stages every fast-path change and is committed
+    /// ONCE in `finish()`, collapsing that to one record per touched account. Verified
+    /// bundle-identical (plain state AND reverts) to per-tx committing by the SAFETY PROBE in
+    /// `crates/evm/examples/parallel_transfer_bench.rs` — reverts matter because a bug there breaks
+    /// reorg unwinding WITHOUT changing the state root, so the usual gates would not catch it.
+    ///
+    /// It also subsumes the old beneficiary cache: the beneficiary is just another overlay entry.
+    overlay: alloy_primitives::map::HashMap<Address, (revm::state::AccountInfo, revm::state::AccountInfo)>,
 }
 
 impl<'a, Evm, Spec, R> ArcBlockExecutor<'a, Evm, Spec, R>
@@ -151,7 +161,7 @@ where
             system_caller: SystemCaller::new(spec.clone()),
             receipt_builder,
             blocklist_cache: Default::default(),
-            beneficiary_info: None,
+            overlay: Default::default(),
         }
     }
 
@@ -232,6 +242,33 @@ where
         EthExecutorSpec + Hardforks + EthChainSpec + BlockGasLimitProvider + BaseFeeConfigProvider,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
 {
+    /// Commits every staged fast-path change in ONE `db.commit()` and clears the overlay.
+    ///
+    /// Must run before anything reads live state: any general-EVM transaction, and `finish`'s
+    /// system-contract calls. Idempotent — a no-op when nothing is staged.
+    fn flush_overlay(&mut self) -> Result<(), BlockExecutionError> {
+        if self.overlay.is_empty() {
+            return Ok(());
+        }
+        let mut state = revm::state::EvmState::default();
+        // deterministic order: the resulting bundle must not depend on hash iteration order
+        let mut entries: Vec<_> = self.overlay.drain().collect();
+        entries.sort_by_key(|(a, _)| *a);
+        for (addr, (orig, cur)) in entries {
+            if orig == cur {
+                continue; // read-only touch (e.g. an ineligible tx bailed out) — nothing to write
+            }
+            let mut acct = revm::state::Account::from(orig);
+            acct.info = cur;
+            acct.mark_touch();
+            state.insert(addr, acct);
+        }
+        if !state.is_empty() {
+            self.evm.db_mut().commit(state);
+        }
+        Ok(())
+    }
+
     /// Native-transfer fast path. Returns `Some(result)` when `tx` is a plain value transfer that
     /// the interpreter is not needed for; `None` means "not eligible, run the EVM".
     ///
@@ -278,49 +315,63 @@ where
         let basefee = self.evm.block().basefee() as u128;
         let beneficiary = self.evm.block().beneficiary();
         let value = tx.value();
-        let db = self.evm.db_mut();
 
-        let read = |db: &mut E::DB, a: Address| -> Result<_, BlockExecutionError> {
-            db.basic(a)
-                .map_err(|e| BlockExecutionError::msg(format!("fast-path account read: {e}")))
+        // ---- all state reads up front, through the per-block overlay ----
+        // The overlay holds this block's staged fast-path writes; the DB has not seen them yet
+        // (they are committed once in `finish`), so a staged value always wins.
+        let mut ov_read = |me: &mut Self, a: Address| -> Result<revm::state::AccountInfo, BlockExecutionError> {
+            if let Some((_, cur)) = me.overlay.get(&a) {
+                return Ok(cur.clone());
+            }
+            let v = me
+                .evm
+                .db_mut()
+                .basic(a)
+                .map_err(|e| BlockExecutionError::msg(format!("fast-path account read: {e}")))?
+                .unwrap_or_default();
+            me.overlay.insert(a, (v.clone(), v.clone()));
+            Ok(v)
         };
 
         // Recipient must be a plain account — code would need the interpreter.
-        let to_info = read(db, to)?;
-        if to_info.as_ref().is_some_and(|i| i.code_hash != KECCAK_EMPTY) {
+        let to_info = ov_read(self, to)?;
+        if to_info.code_hash != KECCAK_EMPTY {
             return Ok(None);
         }
-
-        // ---- Arc blocklist (same reads `ArcEvmHandler::pre_execution` performs) ----
-        // memoised per block: an address's blocklist status cannot change while only transfers run
-        let mut blocklisted = |cache: &mut alloy_primitives::map::HashMap<Address, bool>,
-                               db: &mut E::DB,
-                               a: Address|
-         -> Result<bool, BlockExecutionError> {
-            if let Some(hit) = cache.get(&a) {
-                return Ok(*hit);
-            }
-            let v = db
-                .storage(
-                    arc_precompiles::NATIVE_COIN_CONTROL_ADDRESS,
-                    compute_is_blocklisted_storage_slot(a).into(),
-                )
-                .map(is_blocklisted_status)
-                .map_err(|e| BlockExecutionError::msg(format!("fast-path blocklist read: {e}")))?;
-            cache.insert(a, v);
-            Ok(v)
-        };
-        if blocklisted(&mut self.blocklist_cache, db, signer)?
-            || (!value.is_zero() && blocklisted(&mut self.blocklist_cache, db, to)?)
-        {
-            return Err(BlockValidationError::msg(ERR_BLOCKED_ADDRESS).into());
-        }
-
-        // ---- validation: anything off-nominal goes back to revm for exact error semantics ----
-        let Some(mut sender) = read(db, signer)? else { return Ok(None) };
+        let mut sender = ov_read(self, signer)?;
         if sender.nonce != tx.nonce() || sender.code_hash != KECCAK_EMPTY {
             return Ok(None);
         }
+        let bene_info = ov_read(self, beneficiary)?;
+
+        // ---- Arc blocklist (the same reads `ArcEvmHandler::pre_execution` performs) ----
+        // Memoised per block: NATIVE_COIN_CONTROL storage is not written by transfers, so an
+        // address's status cannot change while only transfers run.
+        for a in [Some(signer), (!value.is_zero()).then_some(to)].into_iter().flatten() {
+            let hit = match self.blocklist_cache.get(&a) {
+                Some(v) => *v,
+                None => {
+                    let v = self
+                        .evm
+                        .db_mut()
+                        .storage(
+                            arc_precompiles::NATIVE_COIN_CONTROL_ADDRESS,
+                            compute_is_blocklisted_storage_slot(a).into(),
+                        )
+                        .map(is_blocklisted_status)
+                        .map_err(|e| {
+                            BlockExecutionError::msg(format!("fast-path blocklist read: {e}"))
+                        })?;
+                    self.blocklist_cache.insert(a, v);
+                    v
+                }
+            };
+            if hit {
+                return Err(BlockValidationError::msg(ERR_BLOCKED_ADDRESS).into());
+            }
+        }
+
+        // ---- validation: anything off-nominal goes back to revm for exact error semantics ----
         let effective = core::cmp::min(
             tx.max_fee_per_gas(),
             basefee.saturating_add(tx.max_priority_fee_per_gas().unwrap_or_default()),
@@ -329,47 +380,51 @@ where
         let Some(after_fee) = sender.balance.checked_sub(fee) else { return Ok(None) };
         let Some(new_sender_balance) = after_fee.checked_sub(value) else { return Ok(None) };
 
-        // ---- apply ----
+        // ---- stage the writes in the overlay (NOT committed per tx) ----
+        // Build the same `EvmState` the EVM would have produced so `commit_transaction` can still
+        // construct an identical receipt; it just must not re-commit it (see `from_fast_path`).
         let mut state = EvmState::default();
-        // `Account::from(pre)` seeds `original_info` with the PRE-state, which is what revm's
-        // bundle diffing uses; then overwrite `info` with the post-state and mark it touched.
         fn touch(
             st: &mut EvmState,
             addr: Address,
             pre: revm::state::AccountInfo,
             post: revm::state::AccountInfo,
         ) {
+            // `Account::from(pre)` seeds `original_info` with the PRE-state, which revm's bundle
+            // diffing uses; then overwrite `info` with the post-state and mark it touched.
             let mut acct = Account::from(pre);
             acct.info = post;
             acct.mark_touch();
             st.insert(addr, acct);
         }
+        let mut stage = |me: &mut Self, a: Address, post: revm::state::AccountInfo| {
+            if let Some(slot) = me.overlay.get_mut(&a) {
+                slot.1 = post;
+            }
+        };
 
         let sender_pre = sender.clone();
         sender.balance = new_sender_balance;
         sender.nonce = sender.nonce.saturating_add(1);
-        touch(&mut state, signer, sender_pre, sender);
+        touch(&mut state, signer, sender_pre, sender.clone());
+        stage(self, signer, sender);
 
         if to != signer {
-            let ti_pre = to_info.unwrap_or_default();
-            let mut ti = ti_pre.clone();
+            let mut ti = to_info.clone();
             ti.balance = ti.balance.saturating_add(value);
-            touch(&mut state, to, ti_pre, ti);
+            touch(&mut state, to, to_info, ti.clone());
+            stage(self, to, ti);
         }
         if beneficiary != signer && beneficiary != to {
-            // balance tracked in-memory: only our own fee credits move it while transfers run
-            // cached => no DB read at all (the 3rd of the 3 reads this saves per transfer)
-            let bi_pre = match &self.beneficiary_info {
-                Some(info) => info.clone(),
-                None => read(db, beneficiary)?.unwrap_or_default(),
-            };
-            let mut bi = bi_pre.clone();
+            let mut bi = bene_info.clone();
             bi.balance = bi.balance.saturating_add(fee);
-            self.beneficiary_info = Some(bi.clone());
-            touch(&mut state, beneficiary, bi_pre, bi);
+            touch(&mut state, beneficiary, bene_info, bi.clone());
+            stage(self, beneficiary, bi);
         } else if let Some(existing) = state.get_mut(&beneficiary) {
             // self-payment / beneficiary is already a party: fold the fee into that entry
             existing.info.balance = existing.info.balance.saturating_add(fee);
+            let folded = existing.info.clone();
+            stage(self, beneficiary, folded);
         }
 
         Ok(Some(ResultAndState {
@@ -638,6 +693,7 @@ where
                     result,
                     blob_gas_used: tx.tx().blob_gas_used().unwrap_or_default(),
                     tx_type: tx.tx().tx_type(),
+                    from_fast_path: true,
                 });
             }
         }
@@ -645,8 +701,8 @@ where
         // General EVM path: arbitrary code may write NATIVE_COIN_CONTROL storage or move the
         // beneficiary's balance, so both per-block fast-path caches must be dropped. Conservative
         // and cheap — a payment-lane block of pure transfers never reaches here.
+        self.flush_overlay()?;
         self.blocklist_cache.clear();
-        self.beneficiary_info = None;
 
         // Execute transaction.
         let result = self
@@ -658,6 +714,7 @@ where
             result,
             blob_gas_used: tx.tx().blob_gas_used().unwrap_or_default(),
             tx_type: tx.tx().tx_type(),
+            from_fast_path: false,
         })
     }
 
@@ -666,6 +723,7 @@ where
             result: ResultAndState { result, state },
             blob_gas_used,
             tx_type,
+            from_fast_path,
         } = output;
 
         // alloy-evm 0.36 / revm-40 split gas into tx/regular/state components (EIP-8037).
@@ -698,7 +756,11 @@ where
         // DB layer (`State::set_state_hook`) by reth's executor wrapper and fires inside
         // `db.commit(..)`, so the old explicit `system_caller.on_state(..)` forwarding here is
         // redundant and has been removed (the trait no longer exposes a state hook).
-        self.evm.db_mut().commit(state);
+        // Fast-path results are already staged in the per-block overlay and are committed once in
+        // `finish`; committing here as well would double-apply them.
+        if !from_fast_path {
+            self.evm.db_mut().commit(state);
+        }
 
         GasOutput::with_state_gas(tx_gas_used, state_gas_used)
     }
@@ -706,6 +768,10 @@ where
     fn finish(
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
+        // Commit everything the fast path staged BEFORE the system-contract calls below read or
+        // write state.
+        self.flush_overlay()?;
+
         // EIP-6110 not activated
         let requests = Requests::default();
 

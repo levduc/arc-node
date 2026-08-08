@@ -446,6 +446,109 @@ fn main() {
         );
     }
 
+    // ---- SAFETY PROBE: is commit-once-per-block bundle-identical to commit-per-tx? ----
+    // db.commit() per tx is 51% of the executor path. Collapsing it to one commit per block is the
+    // next optimisation, but it changes how BundleState records REVERTS — and a revert bug breaks
+    // reorg unwinding WITHOUT changing the state root, so the normal gates would NOT catch it.
+    // So compare the full bundle (plain state AND reverts) both ways before writing any executor code.
+    {
+        use revm::database::states::bundle_state::BundleRetention;
+        use revm::state::{Account, AccountInfo, EvmState};
+        const NACC: usize = 64;   // small enough to diff exhaustively
+        const NTX: usize = 500;   // accounts touched repeatedly -> where collapsing actually differs
+        let acc = |i: usize| sender_addr(i % NACC);
+
+        // seed identical base state for both paths
+        let mk_base = || {
+            let mut db = InMemoryDB::default();
+            for i in 0..NACC {
+                db.insert_account_info(acc(i), AccountInfo { balance: U256::from(1_000_000u64), nonce: 7, ..Default::default() });
+            }
+            db
+        };
+        let one = |a: Address, pre: AccountInfo, post: AccountInfo| {
+            let mut x = Account::from(pre); x.info = post; x.mark_touch(); (a, x)
+        };
+
+        // PATH A: commit every tx separately (what the executor does today)
+        let mut dba = mk_base();
+        let mut sa = revm::database::State::builder().with_database(&mut dba).with_bundle_update().build();
+        for i in 0..NTX {
+            let (s_, r_, b_) = (acc(i), acc(i + 1), BENEFICIARY);
+            let mut st = EvmState::default();
+            for (k, a) in [s_, r_, b_].into_iter().enumerate() {
+                let pre = sa.basic(a).ok().flatten().unwrap_or_default();
+                let mut post = pre.clone();
+                post.balance = post.balance.saturating_add(U256::from(10u64 + k as u64));
+                if k == 0 { post.nonce = pre.nonce.saturating_add(1); }
+                let (addr, acct) = one(a, pre, post); st.insert(addr, acct);
+            }
+            sa.commit(st);
+        }
+        sa.merge_transitions(BundleRetention::Reverts);
+        let bundle_a = sa.take_bundle();
+
+        // PATH B: accumulate an overlay, commit ONCE (original = block-start value)
+        let mut dbb = mk_base();
+        let mut sb = revm::database::State::builder().with_database(&mut dbb).with_bundle_update().build();
+        let mut orig: std::collections::HashMap<Address, AccountInfo> = Default::default();
+        let mut cur: std::collections::HashMap<Address, AccountInfo> = Default::default();
+        for i in 0..NTX {
+            let (s_, r_, b_) = (acc(i), acc(i + 1), BENEFICIARY);
+            for (k, a) in [s_, r_, b_].into_iter().enumerate() {
+                let pre = cur.get(&a).cloned().unwrap_or_else(|| {
+                    let v = sb.basic(a).ok().flatten().unwrap_or_default();
+                    orig.insert(a, v.clone()); v
+                });
+                let mut post = pre.clone();
+                post.balance = post.balance.saturating_add(U256::from(10u64 + k as u64));
+                if k == 0 { post.nonce = pre.nonce.saturating_add(1); }
+                cur.insert(a, post);
+            }
+        }
+        let mut st = EvmState::default();
+        let mut keys: Vec<_> = cur.keys().copied().collect(); keys.sort();
+        for a in keys {
+            let (addr, acct) = one(a, orig.get(&a).cloned().unwrap_or_default(), cur[&a].clone());
+            st.insert(addr, acct);
+        }
+        sb.commit(st);
+        sb.merge_transitions(BundleRetention::Reverts);
+        let bundle_b = sb.take_bundle();
+
+        // compare plain state
+        let plain = |b: &revm::database::states::bundle_state::BundleState| {
+            let mut v: Vec<_> = b.state.iter()
+                .map(|(a, acc)| (*a, acc.info.as_ref().map(|i| (i.balance, i.nonce))))
+                .collect();
+            v.sort_by_key(|(a, _)| *a); v
+        };
+        let pa = plain(&bundle_a); let pb = plain(&bundle_b);
+        let plain_same = pa == pb;
+        // compare reverts (what reorg unwinding uses)
+        let rev = |b: &revm::database::states::bundle_state::BundleState| {
+            let mut out = Vec::new();
+            for blk in b.reverts.iter() {
+                let mut v: Vec<_> = blk.iter()
+                    .map(|(a, r)| format!("{a}:{:?}", r.account)).collect();
+                v.sort(); out.push(v);
+            }
+            out
+        };
+        let ra = rev(&bundle_a); let rb = rev(&bundle_b);
+        println!("SAFETY PROBE commit-per-tx vs commit-once ({NTX} txs over {NACC} accounts):");
+        println!("  plain state : {}  ({} vs {} accounts)", if plain_same {"IDENTICAL ✓"} else {"DIFFERS ✗"}, pa.len(), pb.len());
+        println!("  reverts     : {}  ({} vs {} revert blocks)", if ra == rb {"IDENTICAL ✓"} else {"DIFFERS ✗"}, ra.len(), rb.len());
+        if !plain_same { if let Some((x,y)) = pa.iter().zip(&pb).find(|(x,y)| x!=y) { println!("    first plain diff: {x:?} vs {y:?}"); } }
+        if ra != rb {
+            for (i,(x,y)) in ra.iter().zip(&rb).enumerate() {
+                if x!=y { println!("    revert block {i} differs: {} vs {} entries", x.len(), y.len());
+                          if let Some(d)=x.iter().zip(y).find(|(p,q)| p!=q) { println!("      e.g. {} vs {}", d.0, d.1); } break; }
+            }
+        }
+        println!();
+    }
+
     for (name, w) in [("pool  (recipients NOT senders — real spammer)", Workload::Pool),
                       ("closed(ring: every recipient is a sender)   ", Workload::Closed)]
     {
