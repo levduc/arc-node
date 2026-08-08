@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560" font-family="Inter,Helvetica,Arial,sans-serif">
+<rect width="960" height="560" fill="#ffffff"/>
+<text x="78" y="34" font-size="19" font-weight="700" fill="#1a1f2e">Payment lane: bigger blocks buy throughput, and cost latency</text>
+<text x="78" y="56" font-size="12.5" fill="#7b8394">One chain, gas limit flipped at runtime · 4 validators · execution is ~3% of block time at the target</text>
+<line x1="78" y1="468.0" x2="882" y2="468.0" stroke="#e6e9ef" stroke-width="1"/>
+<text x="68" y="472.0" font-size="11" fill="#2563eb" text-anchor="end">0</text>
+<line x1="78" y1="389.6" x2="882" y2="389.6" stroke="#e6e9ef" stroke-width="1"/>
+<text x="68" y="393.6" font-size="11" fill="#2563eb" text-anchor="end">1,800</text>
+<line x1="78" y1="311.2" x2="882" y2="311.2" stroke="#e6e9ef" stroke-width="1"/>
+<text x="68" y="315.2" font-size="11" fill="#2563eb" text-anchor="end">3,600</text>
+<line x1="78" y1="232.8" x2="882" y2="232.8" stroke="#e6e9ef" stroke-width="1"/>
+<text x="68" y="236.8" font-size="11" fill="#2563eb" text-anchor="end">5,400</text>
+<line x1="78" y1="154.4" x2="882" y2="154.4" stroke="#e6e9ef" stroke-width="1"/>
+<text x="68" y="158.4" font-size="11" fill="#2563eb" text-anchor="end">7,200</text>
+<line x1="78" y1="76.0" x2="882" y2="76.0" stroke="#e6e9ef" stroke-width="1"/>
+<text x="68" y="80.0" font-size="11" fill="#2563eb" text-anchor="end">9,000</text>
+<text x="892" y="472.0" font-size="11" fill="#e0562d">0</text>
+<text x="892" y="374.0" font-size="11" fill="#e0562d">400</text>
+<text x="892" y="276.0" font-size="11" fill="#e0562d">800</text>
+<text x="892" y="178.0" font-size="11" fill="#e0562d">1200</text>
+<text x="892" y="80.0" font-size="11" fill="#e0562d">1600</text>
+<text x="26" y="272.0" font-size="12" font-weight="600" fill="#2563eb" transform="rotate(-90 26 272.0)" text-anchor="middle">throughput (tx/s)</text>
+<text x="938" y="272.0" font-size="12" font-weight="600" fill="#e0562d" transform="rotate(90 938 272.0)" text-anchor="middle">block latency (ms)</text>
+<line x1="78" y1="345.5" x2="882" y2="345.5" stroke="#15803d" stroke-width="1.6" stroke-dasharray="7 4"/>
+<text x="876" y="337.5" font-size="11.5" font-weight="600" fill="#15803d" text-anchor="end">2 blocks/s target — 500 ms</text>
+<polyline points="78.0,365.1 229.1,335.5 380.1,156.0 531.2,128.5 730.9,191.3 882.0,127.8" fill="none" stroke="#2563eb" stroke-width="2.6"/>
+<polyline points="78.0,344.5 229.1,276.4 380.1,305.1 531.2,254.1 730.9,92.7 882.0,212.5" fill="none" stroke="#e0562d" stroke-width="2.6" stroke-dasharray="5 3"/>
+<circle cx="78.0" cy="365.1" r="5.2" fill="#2563eb" stroke="#2563eb" stroke-width="2.2"/>
+<circle cx="78.0" cy="344.5" r="5.2" fill="#e0562d" stroke="#e0562d" stroke-width="2.2"/>
+<text x="78.0" y="488" font-size="11.5" font-weight="600" fill="#1a1f2e" text-anchor="middle">25M</text>
+<text x="78.0" y="503" font-size="10" fill="#7b8394" text-anchor="middle">1,190 tx</text>
+<text x="78.0" y="516" font-size="10" fill="#1a1f2e" text-anchor="middle">100% full</text>
+<circle cx="229.1" cy="335.5" r="5.2" fill="#ffffff" stroke="#2563eb" stroke-width="2.2"/>
+<circle cx="229.1" cy="276.4" r="5.2" fill="#ffffff" stroke="#e0562d" stroke-width="2.2"/>
+<text x="229.1" y="488" font-size="11.5" font-weight="600" fill="#1a1f2e" text-anchor="middle">50M</text>
+<text x="229.1" y="503" font-size="10" fill="#7b8394" text-anchor="middle">2,380 tx</text>
+<text x="229.1" y="516" font-size="10" fill="#1a1f2e" text-anchor="middle">100% full</text>
+<circle cx="380.1" cy="156.0" r="5.2" fill="#2563eb" stroke="#2563eb" stroke-width="2.2"/>
+<circle cx="380.1" cy="305.1" r="5.2" fill="#e0562d" stroke="#e0562d" stroke-width="2.2"/>
+<text x="380.1" y="488" font-size="11.5" font-weight="600" fill="#1a1f2e" text-anchor="middle">100M</text>
+<text x="380.1" y="503" font-size="10" fill="#7b8394" text-anchor="middle">4,761 tx</text>
+<text x="380.1" y="516" font-size="10" fill="#1a1f2e" text-anchor="middle">100% full</text>
+<circle cx="531.2" cy="128.5" r="5.2" fill="#ffffff" stroke="#2563eb" stroke-width="2.2"/>
+<circle cx="531.2" cy="254.1" r="5.2" fill="#ffffff" stroke="#e0562d" stroke-width="2.2"/>
+<text x="531.2" y="488" font-size="11.5" font-weight="600" fill="#1a1f2e" text-anchor="middle">200M</text>
+<text x="531.2" y="503" font-size="10" fill="#7b8394" text-anchor="middle">6,805 tx</text>
+<text x="531.2" y="516" font-size="10" fill="#7b8394" text-anchor="middle">71% full</text>
+<circle cx="730.9" cy="191.3" r="5.2" fill="#ffffff" stroke="#2563eb" stroke-width="2.2"/>
+<circle cx="730.9" cy="92.7" r="5.2" fill="#ffffff" stroke="#e0562d" stroke-width="2.2"/>
+<text x="730.9" y="488" font-size="11.5" font-weight="600" fill="#1a1f2e" text-anchor="middle">500M</text>
+<text x="730.9" y="503" font-size="10" fill="#7b8394" text-anchor="middle">9,732 tx</text>
+<text x="730.9" y="516" font-size="10" fill="#7b8394" text-anchor="middle">41% full</text>
+<circle cx="882.0" cy="127.8" r="5.2" fill="#ffffff" stroke="#2563eb" stroke-width="2.2"/>
+<circle cx="882.0" cy="212.5" r="5.2" fill="#ffffff" stroke="#e0562d" stroke-width="2.2"/>
+<text x="882.0" y="488" font-size="11.5" font-weight="600" fill="#1a1f2e" text-anchor="middle">1000M</text>
+<text x="882.0" y="503" font-size="10" fill="#7b8394" text-anchor="middle">8,143 tx</text>
+<text x="882.0" y="516" font-size="10" fill="#7b8394" text-anchor="middle">17% full</text>
+<text x="88.0" y="351.1" font-size="11.5" font-weight="700" fill="#15803d">holds 2.00 blk/s · 2,363 tps</text>
+<text x="374.1461341322449" y="142.0" font-size="11.5" font-weight="700" fill="#2563eb" text-anchor="middle">7,164 tps @ 665 ms</text>
+<line x1="78" y1="526" x2="104" y2="526" stroke="#2563eb" stroke-width="2.6"/>
+<text x="110" y="530" font-size="11.5" fill="#1a1f2e">throughput</text>
+<line x1="198" y1="526" x2="224" y2="526" stroke="#e0562d" stroke-width="2.6" stroke-dasharray="5 3"/>
+<text x="230" y="530" font-size="11.5" fill="#1a1f2e">latency</text>
+<circle cx="310" cy="526" r="5.2" fill="#ffffff" stroke="#7b8394" stroke-width="2.2"/>
+<text x="322" y="530" font-size="11.5" fill="#7b8394">hollow = not load-saturated (measures the spammer) or noisy — 50M persist spike</text>
+</svg>
