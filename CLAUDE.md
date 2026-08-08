@@ -551,6 +551,14 @@ already tolerates receipts appearing only at finish(). Validation runs on all 4 
 1, so this still captures ~4/5 of network execution work. Verification on the fleet = the chain itself:
 all 4 validators must agree on the payment-lane state root every height (divergence halts consensus =
 loud safe failure). Full plan: experiments/reth-fork/README.md.
+**PER-BLOCK READ CACHES (2026-08-08, MISSION-EL iter 2).** ~85% of live exec cost is state reads;
+3 of the 5 a transfer does are block-constant. Cached in ArcBlockExecutor: blocklist status (map)
++ fee beneficiary (full AccountInfo tracked in memory, NOT just balance — a default would reset
+nonce/code_hash and diverge the root). Both invalidated on any general-EVM tx. **5 reads/tx -> 2.**
+Offline executor path stock->fastpath->+caches: pool 107.7->64.1->54.1ms, closed 94.9->58.4->45.4ms
+(~2.0x vs stock). Live: 122 heights zero divergence, exec 17.6 us/tx @5,079 txs/blk. No batching
+needed for this win; batch execution remains the next step (unlocks parallel prefetch + the
+verified 4.25x sender-partitioned scheme).
 **🔬 WHY FASTER EXECUTION DID NOT RAISE TPS — MEASURED, DEFINITIVE (2026-08-08).** Question: exec
 improved 37% but fleet tps was flat; do big blocks degrade it? ANSWER: **no — big blocks are neutral,
 and EXECUTION IS ONLY 10% OF BLOCK TIME.** Evidence: (a) tps is FLAT across an 8x block-size range

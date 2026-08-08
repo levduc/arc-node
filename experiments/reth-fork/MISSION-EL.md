@@ -66,7 +66,24 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
       CONSEQUENCE: rather than instrument the parse (which needs CL changes), run a TRANSPORT A/B —
       HTTP vs IPC, same everything else — and read the difference in block time / cadence. That
       measures the ingestion cost end-to-end without touching consensus.
-- [ ] **STEP 1 (NEW TOP PRIORITY): BATCH EXECUTION inside ArcBlockExecutor.** This is the unlock
+- [x] **PER-BLOCK READ CACHES LANDED + VERIFIED (iteration 2, commit below).** Took the state-read
+      win WITHOUT batching — ~40 lines instead of ~250. Cached the 3 block-constant reads:
+      blocklist status (memoised map; NATIVE_COIN_CONTROL is not written by transfers) and the fee
+      beneficiary (full AccountInfo tracked in memory). Both INVALIDATED on any general-EVM tx.
+      **5 state reads/transfer -> 2.**
+      * Gates: BOTH IDENTICAL on both workloads.
+      * Offline executor path: pool 107.7 -> 64.1 -> **54.1 ms**, closed 94.9 -> 58.4 -> **45.4 ms**
+        (stock -> fast path -> +caches) = **~2.0x vs stock**, 1.18-1.29x from the caches alone.
+      * Live 4-validator demo at 1 Ggas: **122 consecutive heights (154..275), ZERO divergence**;
+        exec 89.2 ms @ 5,079 txs/blk = **17.6 us/tx**, vs a prior stock run at a comparable
+        5,363 txs/blk = 22.6 us/tx (~1.29x). CAVEAT: those two live runs were not a controlled A/B
+        (different chain instances); the controlled evidence is the offline number. Use
+        `ab-fastpath.sh` for a rigorous live claim.
+      * CORRECTNESS BUG CAUGHT PRE-TEST: the beneficiary cache must hold the FULL AccountInfo —
+        rebuilding a default would reset its nonce/code_hash in the state diff and diverge the root.
+- [ ] **BATCH EXECUTION
+
+ inside ArcBlockExecutor.** This is the unlock
       for every other execution win, and nothing fundamental blocks it — the earlier "can't batch"
       note applied to reth's GENERIC side (it cannot construct `E::Result`); inside arc-evm the types
       are concrete.
