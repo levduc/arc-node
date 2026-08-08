@@ -271,6 +271,80 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🎯 MISSION 3 RESULT: 50M GAS HOLDS 2 blk/s AT 4,660 TPS — 1.97x THE BASELINE (2026-08-09)
+
+Goal was "a block larger than 25M that still holds 2 blk/s". Achieved, and the win came from
+FIXING THE MEASUREMENT, not from optimising anything.
+
+Fine-grained sweep, one chain, gas flipped at runtime, all 4 payment ELs on
+`--engine.state-root-fallback`, 75 s windows, **6 spammers so every point is load-saturated
+(100% full)**:
+
+| gas | txs/blk | blk/s | latency | tps | exec | root | persist | |
+|------|---------|-------|---------|------|------|------|---------|--|
+| 25M | 1,190 | 1.99 | 504 ms | 2,363 | 3.8 | 10.5 | 49.0 | HOLDS (prior sweep) |
+| 30M | 1,428 | 1.99 | 504 ms | 2,835 | 15.0 | 12.5 | 54.9 | HOLDS |
+| 40M | 1,904 | 1.98 | 504 ms | 3,777 | 28.0 | 19.3 | 61.0 | HOLDS |
+| **50M** | **2,380** | **1.96** | **511 ms** | **4,660** | 42.4 | 27.8 | 70.4 | **HOLDS — the ceiling** |
+| 55M | 2,618 | 1.69 | 591 ms | 4,427 | 49.2 | 30.9 | 157.0 | degraded |
+| 60M | 2,856 | 1.75 | 573 ms | 4,986 | 57.3 | 31.7 | 77.3 | degraded |
+| 75M | 3,571 | 1.45 | 689 ms | 5,186 | 64.3 | 34.8 | 165.2 | degraded |
+
+**The old 25M answer was an artefact of under-delivery.** The previous sweep used 4 spammers; at
+50M it read 782 ms / 1.28 blk/s with persist "spiking" to 448.6 ms. Re-measured with 6 spammers:
+**511 ms / 1.96 blk/s, persist 70.4 ms.** The spike was noise, and it was the entire basis for
+lead #1. Doubling deliverable throughput at the latency target required no code at all.
+
+CONFOUND (stated, not smoothed): sizes are swept sequentially on a GROWING chain, so later points
+carry more state. 55M ran last (~1,700 blocks in) and came out worse than 50M in BOTH tps and
+latency — some of that is chain age, not size. The true ceiling on a fresh chain may sit slightly
+above 50M. Above 50M tps also flattens hard (4,660 -> 4,986 -> 5,186) while latency climbs, so
+50M is close to optimal on both axes regardless.
+
+## ❌ LEAD #1 (PERSISTENCE) — CLOSED, IT MAKES THINGS WORSE (2026-08-09)
+
+Same sweep sequence re-run with `--engine.persistence-threshold 64 --engine.memory-block-buffer-target 128`
+on all 4 (a storage-timing knob; it cannot change execution semantics, and a cadence experiment
+requires all validators since cadence is a chain property):
+
+| gas | default | tuned |
+|------|---------|-------|
+| 30M | 1.99 blk/s, 2,835 tps | 1.93, 2,758 |
+| 40M | 1.98, 3,777 | 1.65, 3,146 |
+| 50M | **1.96, 4,660** | 1.36, 3,232 |
+| 60M | 1.75, 4,986 | 1.13, 3,235 |
+
+**Worse at every size, and the mechanism is visible: STATE ROOT went 2-3x more expensive**
+(12.5/19.3/27.8/31.7 -> 43.6/63.8/61.0/69.6 ms) while persist did NOT drop. Holding 64-128 blocks
+in memory forces root computation to walk a much deeper in-memory overlay. Deferring persistence
+relocates cost into state root.
+
+Supporting evidence that persistence was never the limiter: fsync on this box is **1.28 ms/op**
+(4k dsync), persist is async, and persist never correlated with cadence in the original data
+(50M persist 448 ms -> 782 ms cadence, but 100M persist 74.9 ms -> 665 ms).
+
+## 🚨 FOURTH CONSENSUS BUG: ZERO-VALUE TRANSFERS EMITTED A LOG — FOUND BY THE NEW GATE (2026-08-09)
+
+Clearing the correctness debt (EIP-2930 with empty access list + zero-value transfers added to
+`Workload::Mixed`) immediately caught a fourth fork: state digests matched, **receipts did not** --
+stock 6,538 logs vs fast path 7,000. The 462 difference was exactly the zero-value transfers.
+
+`ArcEvm::before_frame_init` only reaches the log builder through
+`Some((from, to, amount)) if !amount.is_zero()` — **a zero-value transfer emits NOTHING.** The fast
+path emitted one unconditionally. Same silent-fork shape as the missing-log and legacy-fee bugs:
+receipts move, state does not.
+
+FIXED (`executor.rs`): return no logs when `value.is_zero()`, ahead of the hardfork split.
+Both gates now agree on every digest. EIP-2930-with-empty-access-list needed no fix — the earlier
+`effective_gas_price` change already covers it.
+
+Scope note: this fix is OFFLINE-validated. The live spammer never sends zero-value transfers, so a
+live run would not exercise it; the gate is the appropriate test. The flag remains OFF by default.
+
+**FOUR bugs, ONE shape.** Every fast-path bug came from assuming what a transaction is instead of
+asking: assumed logs always, assumed 1559 fees, assumed a log for every transfer. Three of the four
+were invisible to state comparison alone.
+
 ## 🚨 SECOND CONSENSUS BUG IN THE FAST PATH: LEGACY-TX FEES — FOUND, FIXED (2026-08-08)
 
 Hunting the same class of blind spot as the log bug (both gates only ever ran **pure EIP-1559

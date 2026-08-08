@@ -440,13 +440,20 @@ where
         //
         // Mirrors the interpreter's rules exactly: EIP-7708 `Transfer` from Zero5 onward, with
         // self-transfers emitting NOTHING, and the legacy `NativeCoinTransferred` before that.
-        let transfer_logs = if is_arc_fork_active(
+        // A ZERO-VALUE transfer emits NOTHING: `ArcEvm::before_frame_init` only reaches the log
+        // builder via `Some((from, to, amount)) if !amount.is_zero()`. Emitting one anyway changed
+        // receipts while leaving state identical — the same silent-fork shape as the legacy-fee and
+        // missing-log bugs, and caught here only because the Mixed gate now includes zero-value txs.
+        let transfer_logs = if value.is_zero() {
+            Vec::new()
+        } else if is_arc_fork_active(
             &self.chain_spec,
             ArcHardfork::Zero5,
             self.block_number_u64()?,
             self.block_timestamp_u64()?,
         ) {
             if signer == to {
+                // EIP-7708: self-transfers do not emit a log
                 Vec::new()
             } else {
                 vec![crate::log::create_eip7708_transfer_log(signer, to, value)]

@@ -6,26 +6,36 @@ self-contained SVG for the slide deck. No dependencies.
 
     python3 experiments/dual-el/blocksize-chart.py [out.svg]
 
-The numbers below are the 2026-08-08 sweep: one chain, gas limit flipped at runtime, all four
-payment ELs on the same config, 75 s windows, four local spammers.
+2026-08-09 fine-grained sweep: one chain, gas limit flipped at runtime, all four payment ELs on
+the same config (--engine.state-root-fallback), 75 s windows, SIX local spammers so every point is
+load-saturated.
 
 HONESTY NOTES baked into the chart, because they change how it should be read:
-  * >=200M rows are DELIVERY-bound -- blocks only 71/41/17% full, four local spammers could not
-    offer enough load. Those points measure the load generator, not the lane. Drawn hollow.
-  * The 50M row is noise: persistence spiked to 448 ms and its cadence came out worse than 100M
-    at half the size. Drawn hollow too.
-  * Only 25M / 100M (100% full, clean) carry the argument.
+  * Hollow points MISS the 2 blk/s target. Every point here is 100% full, so unlike the earlier
+    coarse sweep none of them are delivery-bound.
+  * 55M was swept LAST and carries the most chain state; some of its deficit vs 50M is chain age,
+    not block size. Sizes are swept sequentially on a growing chain.
+  * 25M is carried over from the earlier 4-spammer sweep (it was 100% full, so comparable).
 """
 import sys
 
-# gas(M), txs/blk, blk/s, ms/blk, tps, %full, solid?
+# gas(M), txs/blk, blk/s, ms/blk, tps, %full, holds-target?
+#
+# 2026-08-09 FINE-GRAINED sweep, 6 spammers so every point is load-SATURATED (100% full) --
+# unlike the first coarse sweep, whose >=200M rows were delivery-bound and measured the spammer.
+# 25M is carried over from that first sweep (it was 100% full, so saturated and comparable).
+#
+# CONFOUND, stated because it matters: sizes are swept sequentially on a GROWING chain, so later
+# points carry more state. 55M ran last (~1,700 blocks in) and came out worse than 50M in BOTH
+# tps and latency, which is partly chain age rather than block size.
 ROWS = [
     (25,   1190, 1.99,  504, 2363, 100, True),
-    (50,   2380, 1.28,  782, 3043, 100, False),
-    (100,  4761, 1.50,  665, 7164, 100, True),
-    (200,  6805, 1.15,  873, 7795,  71, False),
-    (500,  9732, 0.65, 1532, 6353,  41, False),
-    (1000, 8143, 0.96, 1043, 7810,  17, False),
+    (30,   1428, 1.99,  504, 2835, 100, True),
+    (40,   1904, 1.98,  504, 3777, 100, True),
+    (50,   2380, 1.96,  511, 4660, 100, True),
+    (55,   2618, 1.69,  591, 4427, 100, False),
+    (60,   2856, 1.75,  573, 4986, 100, False),
+    (75,   3571, 1.45,  689, 5186, 100, False),
 ]
 TARGET_MS = 500
 
@@ -43,8 +53,8 @@ OK = "#15803d"
 import math
 xs = [math.log10(r[0]) for r in ROWS]
 x0, x1 = min(xs), max(xs)
-TPS_MAX = 9000
-LAT_MAX = 1600
+TPS_MAX = 6000
+LAT_MAX = 800
 
 def px(g):   return L + (math.log10(g) - x0) / (x1 - x0) * PW
 def py_t(v): return T + PH - v / TPS_MAX * PH
@@ -56,9 +66,9 @@ a(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" he
   f'font-family="Inter,Helvetica,Arial,sans-serif">')
 a(f'<rect width="{W}" height="{H}" fill="#ffffff"/>')
 a(f'<text x="{L}" y="34" font-size="19" font-weight="700" fill="{INK}">'
-  f'Payment lane: bigger blocks buy throughput, and cost latency</text>')
+  f'Payment lane: 50M gas is the largest block that still holds 2 blocks/s</text>')
 a(f'<text x="{L}" y="56" font-size="12.5" fill="{MUTED}">'
-  f'One chain, gas limit flipped at runtime · 4 validators · execution is ~3% of block time at the target</text>')
+  f'One chain, gas limit flipped at runtime · 4 validators · every point load-saturated (100% full)</text>')
 
 # grid + left axis (tps)
 for i in range(0, 6):
@@ -102,11 +112,10 @@ for g, txs, bps, ms, tps, full, solid in ROWS:
 
 # callouts
 x25 = px(25)
-a(f'<text x="{x25+10}" y="{py_t(2363)-14:.1f}" font-size="11.5" font-weight="700" fill="{OK}">'
-  f'holds 2.00 blk/s · 2,363 tps</text>')
-x100 = px(100)
-a(f'<text x="{x100-6}" y="{py_t(7164)-14:.1f}" font-size="11.5" font-weight="700" fill="{TPS}" text-anchor="middle">'
-  f'7,164 tps @ 665 ms</text>')
+a(f'<text x="{x25-4}" y="{py_t(2363)-14:.1f}" font-size="11" fill="{MUTED}">2,363 tps</text>')
+x50 = px(50)
+a(f'<text x="{x50}" y="{py_t(4660)-16:.1f}" font-size="12" font-weight="700" fill="{OK}" text-anchor="middle">'
+  f'50M · 4,660 tps @ 511 ms — 1.97x the 25M baseline</text>')
 
 # legend
 ly = H - 30
@@ -116,7 +125,7 @@ a(f'<line x1="{L+120}" y1="{ly-4}" x2="{L+146}" y2="{ly-4}" stroke="{LAT}" strok
 a(f'<text x="{L+152}" y="{ly}" font-size="11.5" fill="{INK}">latency</text>')
 a(f'<circle cx="{L+232}" cy="{ly-4}" r="5.2" fill="#ffffff" stroke="{MUTED}" stroke-width="2.2"/>')
 a(f'<text x="{L+244}" y="{ly}" font-size="11.5" fill="{MUTED}">'
-  f'hollow = not load-saturated (measures the spammer) or noisy — 50M persist spike</text>')
+  f'hollow = misses the 2 blk/s target (55M also carries extra chain age — swept last)</text>')
 a('</svg>')
 
 out = sys.argv[1] if len(sys.argv) > 1 else "/tmp/blocksize-chart.svg"
@@ -124,5 +133,5 @@ open(out, "w").write("\n".join(o))
 print(f"wrote {out}")
 print(f"{'gas':>7} {'txs/blk':>9} {'blk/s':>7} {'ms':>6} {'tps':>7} {'full':>6}  note")
 for g, txs, bps, ms, tps, full, solid in ROWS:
-    note = "HOLDS 2 blk/s" if bps >= 1.9 else ("clean" if solid else ("delivery-bound" if full < 100 else "noisy"))
+    note = "HOLDS 2 blk/s" if bps >= 1.9 else "degraded"
     print(f"{g:>6}M {txs:>9,} {bps:>7.2f} {ms:>6} {tps:>7,} {full:>5}%  {note}")

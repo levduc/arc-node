@@ -533,6 +533,32 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🎯 MISSION 3: 50M GAS HOLDS 2 blk/s AT 4,660 TPS = 1.97x THE BASELINE (2026-08-09).** The win came
+from FIXING THE MEASUREMENT, not from optimising. Fine-grained sweep (one chain, runtime gas flips,
+all 4 pay ELs on `--engine.state-root-fallback`, 75s windows, **6 spammers so every point is 100%
+full**): 25M 2,363tps@504ms · 30M 2,835@504 · 40M 3,777@504 · **50M 4,660tps@511ms = the ceiling** ·
+55M 4,427@591 · 60M 4,986@573 · 75M 5,186@689. The earlier "only 25M holds" answer was an artefact of
+UNDER-DELIVERY (4 spammers): 50M previously read 782ms/1.28blk/s with persist "spiking" to 448.6ms;
+re-measured it is 511ms/1.96blk/s with persist 70.4ms. Chart: `experiments/dual-el/blocksize-chart.py`.
+CONFOUND: sizes sweep sequentially on a GROWING chain, so later points carry more state (55M ran last
+and lost to 50M on BOTH axes — partly chain age). Above 50M tps flattens (4,660→4,986→5,186) while
+latency climbs, so 50M is near-optimal on both axes anyway.
+- **❌ LEAD #1 PERSISTENCE — CLOSED, MAKES IT WORSE.** Same sweep with `--engine.persistence-threshold
+  64 --engine.memory-block-buffer-target 128` on all 4: 30M 1.93 / 40M 1.65 / 50M 1.36 / 60M 1.13 blk/s
+  (vs 1.99/1.98/1.96/1.75). Mechanism visible in the columns: **state root 2-3x more expensive**
+  (12.5/19.3/27.8/31.7 → 43.6/63.8/61.0/69.6ms) while persist did NOT drop — holding 64-128 blocks in
+  memory makes root walk a deeper in-memory overlay. Persistence was never the limiter: fsync here is
+  1.28ms/op, persist is async, and it never correlated with cadence.
+- **🚨 FOURTH CONSENSUS BUG (zero-value logs), found by the newly-extended gate.** Adding EIP-2930
+  (empty access list) + zero-value transfers to `Workload::Mixed` immediately caught it: state digests
+  matched but receipts did not — stock 6,538 logs vs fast path 7,000, the 462 gap being exactly the
+  zero-value txs. `before_frame_init` only logs via `Some((from,to,amount)) if !amount.is_zero()`, so a
+  ZERO-VALUE transfer emits NOTHING; the fast path emitted one. Fixed (no logs when `value.is_zero()`).
+  2930 needed no fix — `effective_gas_price` already covered it. Offline-validated only (the spammer
+  never sends zero-value txs, so live wouldn't exercise it); flag stays OFF by default.
+  **FOUR bugs, ONE shape: every one came from ASSUMING what a tx is instead of asking. Three of four
+  were invisible to state comparison alone.**
+
 **🚨 SECOND CONSENSUS BUG IN THE FAST PATH — LEGACY-TX FEES (2026-08-08).** Same blind-spot class
 as the log bug: both gates only ran PURE EIP-1559 TRANSFER blocks. Live mixed load
 (`--mix transfer=60,erc20=25,guzzler=10,legacy=5`), val1 fast path vs 3 stock → val1 diverged at

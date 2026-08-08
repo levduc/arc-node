@@ -165,6 +165,12 @@ fn build_txs_n(w: Workload, n: usize) -> Vec<Recovered<reth_ethereum_primitives:
             // `min(max_fee, basefee + priority)`. Getting that wrong moves balances without
             // changing any receipt, i.e. a pure state-root divergence.
             let legacy = w == Workload::Mixed && i % 5 == 0 && i % MIXED_EVERY != 0;
+            // EIP-2930 with an EMPTY access list is fast-path ELIGIBLE (the gate only rejects a
+            // non-empty list) and prices like legacy via gas_price -- same trap the type-0 bug
+            // fell into. Zero-value transfers are eligible too and skip the recipient blocklist
+            // read, so they exercise a different branch of the gate.
+            let eip2930 = w == Workload::Mixed && i % 11 == 0 && i % MIXED_EVERY != 0 && !legacy;
+            let zero_value = w == Workload::Mixed && i % 13 == 0 && i % MIXED_EVERY != 0;
             // calldata makes the tx ineligible for the fast path -> general EVM path
             let input: alloy_primitives::Bytes = if w == Workload::Mixed && i % MIXED_EVERY == 0 {
                 alloy_primitives::Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef])
@@ -179,11 +185,23 @@ fn build_txs_n(w: Workload, n: usize) -> Vec<Recovered<reth_ethereum_primitives:
                 max_fee_per_gas: MAX_FEE,
                 max_priority_fee_per_gas: TIP,
                 to: TxKind::Call(to),
-                value: U256::from(1_000u64),
+                value: if zero_value { U256::ZERO } else { U256::from(1_000u64) },
                 access_list: Default::default(),
                 input,
             };
-            let envelope: reth_ethereum_primitives::TransactionSigned = if legacy {
+            let envelope: reth_ethereum_primitives::TransactionSigned = if eip2930 {
+                let e = alloy_consensus::TxEip2930 {
+                    chain_id,
+                    nonce: tx.nonce,
+                    gas_price: BASEFEE as u128 * 2,
+                    gas_limit: tx.gas_limit,
+                    to: tx.to,
+                    value: tx.value,
+                    access_list: Default::default(),
+                    input: tx.input.clone(),
+                };
+                reth_ethereum_primitives::TransactionSigned::new_unhashed(e.into(), sig)
+            } else if legacy {
                 let l = alloy_consensus::TxLegacy {
                     chain_id: Some(chain_id),
                     nonce: tx.nonce,
