@@ -5,8 +5,11 @@
 #   IMAGES=arc_execution:latest ./ship-images.sh
 #
 # Verification matters: alien2's Wi-Fi has truncated GB-scale pipes before (documented in
-# CLAUDE.md), and a truncated `docker load` can leave a STALE image silently in place. So we
-# compare the image ID after loading and fail loudly on mismatch rather than trusting the pipe.
+# CLAUDE.md), and a truncated `docker load` can leave a STALE image silently in place.
+# We verify by CONTENT (sha256 of the binary inside the image), not by image ID: docker
+# recomputes image IDs across daemon versions/storage drivers, so IDs differ between hosts even
+# when the image is byte-identical (observed 2026-08-08: two hosts reported the same 'wrong' ID
+# while the binary hashed identically).
 set -uo pipefail
 export PATH="$HOME/.foundry/bin:$PATH"
 HOSTS=${HOSTS:-"ginnythui papaduck papaduck-alien2"}
@@ -17,17 +20,18 @@ tss(){ local h=$1; shift;
 
 rc=0
 for img in $IMAGES; do
-  local_id=$(docker images --format '{{.ID}}' "$img" | head -1)
-  [ -n "$local_id" ] || { echo "!! no local image $img"; rc=1; continue; }
-  echo "=== $img (local $local_id) ==="
+  case "$img" in arc_execution*) probe=/usr/local/bin/arc-node-execution;; *) probe=/usr/local/bin/arc-node-consensus;; esac
+  local_sum=$(docker run --rm --entrypoint sha256sum "$img" $probe 2>/dev/null | awk '{print $1}')
+  [ -n "$local_sum" ] || { echo "!! cannot hash $probe in local $img"; rc=1; continue; }
+  echo "=== $img (binary sha ${local_sum:0:16}) ==="
   for h in $HOSTS; do
-    remote_id=$(tss "$h" "docker images --format '{{.ID}}' $img 2>/dev/null | head -1" 2>/dev/null | tr -d ' \r')
-    if [ "$remote_id" = "$local_id" ]; then echo "  $h: already current ($remote_id) — skip"; continue; fi
-    echo "  $h: shipping (remote has '${remote_id:-none}')..."
+    remote_sum=$(tss "$h" "docker run --rm --entrypoint sha256sum $img $probe 2>/dev/null | awk '{print \$1}'" 2>/dev/null | tr -d ' \r')
+    if [ -n "$local_sum" ] && [ "$remote_sum" = "$local_sum" ]; then echo "  $h: already current — skip"; continue; fi
+    echo "  $h: shipping..."
     if docker save "$img" | gzip -1 | tss "$h" "gunzip | docker load" >/dev/null 2>&1; then
-      new_id=$(tss "$h" "docker images --format '{{.ID}}' $img 2>/dev/null | head -1" 2>/dev/null | tr -d ' \r')
-      if [ "$new_id" = "$local_id" ]; then echo "    OK ($new_id)"
-      else echo "    !! MISMATCH after load: remote=$new_id local=$local_id (truncated pipe?)"; rc=1; fi
+      new_sum=$(tss "$h" "docker run --rm --entrypoint sha256sum $img $probe 2>/dev/null | awk '{print \$1}'" 2>/dev/null | tr -d ' \r')
+      if [ "$new_sum" = "$local_sum" ]; then echo "    OK (binary sha matches)"
+      else echo "    !! CONTENT MISMATCH: remote=${new_sum:0:16} local=${local_sum:0:16} (truncated pipe?)"; rc=1; fi
     else
       echo "    !! transfer failed to $h"; rc=1
     fi
