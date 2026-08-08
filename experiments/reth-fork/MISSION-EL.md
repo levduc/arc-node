@@ -271,6 +271,39 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## ❌ PERSISTENCE THRESHOLD IS NOT THE MEMORY CULPRIT — ~16%, NOT A FIX (2026-08-09, iter 10)
+
+Tested the mitigation named last iteration: LOWER the persistence threshold so the in-memory block
+buffer is retired sooner (the earlier experiment RAISED it and hurt cadence). Config-only, per
+validator: val1 + val4 got `--engine.persistence-threshold 2 --engine.memory-block-buffer-target 4`,
+val2 + val3 stayed stock. Same chain, same blocks, identical load, 35 min.
+
+| node | RAM | config | start -> end | rate | per 1000 blk |
+|------|-----|--------|--------------|------|--------------|
+| val1 ginny | 62 GB | **LOW** | 462 -> 9,700 MiB | **298 MiB/min** | 3,179 MiB |
+| val2 ginnythui | 62 GB | stock | 1,042 -> 11,981 MiB | 353 MiB/min | 3,764 MiB |
+| val3 papaduck | 78 GB | stock | 3,033 -> 15,892 MiB | 415 MiB/min | 4,425 MiB |
+| val4 alien2 | 15 GB (11 GiB cap) | **LOW** | 689 -> 9,618 MiB | 288 MiB/min | 3,073 MiB |
+
+**MATCHED-HARDWARE RESULT (val1 vs val2, both 62 GB): 298 vs 353 MiB/min = 16% slower.** Real, and
+in the right direction — but every node is still marked STILL CLIMBING and still adding
+3.1-4.4 GiB per 1000 blocks. **So the in-memory block buffer accounts for only ~16% of the growth;
+~84% is something else. The leading hypothesis is ruled out.**
+
+val4 (the 11 GiB canary) SURVIVED this window where it OOMed in the stock run — but it finished at
+9,618 MiB and was ~6 minutes from the cap at its measured rate. **The flag buys time proportional to
+the 16%, not safety.** Do not treat it as a fix.
+
+Weak secondary signal, worth one line: comparing the two STOCK nodes, the 78 GB machine grew 17%
+faster than the 62 GB one (415 vs 353 MiB/min), which is consistent with reth sizing some cache
+against available RAM. Confounded with hardware, so it is a hypothesis, not a result.
+
+NEXT (still EL-side, still in scope): the buffer is exonerated, so the candidates are reth's
+state/trie caches or a genuine leak. Cheapest next step is to look for cache-sizing flags on the
+node binary and A/B those the same way; a heap profile would settle it but is a larger lift.
+Whatever runs next, `fleet/mem-soak.sh` must run alongside it — a node quietly approaching its cap
+distorts throughput measurements before it dies.
+
 ## 🚨 PAYMENT-EL MEMORY GROWS UNBOUNDED UNDER SUSTAINED LOAD — OOM REPRODUCED AND PREDICTED (2026-08-09, iter 9)
 
 Followed up the OOM flagged last iteration instead of chasing more tps. It is real, systematic, and
