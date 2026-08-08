@@ -37,7 +37,20 @@
       => Implement the FAST PATH first: simpler (no worker EVMs, no thread-safety), bigger win.
       Parallelism layers on top later for a further multiple. Exact semantics are in the bench's
       `run_fastpath()` and are the reference for the executor implementation.
-- [ ] **NEXT: implement `run_fastpath` semantics in `crates/evm/src/executor.rs`** (all of it in arc-evm; ~150–250 lines):
+- [x] **IMPLEMENTED + TYPECHECKS (commit 8225038): fast path wired into `ArcBlockExecutor`**
+      `ARC_PARALLEL_TRANSFERS=1` -> `execute_transaction_without_commit` returns a hand-built
+      `ResultAndState` for eligible transfers, so `commit_transaction`/`finish()` are UNTOUCHED and
+      both building and validation paths stay correct. Much simpler than buffering: no `finish()`
+      surgery, no reth fork. Key detail: `Account::from(pre)` seeds `original_info` (revm's bundle
+      diff needs the PRE-state), then `info` = post-state + `mark_touch()`.
+- [ ] **NEXT: runtime-verify the in-node fast path.** Suggested cheapest check: run the
+      single-machine demo twice under identical load — once stock, once with
+      `PAY_EL_EXTRA_ARGS` carrying the env var — and confirm the payment lane still advances with
+      all validators agreeing (any semantic error diverges the root and halts consensus). Then
+      compare `exec_ms` (baseline ~305ms at full 1 Ggas). NOTE: env must reach the container —
+      `launch-payment-els.sh` passes ARGS, not env; add `-e ARC_PARALLEL_TRANSFERS=1` to the
+      `docker run` there (and in fleet/demo-fleet-metamask.sh `payment_el_cmd`).
+- [ ] (old) implement `run_fastpath` semantics in `crates/evm/src/executor.rs` (all of it in arc-evm; ~150–250 lines):
       buffer plain transfers during validation → execute fast/parallel at `finish()` → feed the
       existing `commit_transaction()` so receipts/gas/bloom stay production code. Env-gated
       (e.g. `ARC_PARALLEL_TRANSFERS=1`) so only the payment EL opts in.
