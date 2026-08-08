@@ -31,6 +31,15 @@ ROWS = [
     (1000, 200, 9523, 0.67, 1492, 6382, False),
 ]
 
+# 4-MACHINE FLEET, distributed spam (one spammer set per machine against its LOCAL payment EL).
+# gas(M), txs/blk, blk/s, ms/blk, tps, %full, saturated?
+FLEET = [
+    (200,  6175, 1.16,  864, 7150,  65, False),   # 16 spammers
+    (200,  9523, 0.80, 1250, 7616, 100, True),    # 32 spammers -- filled, but SLOWER
+    (500, 15430, 0.53, 1876, 8226,  65, False),
+    (1000,39832, 0.18, 5478, 7272,  84, False),
+]
+
 W, H = 980, 580
 L, R, T, B = 84, 40, 82, 96
 PW, PH = W - L - R, H - T - B
@@ -38,7 +47,7 @@ INK, MUTED, GRID = "#1a1f2e", "#7b8394", "#e6e9ef"
 OK, WARN = "#15803d", "#b45309"
 GAS_COLOR = {50: "#2563eb", 100: "#7c3aed", 200: "#db2777"}
 
-LAT_MAX, TPS_MAX = 1600, 8000
+LAT_MAX, TPS_MAX = 5800, 9000
 def px(ms):  return L + ms / LAT_MAX * PW
 def py(tps): return T + PH - tps / TPS_MAX * PH
 
@@ -47,15 +56,15 @@ a(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" he
   f'font-family="Inter,Helvetica,Arial,sans-serif">')
 a(f'<rect width="{W}" height="{H}" fill="#ffffff"/>')
 a(f'<text x="{L}" y="34" font-size="19" font-weight="700" fill="{INK}">'
-  f'Payment lane: the gas limit sets the frontier — block time is only a throttle</text>')
+  f'Payment lane: throughput saturates near 7-8k tx/s; only latency changes</text>')
 a(f'<text x="{L}" y="56" font-size="12.5" fill="{MUTED}">'
-  f'4 validators, distributed load, every point 100% full · a longer target slows the chain; a shorter one changes nothing</text>')
+  f'One box (blue/purple/pink) vs 4 machines (teal) · on the fleet a 5x bigger block buys NO tps, just 6x the latency</text>')
 
 for i in range(6):
     v = TPS_MAX * i / 5; y = py(v)
     a(f'<line x1="{L}" y1="{y:.1f}" x2="{L+PW}" y2="{y:.1f}" stroke="{GRID}"/>')
     a(f'<text x="{L-10}" y="{y+4:.1f}" font-size="11" fill="{MUTED}" text-anchor="end">{int(v):,}</text>')
-for ms in (250, 500, 750, 1000, 1250, 1500):
+for ms in (500, 1000, 2000, 3000, 4000, 5000):
     x = px(ms)
     a(f'<line x1="{x:.1f}" y1="{T}" x2="{x:.1f}" y2="{T+PH}" stroke="{GRID}"/>')
     a(f'<text x="{x:.1f}" y="{T+PH+18}" font-size="11" fill="{MUTED}" text-anchor="middle">{ms}</text>')
@@ -82,6 +91,20 @@ for target, gas, txs, bps, ms, tps, held in ROWS:
     a(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="7" fill="{c if held else "#ffffff"}" stroke="{c}" stroke-width="2.4"/>')
     a(f'<text x="{x:.1f}" y="{y-13:.1f}" font-size="9.5" fill="{MUTED}" text-anchor="middle">{target}ms</text>')
 
+# fleet frontier
+fpts = sorted((r[3], r[4]) for r in FLEET)
+a(f'<polyline points="{" ".join(f"{px(m):.1f},{py(t):.1f}" for m, t in fpts)}" fill="none" '
+  f'stroke="#0f766e" stroke-width="2.8"/>')
+for gas, txs, bps, ms, tps, full, sat in FLEET:
+    x, y = px(ms), py(tps)
+    a(f'<rect x="{x-6:.1f}" y="{y-6:.1f}" width="12" height="12" '
+      f'fill="{"#0f766e" if sat else "#ffffff"}" stroke="#0f766e" stroke-width="2.4"/>')
+    a(f'<text x="{x:.1f}" y="{y-13:.1f}" font-size="9.5" fill="#0f766e" text-anchor="middle">{gas}M</text>')
+a(f'<text x="{px(864)+14:.1f}" y="{py(7150)-2:.1f}" font-size="12" font-weight="700" fill="#0f766e">'
+  f'FLEET 200M: 7,150 tx/s @ 864 ms</text>')
+a(f'<text x="{px(1876):.1f}" y="{py(8226)-16:.1f}" font-size="11" fill="#0f766e" text-anchor="middle">'
+  f'fleet peak 8,226</text>')
+
 # callouts
 r = [x for x in ROWS if x[0] == 1000 and x[1] == 100][0]
 a(f'<text x="{px(r[4])+14:.1f}" y="{py(r[5])+4:.1f}" font-size="12" font-weight="700" fill="{OK}">'
@@ -98,14 +121,20 @@ for i, gas in enumerate((50, 100, 200)):
     x = L + i * 118
     a(f'<circle cx="{x}" cy="{ly-4}" r="6" fill="{GAS_COLOR[gas]}"/>')
     a(f'<text x="{x+12}" y="{ly}" font-size="11.5" fill="{INK}">{gas}M gas</text>')
-a(f'<circle cx="{L+372}" cy="{ly-4}" r="6" fill="#ffffff" stroke="{MUTED}" stroke-width="2.2"/>')
-a(f'<text x="{L+384}" y="{ly}" font-size="11.5" fill="{MUTED}">'
-  f'hollow = did not hold its target (chain already slower than asked)</text>')
+a(f'<rect x="{L+366}" y="{ly-10}" width="12" height="12" fill="#0f766e"/>')
+a(f'<text x="{L+384}" y="{ly}" font-size="11.5" font-weight="600" fill="#0f766e">'
+  f'4-machine FLEET</text>')
+a(f'<text x="{L+500}" y="{ly}" font-size="11" fill="{MUTED}">'
+  f'hollow = target missed / not saturated</text>')
 a('</svg>')
 
 out = sys.argv[1] if len(sys.argv) > 1 else "/tmp/blocktime-chart.svg"
 open(out, "w").write("\n".join(o))
 print(f"wrote {out}")
+print("FLEET (4 machines):")
+for gas, txs, bps, ms, tps, full, sat in FLEET:
+    print(f"  {gas:>5}M {txs:>7,} {bps:>6.2f} blk/s {ms:>5}ms {tps:>7,} tps {full:>4}% full")
+print("\nSINGLE BOX:")
 print(f"{'target':>7} {'gas':>6} {'txs/blk':>9} {'blk/s':>7} {'ms':>6} {'tps':>7}  verdict")
 for target, gas, txs, bps, ms, tps, held in ROWS:
     print(f"{target:>6}ms {gas:>5}M {txs:>9,} {bps:>7.2f} {ms:>6} {tps:>7,}  {'HELD' if held else 'missed'}")

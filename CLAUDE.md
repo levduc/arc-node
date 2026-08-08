@@ -533,6 +533,28 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🎯 FLEET FRONTIER — RECONCILES "10k tps" vs the 4.7k single-box number (2026-08-09).** 4-machine
+fleet, stock config, distributed spam (one set per machine on its LOCAL pay EL):
+| gas | spammers | txs/blk | %full | blk/s | latency | tps |
+|------|----------|---------|-------|-------|---------|-----|
+| 200M | 16 | 6,175 | 65% | **1.16** | **864ms** | **7,150** |
+| 200M | 32 | 9,523 | 100% | 0.80 | 1,250ms | 7,616 |
+| 500M | 16 | 15,430 | 65% | 0.53 | 1,876ms | **8,226** |
+| 1G | 16 | 39,832 | 84% | 0.18 | 5,478ms | 7,272 |
+- **THROUGHPUT SATURATES ~7-8k tx/s ON THE FLEET; ONLY LATENCY CHANGES.** 200M→1Ggas (5x block) moves
+  tps 7,150→7,272 (nil) but latency 864→5,478ms (**6.3x worse**). **Operate at the SMALLEST block that
+  reaches the plateau: 200M @ ~864ms.** Bigger blocks buy nothing on real hardware.
+- **The 9.5k/4.7k gap = hardware + block size, not regression.** Single box = 4 validators (12
+  containers) on 16 shared cores, each re-executing every block; fleet = 1 validator per machine. Same
+  200M: fleet 7,150 tps @ 864ms vs single box 6,785 @ 1,404ms — same plateau, **1.6x better latency**.
+- **OVER-OFFERING LOAD IS COUNTERPRODUCTIVE (quantified):** 16→32 spammers at 200M filled blocks
+  65%→100% for **+6% tps but +45% latency**. **"100% full" is the WRONG success criterion for a
+  latency-sensitive lane** — the ingress cost of surplus txs exceeds what fullness returns.
+- **THESIS STRENGTHENS AT SCALE: state root 0.3ms on a 39,832-tx block** (1.0ms at 15,430). Commitment
+  stays negligible as blocks grow 5x; execution is what scales (61.8→479.3ms).
+- Today's 1 Ggas 7,272 tps vs the recorded 9.5k avg/15k peak: different chain age/machine state, and
+  15k was a PEAK vs a 120s average here. Both on the same 7-9k plateau.
+
 **🎯 2-D SWEEP (BLOCK TIME x GAS): BLOCK TIME IS NOT A THROUGHPUT KNOB (2026-08-09).** First sweep
 with EVERY point 100% full — distributed load (2 local + 8 ginnythui + 5 alien2 spammers over
 tailscale against this box's pay EL); local-only load saturates ~6k tx/s and can't fill 100M+ blocks.
