@@ -533,6 +533,13 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**📊 DECK ALIGNED (2026-08-09):** the deck had been headlining 1 Ggas at "9.5k/15k tx/s" — the source
+of the "bigger blocks bought throughput" impression. Slide now compares 100M vs 1 Ggas directly
+(7,398 tx/s @ 644ms vs 7,272 @ 5,478ms) and carries the marginal-cost table. Corrected my own sloppy
+bullet claiming state root was "20-50ms at 9.5k tx/block" (mixed sync/async measurements; fleet
+reality is 2.3ms @ 4,761 tx and 0.3ms @ 39,832, not growing with block size). Non-reproduction of the
+9.5k/15k figure is stated on the slide.
+
 **🔬 WHERE A BIGGER BLOCK'S ms GO — MEASURED; MISSION 3 CLOSED (2026-08-09).** Used Arc's own
 `reth_arc_payload_total_duration_seconds` (proposer build) + beacon-engine metrics. Both points 100%
 full, 4 machines, distributed spam:

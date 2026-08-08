@@ -271,6 +271,19 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 📊 DECK ALIGNED WITH THE MEASUREMENTS (2026-08-09, iter 7)
+
+The deck had been headlining 1 Ggas at "9.5k / 15k tx/s" as the throughput achievement. That is the
+number that produced the standing impression that bigger blocks bought throughput. Rewritten to
+compare 100M against 1 Ggas directly (7,398 tx/s @ 644 ms vs 7,272 @ 5,478 ms) and to carry the
+marginal-cost table, which is the mechanism. Also corrected a bullet of mine that claimed state root
+was "20-50 ms at 9.5k tx/block" -- that mixed the synchronous and asynchronous measurements; on the
+fleet it is 2.3 ms at 4,761 tx and 0.3 ms at 39,832, and it does not grow with block size. The
+non-reproduction of the 9.5k/15k figure is stated on the slide.
+
+NO further EL experiment was run this iteration: mission 3 is closed and every ranked lead is a
+measured negative or a measured knee. Running another sweep would be manufacturing work.
+
 ## 🔬 WHERE A BIGGER BLOCK'S MILLISECONDS GO — MEASURED, AND MISSION 3 CLOSED (2026-08-09, iter 6)
 
 Two things this iteration: (a) the 50M "holds 2 blk/s" headline REPRODUCES, and (b) the marginal
