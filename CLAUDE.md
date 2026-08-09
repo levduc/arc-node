@@ -490,6 +490,18 @@ how high can payment-lane tps go, and is "bigger blocks" the lever? Answer: **1 
   own. Re-runs MUST use `-l` (in the script) or start at nonce 0 → "nonce too low". The product dashboard
   summed pending+queued, so it showed a phantom backlog — payment-lane pending tile removed for this reason.
 
+**🎯 CLEAN DRAIN EXPERIMENT — CAPACITY NUMBERS FROZEN (2026-08-09, MISSION 4 iter 16).** Four
+fresh fleet chains (60M/100M × stock/prebuild), v2 drain harness, 3 drains/point, chain age
+2.7-3.6k at every drain: **60M stock 295ms/9.7k tps, 60M prebuild 272ms/10.5k (-8%, REAL),
+100M stock 407ms/11.7k, 100M prebuild ~410 (nil)**. Headroom vs sustained CONFIRMED 1.6-1.8×
+(delivery-paced spammers are the gap; the 1.05-2.3× uncertainty is closed). LINEAR MODEL, fits
+both stock points exactly: latency(n) = EL(18ms+20.2µs/tx) + consensus(109ms+38.6µs/tx) =
+**127ms + 59µs/tx → tps asymptote ~17k**; 2 blk/s crosses at n≈6,300 ≈ 132M gas; at capacity
+agreeing costs 1.9× executing (39 vs 20µs/tx — the sustained 4-6×/100µs figure was
+delivery-confounded, SUPERSEDED). Bigger blocks: 60→100M = +21% tps for +37% latency
+(diminishing returns, user accepts the latency trade). AUTHORITATIVE chart:
+`experiments/dual-el/latency-decomp-chart.py`; deck has the matching "law of the lane" frame
+(pushed). Prebuild-at-100M nil because peers' growing work overlaps the hidden build.
 **BRANCH `blockstm-native-transfers` (2026-08-07):** next experiment — Block-STM parallel execution
 for native transfers on the payment lane (the "parallel execution" lever from the 1 Ggas finding:
 exec 379ms/pass replayed ~5×/height is THE bottleneck; state-root 0.8ms is free). PRIOR WORK to build

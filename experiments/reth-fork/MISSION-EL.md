@@ -4,6 +4,34 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-09 — THE CLEAN DRAIN EXPERIMENT (iteration 16): numbers FROZEN
+
+Four fresh fleet chains (60M/100M x stock/prebuild), fork binary 3485bd6253b7ad67 everywhere,
+v2 drain harness (content-verified), 3 drains per point, chain age 2.7-3.6k blocks at every
+drain, early 20-block 4-way agreement OK on every chain. Harness: /tmp/one_point.sh pattern
+(boot -> settle -> blast w/ pool-growth guard >10k/20s -> stop all spam -> drain-test.py).
+
+| point       | height at capacity (ms) | tps at capacity |
+|-------------|-------------------------|-----------------|
+| 60M  stock  | 295 (286/295/305)       | 9,700           |
+| 60M  spec   | 272 (264/273/278)       | 10,500          |
+| 100M stock  | 407 (401/418/401)       | 11,700          |
+| 100M spec   | ~410 (418/401 + one 501 stall outlier) | 11,600 |
+
+FINDINGS (supersede all earlier capacity estimates):
+1. Capacity headroom vs sustained CONFIRMED at 1.6-1.8x (60M: 534->295; 100M: ~650-700->407).
+   The 1.05-2.3x uncertainty is closed. Sustained runs are delivery-paced (spammer ~5.3-5.8k/s).
+2. PREBUILD AT CAPACITY: -8% height / +8% tps at 60M (real, 3v3 drains, non-overlapping ranges);
+   NIL at 100M — the hidden build is overlapped by peers' growing execute+vote work.
+3. LINEAR MODEL (fits both stock points exactly): EL(n) ~ 18ms + 20.2us/tx (from consensus-split
+   histograms at 100% full); consensus(n) = drain - EL ~ 109ms + 38.6us/tx; total
+   latency(n) ~ 127ms + 58.8us/tx  =>  tps asymptote ~17k. 200M predicted ~690ms / 13.9k tps.
+   At capacity, agreeing on a tx (39us) costs ~1.9x executing it (20us) — NOT the 4-6x from
+   sustained sweeps (those were delivery-confounded; superseded).
+4. 2 blk/s budget crosses the model at n~6,300 tx ~ 132M gas.
+Chart: experiments/dual-el/latency-decomp-chart.py (AUTHORITATIVE for latency-vs-size).
+Deck updated (new "law of the lane" frame; anatomy + lever rows corrected), pushed to Overleaf.
+
 ## Why this mission exists (and the mistake that motivated it)
 
 Mission 1 shipped a native-transfer fast path (exec 11.03 -> 7.00 us/tx, 1.58x) and then measured
