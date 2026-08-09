@@ -533,6 +533,22 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🎯 MISSION 4 ITER 8 (2026-08-09): FORK FIX LANDS — 60M HOLDS 500ms WITH PREBUILD: 514ms, 5,560
+tps.** First genuinely fork-requiring change of the project (~/reth-fork commit `290b95c`, both
+edits dead unless ARC_SPECULATIVE_BUILD=1): engine tree also publishes pending when the block
+extends the CURRENT pending (upstream requires parent==canonical, losing the FCU race ~40% of
+heights past the pacer floor); set_pending_block can anchor on the current pending state. Gate
+passed against the fork with a BYTE-IDENTICAL reference hash. **Same-day result: stock 60M 554ms
+misses / fork+spec 60M 514ms HOLDS, 5,560 tps, build 94-105ms, miss_parent 145→3, hit 92%.** With
+prebuild the operating point moves 50M→60M at target: **4,673→5,560 tps at ≤~510ms (+19%)**,
+single-machine; 150 blocks/428k txs all-4 agreement on the fork image. **DOCKER-FROM-FORK RECIPE
+(landmine named):** host-built binary = GLIBC_2.38/39 crash-loop in the bookworm image; build
+INSIDE rust:1.93-bookworm with workspace + ~/reth-fork mounted at IDENTICAL absolute paths
+(patch resolves), CARGO_TARGET_DIR=target-docker (gitignored), overlay image FROM
+arc_execution:upstream-backup + COPY, verify sha + --version smoke, then apply-fork.sh revert.
+NOTE: `make build-docker` overwrites arc_execution:latest with UPSTREAM — re-run the overlay after.
+OPEN: 75M (watch %full), fleet, mem-soak with spec on; flag stays OFF by default.
+
 **🔬 MISSION 4 ITER 7 (2026-08-09): same-day stock-vs-spec at 50M+60M — fallback NOT enough above
 the pacer floor.** Quiet box, 2 fresh chains, 4 windows: STOCK 50M **509ms HOLDS**/4,673tps/build
 198-201 · SPEC 50M **509ms HOLDS**/4,673tps/build **90-111** (sd 0.3% — saving = pure pacer

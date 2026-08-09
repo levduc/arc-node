@@ -271,6 +271,50 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🎯 MISSION 4 ITER 8: FORK FIX LANDS — 60M HOLDS 500 ms WITH PREBUILD: 514 ms, 5,560 tps (2026-08-09)
+
+The first genuinely fork-requiring change of the project, and it delivers the mission goal:
+**a bigger block holding the latency target.**
+
+**Fork change** (committed in ~/reth-fork as `290b95c`, both edits dead unless
+`ARC_SPECULATIVE_BUILD=1`): (1) engine tree also publishes the pending block when the inserted
+block extends the CURRENT pending block (upstream requires parent == canonical head, which loses
+the race with the decide FCU on ~40% of heights past the pacer floor); (2) `set_pending_block` can
+anchor the new pending state on the current pending state, so the overlay never skips a block's
+changes. Sound on Arc: one proposer per height, no competing side-chains. EVM lane and any
+deployment without the env are bit-for-bit upstream.
+
+**Gate first:** build_gate against the fork-patched workspace — IDENTICAL under both flags, and
+the reference block hash is byte-identical to the upstream-built binary's (0x5e4f0528...).
+
+**RESULT (same-day, same box, 6-min windows, 100% full blocks):**
+
+| | stock 60M | FORK+spec 60M |
+|---|---|---|
+| height | 554 ms — misses | **514 ms — HOLDS** (sd 1.8%) |
+| tps | 5,159 | **5,560** |
+| CL build | 262-269 ms | **94-105 ms** |
+| miss_parent | — | **3** (was 145 with the Arc-side fallback) |
+| hit rate | — | 92% |
+
+Same-day 50M references: stock 509 HOLDS / spec 509 HOLDS (both pacer-pinned, 4,673 tps). So with
+prebuild the operating point moves 50M -> 60M at target: **4,673 -> 5,560 tps at <= ~510 ms
+(+19% at the latency promise)**, single-machine. Correctness: 150 consecutive blocks / 428,400
+txs, all 4 identical on root+hash+receipts+bloom on the fork image, all-spec.
+
+**DOCKER-FROM-FORK, the documented long pole, now has a working recipe** (and its landmine has a
+name): a host-built binary needs glibc 2.38/2.39 and CRASH-LOOPS in the bookworm-based image
+("GLIBC_2.38 not found"). Recipe that works: `apply-fork.sh` -> build INSIDE
+`rust:1.93-bookworm` with the workspace AND ~/reth-fork mounted at IDENTICAL absolute paths (so the
+[patch] file paths resolve), CARGO_TARGET_DIR=target-docker (gitignored) -> overlay image = FROM
+arc_execution:upstream-backup + COPY binary -> verify by binary sha + `--version` smoke test in the
+runtime base -> `apply-fork.sh revert`. Upstream image kept as `arc_execution:upstream-backup`.
+
+**OPEN:** 75M next (needs load the single box may not deliver — watch %full); then the fleet; the
+memory soak with speculation on; and the standing rule stays — flag OFF by default, and the fork
+image is NOT what `make build-docker` produces (rebuilding overwrites arc_execution:latest with
+upstream; re-run the overlay recipe after).
+
 ## 🔬 MISSION 4 ITER 7: SAME-DAY STOCK-vs-SPEC AT 50M + 60M — the fallback is NOT enough above the pacer floor (2026-08-09)
 
 Quiet box (pre-flight load 0.05). Two fresh chains, same-day, identical loads, images rebuilt with
