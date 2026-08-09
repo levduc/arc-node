@@ -4,6 +4,37 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-09 — ITER 17b: OVER-OFFERING HAS A CLIFF, NOT A PLATEAU — RATE sweep 1500/2500 COLLAPSED
+
+Follow-up sweep (fresh fleet chain, 100M unpaced, backpressure mode, S=4/machine):
+| RATE/spammer | offered | landed | txs/blk | %full |
+|--------------|---------|--------|---------|-------|
+| 1000 (17a)   | 16k     | **8,094** | 4,761 | 100%  |
+| 1500         | 24k     | 3,124  | 203     | 0%    |
+| 2000         | 32k     | 3,832  | 514     | 3%    |
+| 2500         | 40k     | 3,240  | 268     | 2%    |
+
+ALL >=1500 windows collapsed the same way on ALL 4 machines: "txpool is full" rejecting ~50-70% of
+sends while val1 pending sat at only ~214-8.7k and blocks starved. MECHANISM (hypothesis, strongly
+consistent, not yet instrumented): sustained offer above consumption drives the pool to its cap;
+eviction at cap breaks per-account nonce continuity; the pool fills with QUEUED (non-executable)
+txs; pending starves; blocks go near-empty; consumption falls; spiral. Backpressure's transient
+backoff (100ms per txpool-full) then throttles senders to ~300-400 tx/s each.
+
+CONSEQUENCES:
+- **Sustained optimum measured so far: RATE=1000/spammer x 16 = 8.1k landed, 100% full, 588ms**
+  (= fill-paced: 4,761/8,094). The 11.7k capacity frontier is NOT reachable sustained with
+  open-loop spammers: below the cliff you are fill-paced, above it the pool implodes.
+- The right spammer design is a CLOSED LOOP: govern offered rate on pool depth (target pending
+  ~= 2-3 blocks worth, ~10-15k), not a fixed RATE. Next iteration: pool-depth governor in
+  sender.rs (poll txpool_status, pause above target) — tooling only, no chain change.
+- RULE: between sequential load windows on one chain, verify pending AND QUEUED both drained —
+  a poisoned queued subpool silently ruins the next window (sleep-90 settle was not enough;
+  R2000/R2500 may partly inherit R1500's poisoning; R1500 itself collapsed fresh).
+- NOT yet instrumented: pending+queued sampled during the ramp (would confirm the spiral
+  directly). Do that before trusting any mechanism refinement.
+Agreement OK all windows (consensus never at risk). Full teardown verified.
+
 ## 2026-08-09 — ITER 17: THE DELIVERY GAP IS THE SPAMMER'S RATE CONFIG; fire-and-forget is DEAD
 
 Target: close the sustained-vs-capacity gap (1.6-1.8x) from the delivery side (tooling only, no

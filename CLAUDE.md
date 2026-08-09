@@ -490,6 +490,16 @@ how high can payment-lane tps go, and is "bigger blocks" the lever? Answer: **1 
   own. Re-runs MUST use `-l` (in the script) or start at nonce 0 → "nonce too low". The product dashboard
   summed pending+queued, so it showed a phantom backlog — payment-lane pending tile removed for this reason.
 
+**⚠️ DELIVERY: OVER-OFFERING CLIFF (2026-08-09, iter 17).** Fleet 100M unpaced, backpressure spam:
+RATE=1000/spammer×16 = **8.1k landed sustained, 100% full, 588ms** (fill-paced; old "5.8k plateau"
+was RATE config). RATE≥1500 (24k+ offered) **collapses to 3-4k**: pool hits its cap, eviction
+nonce-gaps accounts, pool fills with QUEUED, pending starves, blocks go near-empty ("txpool is
+full" storm + 100ms transient backoffs throttle senders to ~300/s). `--fire-and-forget` (exists in
+spammer, never used) is ALSO dead for sustained load: no nonce repair → queue collapse (2,787 tx/s,
+193-tx blocks). Sustained therefore cannot reach the 11.7k capacity with open-loop spammers —
+NEXT: pool-depth-governed rate (closed loop targeting pending≈2-3 blocks). FF=1 env on
+spam-fleet-distributed.sh reproduces. Between same-chain load windows verify pending AND queued
+drained. Full detail: MISSION-EL.md iter 17/17b.
 **🎯 CLEAN DRAIN EXPERIMENT — CAPACITY NUMBERS FROZEN (2026-08-09, MISSION 4 iter 16).** Four
 fresh fleet chains (60M/100M × stock/prebuild), v2 drain harness, 3 drains/point, chain age
 2.7-3.6k at every drain: **60M stock 295ms/9.7k tps, 60M prebuild 272ms/10.5k (-8%, REAL),
