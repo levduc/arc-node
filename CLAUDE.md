@@ -533,6 +533,19 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🎯 MISSION 4 STEP 2: SPECULATIVE PREBUILD LIVE-VALIDATED (2026-08-09) — proposer build HALVED,
+85.5% hit rate.** Single-machine demo, 50M, ~5.4k tx/s offered, flag on val1's payment EL ONLY vs 3
+stock. Mechanism confirmed from CL source first: `generate_block` calls get_payload IMMEDIATELY
+after FCU (no fixed wait) + `wait_for_payload` → getPayload latency ≈ build time → a hit removes it
+entirely. **CL `block_build_time` (both lanes, CL wall clock — NOT an EL sub-metric): val1 83.8 ms
+vs stock 163-169 ms.** Hit rate 148/(148+24+1)=**85.5%** (all misses = second-rollover
+miss_timestamp; zero miss_parent/miss_other — learned attrs predict perfectly; 685 spec builds =
+one per height). **Correctness: 200 blocks / 476k txs, all 4 identical on
+stateRoot+blockHash+receiptsRoot+logsBloom**, zero stalls. **Memory: no stash cost** (1.951 vs
+1.962 GiB). NOT yet claimed: cadence (1-of-4 ≈ 18 ms expected = invisible in ±15% noise) — next:
+all-4 OFF vs all-4 ON cadence A/B (legitimate now correctness is proven vs stock), then the fleet.
+Deploy: `PAY_EL_ENV='-e ARC_SPECULATIVE_BUILD=1'` (or PAY_EL<i>_ENV per validator).
+
 **✅ MISSION 4 STEP 1: SPECULATIVE PREBUILD IMPLEMENTED — NO reth fork needed (2026-08-09).**
 `ARC_SPECULATIVE_BUILD=1` (default OFF), entirely in `arc-execution-payload` (`src/speculative.rs`
 + 2 hooks in `payload.rs`). Zero fork changes because (1) reth 2.3's engine tree ALREADY

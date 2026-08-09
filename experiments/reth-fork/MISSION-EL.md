@@ -271,6 +271,52 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🎯 MISSION 4 STEP 2: SPECULATIVE PREBUILD LIVE-VALIDATED — proposer build time HALVED, 85.5% hit rate (2026-08-09, iter 3)
+
+Single-machine 4-validator demo at 50M, ~5.4k tx/s offered (blocks filling at ~2/s cadence),
+`ARC_SPECULATIVE_BUILD=1` on val1's payment EL ONLY, val2-4 stock. Chain verified producing via
+RPC heads before any measurement.
+
+**MECHANISM CONFIRMED FIRST, from CL source:** `generate_block` calls `get_payload` IMMEDIATELY
+after FCU-with-attributes (no fixed wait), and `wait_for_payload` makes getPayload await the
+in-flight build — so getPayload latency ≈ real build time, and a speculative hit removes it
+entirely. This is why the win is visible on the CL's own clock, not just in EL sub-metrics.
+
+**RESULTS (cumulative over ~170 proposals each):**
+
+| validator | CL `block_build_time` (both lanes) |
+|-----------|-------------------------------------|
+| **val1 (speculative)** | **83.8 ms** |
+| val2 (stock) | 168.8 ms |
+| val3 (stock) | 164.6 ms |
+| val4 (stock) | 163.1 ms |
+
+**The proposer's build_block HALVED (-80 to -85 ms)** — and `block_build_time` is the CL-side
+wall clock of the whole get_value build (EVM lane + payment lane, sequential), so this is genuine
+critical-path time removed from val1's proposal turns, not a relocated sub-metric. val1's
+remaining ~84 ms ≈ the EVM-lane build (untouched) + the 14% of payment misses.
+
+**HIT RATE: 85.5%** (148 hit / 24 miss_timestamp / 1 miss_empty over ~10 min) — well above the
+predicted 50-70%. At ~2 blk/s most consecutive blocks share the wall-clock second, so the
+`max(parent_ts, now)` prediction usually cannot miss. All misses were the expected second-rollover
+kind; zero miss_parent / miss_other — the learned-attributes approach predicts fee_recipient and
+prev_randao perfectly. 685 speculative builds ran (one per height, as designed — every validator
+speculates; only the proposer's turn can hit).
+
+**CORRECTNESS: 200 consecutive blocks / 476,000 txs, all 4 validators identical on stateRoot +
+blockHash + receiptsRoot + logsBloom**, val1 speculative against 3 stock peers. Zero stalls, zero
+CL timeouts, no crash-restarts.
+
+**MEMORY: no visible stash cost** — val1_el_pay 1.951 GiB vs val2_el_pay 1.962 GiB under identical
+load, despite val1 running ~4x more builds (one per height vs one per own-proposal).
+
+**NOT YET CLAIMED: cadence.** With the flag on 1 of 4 validators, expected height movement is
+~0.25 x 0.855 x ~85 ms ≈ 18 ms of a ~550 ms height — invisible in single-machine ±15% noise. The
+cadence claim needs a separate all-4 run (correctness is now established against stock peers, so
+an all-4 cadence experiment is legitimate — same justification as the block-time sweeps). That is
+the next iteration: two runs, all-4 OFF vs all-4 ON, same load, height + tps compared; then the
+fleet.
+
 ## ✅ MISSION 4 STEP 1: SPECULATIVE PREBUILD IMPLEMENTED — and NO reth fork was needed (2026-08-09, iter 2)
 
 `ARC_SPECULATIVE_BUILD=1` (default OFF), all in `arc-execution-payload` (new `src/speculative.rs` +
