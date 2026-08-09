@@ -67,7 +67,10 @@ start(){
       local gidx=$(( (n-1)*S + j )) off; off=$(( ((n-1)*S + j) * ACCTS ))
       # -l resyncs each account to its latest on-chain nonce, so re-runs on a live chain don't
       # nonce-gap (without it, a second run starts from nonce 0 -> all "nonce too low").
-      local run="ws --targets ws://127.0.0.1:$ws --chain-id $CID -r $RATE -t $DUR -g 20 -a $ACCTS --account-offset $off -l --mix transfer=100"
+      # FF=1 -> --fire-and-forget: send without awaiting each WS response (backpressure mode's
+      # per-tx round-trip is the measured delivery ceiling ~5.3-5.8k tx/s; capacity is ~12k).
+      local ffarg=""; [ "${FF:-0}" = "1" ] && ffarg="--fire-and-forget"
+      local run="ws --targets ws://127.0.0.1:$ws --chain-id $CID -r $RATE -t $DUR -g 20 -a $ACCTS --account-offset $off -l --mix transfer=100 $ffarg"
       if [ "$n" -eq 1 ]; then
         nohup "$SPAMMER" $run >/tmp/spam-d-1-$j.log 2>&1 & disown
       else

@@ -4,6 +4,29 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-09 — ITER 17: THE DELIVERY GAP IS THE SPAMMER'S RATE CONFIG; fire-and-forget is DEAD
+
+Target: close the sustained-vs-capacity gap (1.6-1.8x) from the delivery side (tooling only, no
+chain change). Fleet A/B at 100M unpaced, same chain, S=4 ACCTS=1000 per machine:
+
+1. **BACKPRESSURE @ RATE=1000/spammer (16k offered): 8,094 tx/s landed, 100% full, 588ms.**
+   The historical ~5.3-5.8k "delivery plateau" was substantially our own RATE settings (spam-fleet
+   scripts defaulted RATE=400 => 6.4k offered ceiling). 588ms == 4,761/8,094 exactly = still
+   FILL-PACED (pool balances at delivery; builder waits) — capacity is 407ms/11.7k, so RATE was
+   raised further (sweep 1500/2000/2500 in flight when this entry was written).
+2. **FIRE-AND-FORGET (--fire-and-forget, existed in the binary, never used by our scripts):
+   MEASURED DEAD for sustained load — 2,787 tx/s, 193-tx blocks, 0% full.** Mechanism from the
+   spam logs: FF's optimistic nonces have no repair path; ~16 early "nonce too low" rejections
+   permanently nonce-gapped those accounts, everything behind them QUEUED (not pending), queue
+   hit the 200k pool cap, then "txpool is full" rejected ~87% of sends INCLUDING gap-fillers.
+   Steady state: blocks starve at ~193 txs while the spammer reports 1000 tx/s sent. This is
+   precisely why backpressure mode exists. Do NOT revisit without rejection-aware nonce repair.
+   (FF=1 env wired into spam-fleet-distributed.sh for reproduction; default stays backpressure.)
+3. Agreement OK after both arms; full clean-fleet teardown verified.
+
+RULE reinforced: "delivery plateau" numbers are properties of the LOAD CONFIG, not the chain —
+always state offered rate + mode alongside landed rate.
+
 ## 2026-08-09 — THE CLEAN DRAIN EXPERIMENT (iteration 16): numbers FROZEN
 
 Four fresh fleet chains (60M/100M x stock/prebuild), fork binary 3485bd6253b7ad67 everywhere,
