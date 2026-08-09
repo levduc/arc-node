@@ -137,13 +137,25 @@ where
         let loop_time_limit = Some(deadline);
         let wait_for_payload = self.wait_for_payload;
         async move {
+            let builder_config = EthereumBuilderConfig::new()
+                .with_gas_limit(gas_limit)
+                .with_await_payload_on_missing(wait_for_payload);
+            // Speculative prebuild watcher (ARC_SPECULATIVE_BUILD=1, default off): builds the
+            // next payload during the vote gap, on the pending (newPayload'd, not yet canonical)
+            // block. Entirely EL-side; see crate::speculative for the design and measurements.
+            if crate::speculative::speculative_build_enabled() {
+                crate::speculative::spawn_speculative_watcher(
+                    evm_config.clone(),
+                    provider.clone(),
+                    pool.clone(),
+                    builder_config.clone(),
+                );
+            }
             let inner = ArcEthereumPayloadBuilder::new(
                 provider,
                 pool.clone(),
                 evm_config,
-                EthereumBuilderConfig::new()
-                    .with_gas_limit(gas_limit)
-                    .with_await_payload_on_missing(wait_for_payload),
+                builder_config,
                 loop_time_limit,
             );
             Ok(InvalidTxFilteringPayloadBuilder {
@@ -431,6 +443,13 @@ where
         &self,
         args: BuildArguments<EthPayloadAttributes, EthBuiltPayload>,
     ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError> {
+        // Speculative prebuild (ARC_SPECULATIVE_BUILD=1): learn the real attributes for the next
+        // prediction, then serve the stashed payload if EVERY predicted attribute matches. A miss
+        // falls through to the normal build below — fail-safe by construction.
+        crate::speculative::record_real_attributes(&args.config.attributes);
+        if let Some(payload) = crate::speculative::take_matching(&args.config) {
+            return Ok(BuildOutcome::Freeze(payload));
+        }
         arc_ethereum_payload(
             self.evm_config.clone(),
             self.client.clone(),

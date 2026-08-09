@@ -271,6 +271,54 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## ✅ MISSION 4 STEP 1: SPECULATIVE PREBUILD IMPLEMENTED — and NO reth fork was needed (2026-08-09, iter 2)
+
+`ARC_SPECULATIVE_BUILD=1` (default OFF), all in `arc-execution-payload` (new `src/speculative.rs` +
+two hooks in `payload.rs`). Offline-gated; NOT yet live-validated.
+
+**The design collapsed to zero fork changes**, because two facts checked out in reth 2.3 source:
+1. **State visibility:** the engine tree ALREADY publishes a newPayload'd block as the PENDING
+   block whenever its parent is the canonical head (`insert_block_or_payload` ->
+   `set_pending_block`) — Arc's situation every height — and `state_by_block_hash` resolves the
+   pending slot. So the production build function can build on N during the vote gap unmodified.
+2. **Trigger:** no public subscription for the pending slot, but polling `pending_block()` at
+   25 ms from a watcher thread costs <=5% of the 350-900 ms window. Spawned from
+   `build_payload_builder` (our crate) when the flag is on.
+
+**Attribute prediction** (from read-only CL source): timestamp = `max(parent_ts, now_secs)` — the
+CL's own formula, second-granularity, payment lane copies the EVM lane's value and the lanes are
+lockstep, so prediction misses ONLY when the wall-clock second rolls over inside the vote gap
+(expected hit rate roughly 50-70%; measure live). `fee_recipient`/`prev_randao` are LEARNED from
+the last real request (recorded in `try_build`) rather than hardcoding CL behaviour;
+`parent_beacon_block_root = N.hash` (Arc convention); withdrawals always `Some([])`. First height
+after boot never speculates (nothing learned yet).
+
+**Correctness trap found at design time — the pool must be pre-filtered.** During the vote gap the
+pool still contains N's transactions (pruning happens at canonicalization), and the build loop's
+`mark_invalid` on a stale nonce REMOVES ALL DEPENDENT TRANSACTIONS — every sender chain would be
+dropped and speculative blocks would come out near-empty. `FilteredBest` skips exactly N's tx
+hashes so the iterator starts each sender at the post-N nonce, matching the real post-prune build.
+
+**Serving path:** `try_build` records real attrs, then serves the stash via `BuildOutcome::Freeze`
+iff parent + timestamp + fee_recipient + prev_randao + pbbr + empty-withdrawals ALL match; any
+mismatch increments a labelled miss counter (`arc_speculative_build_outcome_total{outcome=
+hit|miss_timestamp|miss_parent|miss_other|miss_empty|built}`) and falls through to the normal
+build. Fail-safe by construction: a wrong prediction costs idle CPU, never a wrong block.
+
+**Gate leg 3 added to `build_gate`:** speculative stash vs fresh build byte-equal for identical
+inputs (hit serves Freeze, hash equality asserted); a timestamp mismatch MUST fall through (miss
+path asserted). All legs pass; stock vs `ARC_PARALLEL_TRANSFERS=1` outer diff identical (10 lines,
+non-empty); the 2,030-tx reference hashes are UNCHANGED from iter 1 — the hook does not perturb
+the normal path. Full `arc-node-execution` binary typechecks.
+
+**NOT DONE YET (next iteration):** live single-machine validation — `make build-docker`, 4-validator
+demo with `ARC_SPECULATIVE_BUILD=1` on val1's payment EL only vs 3 stock peers, 100+ blocks of
+root+hash+receipts+bloom agreement, HIT RATE from the new counter, height/cadence movement
+(`reth_consensus_engine_beacon_new_payload_latency` + measured height are the only metrics that
+count), memory soak alongside. Also worth knowing: with the demo's 500 ms builder deadline the
+serving benefit only shows if getPayload arrives before the deadline would have elapsed — the win
+mechanism is the CL's getPayload returning immediately instead of after the build.
+
 ## ✅ MISSION 4 STEP 0: BUILD GATE LANDED — the builder path is now covered offline (2026-08-09, iter 1)
 
 The blocking prerequisite for speculative prebuild. New
