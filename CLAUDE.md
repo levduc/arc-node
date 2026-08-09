@@ -533,6 +533,16 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🎯 MISSION 4 STEP 3: ALL-4 CADENCE A/B (2026-08-09) — build halved network-wide; the 500ms PACER
+absorbs the saving.** Two fresh chains, identical 50M config/load, 12-min windows: stock
+539ms/4,419tps/build 186-218ms vs all-spec **527ms/4,513tps/build 81-115ms, hit 88-90%**, both arms
+100-block agreement. Cadence +2% only (not +15-20%) **because the demo paces to BLOCK_TIME_MS=500**
+— the saving becomes PACER HEADROOM (39ms over floor -> 27ms over), the product's stable-latency
+behaviour. **Next real question: how much BIGGER a block holds 500ms WITH prebuild** (mission 3:
+25M holds, 50M@537 misses). Unpaced probe on the aged chain (553ms) = INVALID (state-grown chain +
+sd 7.9%); needs fresh same-age unpaced pair. OPS: spawn spammers via setsid+detached script — nohup
+children die with a timed-out harness shell.
+
 **🎯 MISSION 4 STEP 2: SPECULATIVE PREBUILD LIVE-VALIDATED (2026-08-09) — proposer build HALVED,
 85.5% hit rate.** Single-machine demo, 50M, ~5.4k tx/s offered, flag on val1's payment EL ONLY vs 3
 stock. Mechanism confirmed from CL source first: `generate_block` calls get_payload IMMEDIATELY

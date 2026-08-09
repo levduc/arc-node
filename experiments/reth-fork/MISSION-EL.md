@@ -271,6 +271,42 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🎯 MISSION 4 STEP 3: ALL-4 CADENCE A/B — build halved network-wide; the PACER absorbs the saving (2026-08-09, iter 4)
+
+Two fresh chains, identical 50M config and load (6 spammers x 900/s, blocks 100% full), 12-min
+windows, measured from the same chain age. Run A all-stock; Run B all-4 `ARC_SPECULATIVE_BUILD=1`.
+
+| | Run A (stock) | Run B (all-speculative) |
+|---|---|---|
+| height | 539 ms (sd 1.2%) | **527 ms** (sd 2.3%) |
+| tps | 4,419 | 4,513 (+2.1%) |
+| CL `block_build_time` | 186-218 ms | **81-115 ms** |
+| hit rate | — | **88-90%** on all four |
+| agreement (100 blocks) | all 4 | all 4 |
+
+**MECHANISM: fully confirmed at network scale.** Every validator's proposal build halved
+(-52% avg), hit rates 88-90%, zero divergence, zero stalls, 1,373 blocks.
+
+**CADENCE: +2%, not the projected +15-20% — and the explanation is the PACER.** The demo applies
+`BLOCK_TIME_MS=500` (malachite stable-block-times): the CL paces each height to a 500 ms target,
+so once the natural height would drop below the floor, the CL just waits. The prebuild saving is
+absorbed as PACER HEADROOM rather than raw cadence — the product's stable-latency behaviour
+working as designed. Stock ran 39 ms over the floor; speculative runs 27 ms over. The correct next
+question is NOT "how much faster" but **"how much BIGGER a block now holds the 500 ms promise"** —
+the mission's actual goal (max tps at fixed latency).
+
+**UNPACED PROBE — INVALID, recorded as such.** Flipped `set-block-time 0` on the live spec chain,
+5-min window: 553 ms natural height, HIGHER than paced. Confounded: chain ~25 min old under
+continuous load (state several GB larger; per-tx cost is measurably state-dependent) and sd 7.9%.
+A valid natural-height comparison needs two FRESH unpaced chains of the same age. Do not quote it.
+
+**OPS:** nohup children die with a timed-out harness shell — spawn spammers via `setsid` from a
+detached script (cost one aborted window this iteration).
+
+**NEXT:** (a) fresh-chain unpaced pair to pin the natural-height saving; (b) the money
+measurement — WITH prebuild on all 4, sweep gas at the fixed 500 ms pacer for the largest block
+that holds, vs mission 3's answer (25M holds, 50M misses at 537); then the fleet.
+
 ## 🎯 MISSION 4 STEP 2: SPECULATIVE PREBUILD LIVE-VALIDATED — proposer build time HALVED, 85.5% hit rate (2026-08-09, iter 3)
 
 Single-machine 4-validator demo at 50M, ~5.4k tx/s offered (blocks filling at ~2/s cadence),
