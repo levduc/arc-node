@@ -533,6 +533,42 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**📌 CLAUDE.md CATCH-UP (2026-08-09): iterations 9-15 + mission 4 step 0 — six updates silently
+failed to land here** (an anchored str.replace no-op'd after iter 8 wrote a ##-heading; every later
+update anchored on a **-heading that never existed. RULE: `assert anchor in s` before any anchored
+doc edit). Full detail for all of these is in experiments/reth-fork/MISSION-EL.md; the essentials:
+- **MEMORY (iters 9-12):** payment EL grows ~280-415 MiB/min under sustained load (~0.65-0.93 KB/tx),
+  ALL nodes, no plateau within 35 min; alien2's 11 GiB cap OOMs (predicted, then confirmed,
+  `oom=true exit=137`). NO config knob moves it (persistence thresholds, cross-block-cache 16x
+  smaller, state cache DISABLED: all ±1% once normalised against the untreated machine-pair ratio —
+  and the earlier "persistence = 16% slower" claim was RETRACTED as a machine artifact; ginny runs
+  15% slower than ginnythui untreated). **NOT A LEAK:** stops load → memory releases at 130-163
+  MiB/min (~40-50% of growth rate). Operational rule: size for the longest CONTINUOUS burst
+  (~0.35 GB/saturated-minute above idle); a dying node silently corrupts throughput measurements
+  (dying fleet → blocks fill → reads as capacity), so run fleet/mem-soak.sh alongside any sustained
+  run.
+- **CONSENSUS SPLIT (iter 14, `fleet/consensus-split.sh` + chart):** height ≈ **~450 ms fixed
+  consensus floor + ~100 µs/tx above ~2,400 tx**. EL busy 8-15% at every size (25M: 92% consensus).
+  25M→50M doubles txs for +12.9 µs/tx (still on the floor); above that, agreeing costs 4-6x
+  executing (50→100M: cons 93.2 vs exec 21.5 µs/tx). State root FALLS per tx as blocks grow
+  (3.19→0.82 µs/tx); only consensus degrades with scale.
+- **SPECULATIVE PREBUILD CASE (iter 15):** proposer build = 97.9 ms at full 50M blocks = 57.6%
+  tx_execution + 40.2% post_execution (<1% rest) — real pre-computable compute on the critical path
+  while the EL idles 350-900 ms in the vote gap. The three existing builder flags
+  (share-execution-cache / share-sparse-trie / suppress-persistence-during-build) are ALL NULL
+  (±2% vs in-run control, `fleet/build-time.sh`). RoundRobin is deterministic (selects on height +
+  ROUND), so the EL can know/infer its turn; ~20% cadence at every size; 50M: 551→~454 ms = under
+  the 500 ms target ≈ doubles tps at 2 blk/s. Arc credits the beneficiary EVERY tx → speculative
+  state is bound to one proposer identity. MISSION 4 = implement this in the reth fork.
+- **MISSION 4 STEP 0 DONE (build gate):** `crates/execution-payload/examples/build_gate.rs` drives
+  the REAL `arc_ethereum_payload` offline (MDBX + init_genesis = real trie roots; txs injected via
+  the `best_txs` closure seam — `_pool` is unused). Checks: in-process determinism, stock vs
+  ARC_PARALLEL_TRANSFERS=1 byte-identical (first offline coverage of the fast path on the BUILDER),
+  gas arithmetic. Run it (both flag settings, diff MUST be identical AND NON-EMPTY — an early run
+  passed vacuously on two empty outputs when a panic went to suppressed stderr) before ANY builder
+  change. Known benign quirk: localdev chainspec genesis header declares root 0xbc32... but the
+  computed alloc root is 0x0c6b... (builder derives from DB; self-consistent).
+
 ## 🎯 SUSTAINED FRONTIER — 15 MIN PER SIZE, 4 MACHINES (2026-08-09, iter 8)
 
 The definitive measurement: one gas limit at a time, held under continuous load for a full 15
