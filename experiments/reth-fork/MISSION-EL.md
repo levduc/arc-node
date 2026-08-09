@@ -271,6 +271,69 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🎯 THE BUILD IS 98% REAL COMPUTE AND ALL OF IT IS PRE-COMPUTABLE — the case for speculative building (2026-08-09, iter 15)
+
+Question raised: the EL is idle 350-900 ms during voting, and proposer selection is RoundRobin, so
+why not build the next block optimistically then? Two objections I raised were wrong and one stands.
+
+**WRONG #1 — "the EL cannot know whether it is the proposer".** RoundRobin is deterministic
+(`arc_consensus_types::proposer::RoundRobin`). The EL has no validator identity today, but that is
+where the information lives, not whether it exists: the EL could infer it (it only ever receives
+`FCU + payloadAttributes` when it is the proposer -- observe the period), be told it (two static
+flags), or simply not care (all four speculate, three discard, on cores idle 85% of the time). The
+only wrinkle is that RoundRobin selects on (height, ROUND); a failed round changes the proposer for
+the same height, so a wrong guess wastes idle CPU -- not correctness.
+
+**WRONG #2 — "that is a CL change".** Asking earlier is ONE implementation. An EL-side speculative
+build (start on N's post-state when `newPayload(N)` returns, serve it if the later attributes match)
+is entirely inside the EL. It needs a reth fork rather than a flag, but the fork exists and builds.
+
+**FIRST, THE FREE VERSION — three existing flags, all measured, all NULL.** Per-validator build time
+(`fleet/build-time.sh`; RoundRobin means each validator builds ~1/4 of blocks, so its own metric is
+directly comparable), stock Run A then treated Run B, 50M, 8 min each, WITH an in-run stock control:
+
+| validator | flag | build A | build B | net vs control |
+|-----------|------|---------|---------|----------------|
+| ginny | share-execution-cache-with-payload-builder | 93.7 ms | 94.6 | **+1.8%** |
+| ginnythui | share-sparse-trie-with-payload-builder | 114.9 ms | 114.9 | **+0.9%** |
+| alien2 | suppress-persistence-during-build | 92.9 ms | 92.1 | **+0.0%** |
+| papaduck | STOCK (control, both runs) | 147.0 ms | 145.7 | (-0.9% drift) |
+
+Nothing. Notably `share-sparse-trie` is documented as replacing "the payload builder's blocking
+`state_root_with_updates()` with the sparse trie, computing the state root concurrently with
+transaction execution" -- precisely the post_execution cost below -- and it moved nothing.
+
+**THE BUILD IS REAL WORK, NOT WAITING.** `arc_payload_total_duration_seconds` records ONE build
+attempt (confirmed: 217 builds over 866 blocks = exactly one per proposal), and Arc's stage
+histogram splits it. At 100% full 50M blocks (2,380 tx), build = 97.9 ms:
+
+| stage | ms | share |
+|-------|-----|-------|
+| state_setup | 0.08 | 0.1% |
+| pre_execution | 0.09 | 0.1% |
+| **tx_execution** | **56.40** | **57.6%** |
+| **post_execution** (state root etc.) | **39.33** | **40.2%** |
+| assembly_and_sealing | 0.37 | 0.4% |
+
+(At 1/3-full blocks the same measurement gives 17.3 ms split 28%/69%, so post_execution has a large
+fixed component and tx_execution scales with tx count. Only quote the full-block numbers.)
+
+**CONCLUSION: 98% of the build is executing the transactions and rooting the result -- and BOTH are
+pre-computable given the parent state.** Nothing in the build is waiting on the CL or the network.
+So the ~98 ms is genuinely movable into the vote gap, where the EL has 350-900 ms of idle time.
+50M would go 551 -> ~453 ms, i.e. **under the 500 ms target, roughly doubling tps at 2 blk/s**
+(~4,400 vs ~2,300). That is the largest single win identified anywhere in this mission.
+
+**HONEST CAVEATS BEFORE ANYONE BUILDS THIS.** (a) The estimate assumes a speculation HIT -- right
+parent, right fee recipient, mempool not materially changed. Real hit rate will be below 100% and
+misses need a top-up path, not a discard. (b) Arc's `reward_beneficiary` credits the fee recipient
+on EVERY transaction, so the speculative state is bound to one proposer identity -- this is not a
+generic mempool prewarm. (c) It only attacks the ~450 ms floor, not the ~100 us/tx slope; expect one
+step-change, then the payload-size wall again. (d) **The gate does not cover BUILT blocks**, only
+validated ones. The builder is exactly where a wrong speculative state becomes a wrong block, and
+this mission has already produced four consensus bugs, three invisible to state-only comparison.
+Extend the gate first.
+
 ## 🔬 CONSENSUS vs EXECUTION ACROSS BLOCK SIZE — the fixed floor, measured (2026-08-09, iter 14)
 
 Asked directly: as the gas limit grows, how does the height split between consensus and execution?
