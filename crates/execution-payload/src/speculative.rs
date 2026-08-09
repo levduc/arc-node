@@ -88,9 +88,15 @@ pub struct SpeculativePayload {
     pub payload: EthBuiltPayload,
 }
 
-fn slot() -> &'static Mutex<Option<SpeculativePayload>> {
-    static SLOT: OnceLock<Mutex<Option<SpeculativePayload>>> = OnceLock::new();
-    SLOT.get_or_init(|| Mutex::new(None))
+/// Up to two candidates per parent — one per plausible timestamp. The `max(parent_ts, now)`
+/// prediction is evaluated ~0.45 s before the real request and misses whenever the wall-clock
+/// second boundary falls inside that window; MEASURED on the fleet (2026-08-09) this collapsed
+/// the hit rate to 47-69% (single-box's 88-92% was partly resonance between the ~510 ms height
+/// period and the 1 s timestamp grid). Building BOTH candidates kills the miss class by
+/// construction, phase-independent, on cores that are idle anyway.
+fn slot() -> &'static Mutex<Vec<SpeculativePayload>> {
+    static SLOT: OnceLock<Mutex<Vec<SpeculativePayload>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 /// Attributes learned from the last REAL payload request this node served. Written by
@@ -124,29 +130,37 @@ pub fn take_matching(
         return None;
     }
     let mut g = slot().lock().expect("speculative slot lock");
-    let Some(spec) = g.as_ref() else {
+    if g.is_empty() {
         counter!("arc_speculative_build_outcome_total", "outcome" => "miss_empty").increment(1);
         return None;
-    };
+    }
     let attrs = &config.attributes;
-    if spec.parent_hash != config.parent_header.hash() {
+    let parent = config.parent_header.hash();
+    if !g.iter().any(|c| c.parent_hash == parent) {
         counter!("arc_speculative_build_outcome_total", "outcome" => "miss_parent").increment(1);
         return None;
     }
-    if spec.timestamp != attrs.timestamp {
-        counter!("arc_speculative_build_outcome_total", "outcome" => "miss_timestamp").increment(1);
+    let matched = g.iter().position(|c| {
+        c.parent_hash == parent
+            && c.timestamp == attrs.timestamp
+            && c.fee_recipient == attrs.suggested_fee_recipient
+            && c.prev_randao == attrs.prev_randao
+            && c.parent_beacon_block_root == attrs.parent_beacon_block_root
+            && attrs.withdrawals.as_ref().is_some_and(|w| w.is_empty())
+    });
+    let Some(idx) = matched else {
+        // right parent, wrong attribute — distinguish timestamp (the phase-sensitive class)
+        if g.iter().any(|c| c.parent_hash == parent && c.timestamp != attrs.timestamp) {
+            counter!("arc_speculative_build_outcome_total", "outcome" => "miss_timestamp")
+                .increment(1);
+        } else {
+            counter!("arc_speculative_build_outcome_total", "outcome" => "miss_other").increment(1);
+        }
         return None;
-    }
-    if spec.fee_recipient != attrs.suggested_fee_recipient
-        || spec.prev_randao != attrs.prev_randao
-        || spec.parent_beacon_block_root != attrs.parent_beacon_block_root
-        || attrs.withdrawals.as_ref().is_none_or(|w| !w.is_empty())
-    {
-        counter!("arc_speculative_build_outcome_total", "outcome" => "miss_other").increment(1);
-        return None;
-    }
+    };
     counter!("arc_speculative_build_outcome_total", "outcome" => "hit").increment(1);
-    let spec = g.take().expect("checked above");
+    let spec = g.swap_remove(idx);
+    g.clear();
     info!(target: "payload_builder",
         parent = %spec.parent_hash, timestamp = spec.timestamp,
         "(arc) serving SPECULATIVE prebuilt payload");
@@ -262,7 +276,12 @@ where
     debug!(target: "payload_builder",
         parent = %parent_hash, timestamp, txs = payload.block().body().transactions.len(),
         "(arc) speculative payload stashed");
-    *slot().lock().expect("speculative slot lock") = Some(SpeculativePayload {
+    let mut g = slot().lock().expect("speculative slot lock");
+    if g.first().is_some_and(|c| c.parent_hash != parent_hash) {
+        g.clear(); // new height — drop the previous parent's candidates
+    }
+    g.retain(|c| c.timestamp != timestamp); // rebuild of the same candidate replaces it
+    g.push(SpeculativePayload {
         parent_hash,
         timestamp,
         fee_recipient,
@@ -348,25 +367,33 @@ pub fn spawn_speculative_watcher<EvmConfig, Client, Pool>(
                 let skip: HashSet<B256> =
                     pending.body().transactions.iter().map(|tx| *tx.hash()).collect();
                 let parent = SealedHeader::new(pending.header().clone(), hash);
-                let timestamp = predict_timestamp(parent.timestamp);
+                // DUAL-TIMESTAMP: build both plausible candidates so a wall-clock second rolling
+                // over between speculation and the real request cannot cause a miss.
+                let t0 = predict_timestamp(parent.timestamp);
+                let t1 = (t0 + 1).max(parent.timestamp);
                 let t = std::time::Instant::now();
-                if let Err(err) = speculate_once(
-                    evm_config.clone(),
-                    client.clone(),
-                    pool.clone(),
-                    builder_config.clone(),
-                    parent,
-                    skip,
-                    fee_recipient,
-                    prev_randao,
-                    timestamp,
-                ) {
-                    warn!(target: "payload_builder", %err, "(arc) speculative build failed");
-                } else {
-                    debug!(target: "payload_builder", parent = %hash,
-                        elapsed_ms = t.elapsed().as_millis() as u64,
-                        "(arc) speculative build finished");
+                for (i, ts) in [t0, t1].iter().enumerate() {
+                    if i == 1 && *ts == t0 {
+                        continue;
+                    }
+                    if let Err(err) = speculate_once(
+                        evm_config.clone(),
+                        client.clone(),
+                        pool.clone(),
+                        builder_config.clone(),
+                        parent.clone(),
+                        skip.clone(),
+                        fee_recipient,
+                        prev_randao,
+                        *ts,
+                    ) {
+                        warn!(target: "payload_builder", %err, "(arc) speculative build failed");
+                        break;
+                    }
                 }
+                debug!(target: "payload_builder", parent = %hash,
+                    elapsed_ms = t.elapsed().as_millis() as u64,
+                    "(arc) dual speculative builds finished");
             }
         })
         .expect("spawn arc-speculative-build thread");
