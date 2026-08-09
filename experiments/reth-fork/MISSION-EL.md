@@ -271,6 +271,46 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## ✅ MISSION 4 STEP 0: BUILD GATE LANDED — the builder path is now covered offline (2026-08-09, iter 1)
+
+The blocking prerequisite for speculative prebuild. New
+`crates/execution-payload/examples/build_gate.rs` drives the REAL production build function
+(`arc_ethereum_payload` — the same code both `try_build` and the invalid-tx-filtering wrapper
+call) entirely offline:
+
+- **Real storage, real roots:** `create_test_provider_factory_with_chain_spec` (MDBX) +
+  `reth_db_common::init_genesis` (writes headers, hashed state AND trie), wrapped in
+  `BlockchainProvider`. State roots are computed by the real trie, not mocked.
+- **The injection seam is production-shaped:** `arc_ethereum_payload`'s `_pool` argument is unused
+  and `best_txs` is a caller-supplied closure, so the gate feeds a fixed-order iterator of
+  `ValidPoolTransaction<EthPooledTransaction>` (2,030 transfers from the prefunded localdev dev
+  accounts, junk sigs + `Recovered::new_unchecked` — nothing in the build path re-recovers).
+- **Checks:** (1) determinism — two in-process builds must produce the same block hash (catches
+  map-iteration-order nondeterminism); (2) flag equivalence — stock vs `ARC_PARALLEL_TRANSFERS=1`
+  outer-diff must be byte-identical (the fast path runs on the BUILDER via
+  `execute_transaction_with_commit_condition`, and this is the first offline coverage of that);
+  (3) gas/tx-count arithmetic. RESULT: determinism OK, flag runs IDENTICAL (8 lines, non-empty
+  guard — an earlier invocation of this gate passed VACUOUSLY on two empty outputs because a panic
+  went to suppressed stderr; the runner now fails on empty output. Trap noted for all future gates).
+- Executor gates re-run as regression after the dep additions: still IDENTICAL.
+
+**Found while building it — localdev genesis root discrepancy (benign here, worth knowing):** the
+chainspec's sealed genesis header DECLARES state root `0xbc32...` but the root computed over the
+inserted alloc is `0x0c6b...` (reth's `insert_genesis` and `init_genesis` both agree on the
+computed one). The builder derives child roots from the DB so everything downstream is
+self-consistent, and the live chain is unaffected (all nodes share the same convention). Possibly
+zero-valued storage slots in the genesis JSON being treated differently by the two root
+computations. The gate prints both so any change surfaces in the diff.
+
+**NEXT (STEP 1):** the speculative-prebuild implementation itself, in the fork: on
+`newPayload(N)=VALID`, start a build with predicted attributes; serve on exact match; re-seal on
+timestamp-only mismatch; discard otherwise. The gate grows the third leg then: prebuilt-vs-fresh
+byte equality for the same (parent, fee recipient, tx set).
+
+Deps added: `reth-db-common` (workspace, same v2.3.0 tag), dev-deps of arc-execution-payload
+(arc-evm, arc-execution-config/test-utils, reth-provider/test-utils, reth-ethereum/evm,
+alloy-eips). No production-code changes in this iteration.
+
 ## 🎯 THE BUILD IS 98% REAL COMPUTE AND ALL OF IT IS PRE-COMPUTABLE — the case for speculative building (2026-08-09, iter 15)
 
 Question raised: the EL is idle 350-900 ms during voting, and proposer selection is RoundRobin, so

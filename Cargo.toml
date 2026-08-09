@@ -197,6 +197,7 @@ reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v2.
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
 reth-primitives-traits = { version = "0.4.1", default-features = false }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
+reth-db-common = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
 reth-prune-types = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
 reth-revm = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", default-features = false }
 reth-rpc = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }

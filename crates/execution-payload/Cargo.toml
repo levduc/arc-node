@@ -46,6 +46,13 @@ tracing.workspace = true
 
 [dev-dependencies]
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
+# build_gate example: real provider + Arc EVM wiring
+arc-evm.workspace = true
+arc-execution-config = { workspace = true, features = ["test-utils"] }
+reth-provider = { workspace = true, features = ["test-utils"] }
+reth-db-common.workspace = true
+reth-ethereum = { workspace = true, features = ["evm", "storage-api"] }
+alloy-eips.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing-test = "0.2"
 
