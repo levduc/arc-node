@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# ============================================================================
+#  SUPERSEDED — DO NOT CITE THESE NUMBERS.
+#
+#  Single-machine, SHORT windows (75 s). Both properties make it unreliable:
+#  run-to-run variance here is +-12-15%, and one box runs all four validators
+#  on shared cores. Its "50M HOLDS 2 blk/s" row was RETRACTED — a reverse-order
+#  repeat gave 1.72 blk/s, and the 15-minute sustained run gives 537 ms / 1.86
+#  blk/s, which does not hold.
+#
+#  AUTHORITATIVE: experiments/dual-el/frontier-long-chart.py
+#      4 machines, 15 min per size, per-minute sampling, spread 1.6-3.6%.
+#
+#  Kept only as the historical record of how the measurement evolved.
+# ============================================================================
 """Payment lane: block size vs throughput vs latency — presentation chart.
 
 Renders the measured block-size sweep (experiments/dual-el/blocksize-sweep.sh) as a

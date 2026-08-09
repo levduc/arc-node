@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Payment lane: the sustained throughput/latency frontier (15-minute windows, 4 machines).
 
+*** THIS IS THE AUTHORITATIVE CHART. *** blocksize-chart.py is superseded (single-machine, short
+windows, its "50M holds" row retracted); blocktime-chart.py is short-window and is kept only for
+the 500M / 1 Ggas sizes this run does not cover.
+
     python3 experiments/dual-el/frontier-long-chart.py [out.svg]
 
 2026-08-09. Four physical machines, one gas limit at a time, each held under continuous load for a

@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+# ============================================================================
+#  SHORT-WINDOW DATA — prefer frontier-long-chart.py where the sizes overlap.
+#
+#  The fleet rows here are 75-150 s windows. They are directionally right and
+#  they cover sizes the sustained run does not (500M, 1 Ggas), but for 25M /
+#  50M / 100M / 200M the 15-minute sustained numbers supersede them:
+#      25M  520 ms  2,287 tps      50M  537 ms  4,430 tps
+#      100M 697 ms  6,827 tps      200M 690 ms  7,092 tps (51% full)
+#
+#  AUTHORITATIVE: experiments/dual-el/frontier-long-chart.py
+# ============================================================================
 """Payment lane: the throughput/latency frontier, and why block time is not a throughput knob.
 
 Renders the 2-D sweep (experiments/dual-el/blocktime-sweep.sh: target block time x gas limit) as a

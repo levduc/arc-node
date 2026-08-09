@@ -271,6 +271,50 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 📌 MISSION 3 CLOSED — one authoritative chart, no experiment this iteration (2026-08-09, iter 13)
+
+Ran NO fleet experiment. The prompt's exit condition ("say so plainly rather than manufacturing a
+marginal win") has been met and documented across iterations 8-12; another 1-2 h fleet run would be
+manufacturing. Did the cheap outstanding deliverable instead.
+
+**PROBLEM FIXED: three charts in the repo disagreed with each other** on the same gas sizes — the
+same class of hazard that let "9.5k/15k tps at 1 Ggas" sit on a slide long enough to become the
+standing impression that bigger blocks buy throughput.
+
+| gas | blocksize-chart | blocktime-chart | frontier-long |
+|-----|-----------------|-----------------|---------------|
+| 25M | 504 ms, 2,363 | 529 ms, 2,249 | **520 ms, 2,287** |
+| 50M | 511 ms, 4,660, "HOLDS" | 522 ms, 4,563 | **537 ms, 4,430 (does NOT hold)** |
+| 100M | — | 644 ms, 7,398 | **697 ms, 6,827** |
+
+`blocksize-chart.py` was still asserting "50M HOLDS 2 blk/s", a claim retracted twice. Both older
+charts now carry a SUPERSEDED / short-window banner naming the authoritative one, and
+`frontier-long-chart.py` is marked authoritative. Data kept as historical record; all three still run.
+
+**Gates re-run as a standing regression check: all digests IDENTICAL** (state, receipts, logs,
+across pool / closed / mixed).
+
+### FINAL STATE OF MISSION 3
+
+**Throughput — closed.** Sustained, 4 machines, 15 min per point, 100% full, all validators agreeing:
+25M = 520 ms / 2,287 tps · 50M = 537 ms / 4,430 · **100M = 697 ms / 6,827 (best)** · 200M = the
+limit stops binding and lands on top of 100M. Only 25M holds 2 blk/s, and at 1.92 not 2.00.
+The ceiling is consensus coordination: **88% of a transaction's marginal cost is outside execution**
+(per extra tx: 15.2 us proposer build, 11.4 us own newPayload, 18.2 us stream+decode, 68.4 us vote gap).
+
+**Memory — characterised, not a leak.** Grows ~0.65-0.93 KB per transaction under load, releases at
+~40-50% of that rate when load stops. No config knob moves it (block buffer, cross-block cache, state
+cache all eliminated by measurement). Size for the longest continuous burst, ~0.35 GB per saturated
+minute above idle.
+
+**Correctness — four fast-path consensus bugs found and fixed** (missing per-transfer log; legacy
+fee shape; zero-value logs; plus the eager-recovery artifact reverted). Gate now covers state +
+receipts + logs + legacy + EIP-2930 + zero-value + mixed general-EVM interleaving.
+
+**What is left needs the constraint lifted or a decision:** compact blocks (ship tx hashes — peers
+already hold them), pipelining execution against the next height, or a heap profile for the memory
+behaviour. None is EL-config work.
+
 ## ✅ IT IS NOT A LEAK — MEMORY IS RECLAIMED, JUST 2.4x SLOWER THAN IT ACCUMULATES (2026-08-09, iter 12)
 
 The one question left worth answering, because it changes the operational advice: is the growth a
