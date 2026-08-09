@@ -1,9 +1,21 @@
-"""Drain test: with a pre-filled mempool and ALL spam stopped, the chain's height is pure
-consensus capacity — fill time is zero because the transactions are already there."""
-import json,statistics,sys,time,urllib.request
+"""Drain test v2: with a pre-filled mempool and ALL spam stopped, block height is pure consensus
+capacity -- fill time is zero because the transactions are already present.
+
+v1's time attribution was WRONG: `dt*frac/span_blocks` reduces algebraically to the ALL-block
+average, diluting full blocks with the fast empty blocks after backlog exhaustion, biasing LOW.
+Iter-14's headline drains (208/385 ms) carried that bias (corrected 60M estimate ~237 ms from its
+16-of-24-full composition). v2 samples the head every 1s and attributes time per interval,
+keeping only intervals whose blocks were ALL >=95% full.
+
+KNOWN CONFOUND (measured 2026-08-09): drain height is strongly CHAIN-AGE dependent -- a fresh
+chain drained 60M at ~237 ms while the same chain after ~1.5 h of churn drained at 513 ms
+(38-of-39 full, negligible dilution). Any drain-frontier sweep must therefore use FRESH chains
+per point and report chain age alongside.
+"""
+import json,sys,time,urllib.request
 LABEL=sys.argv[1]; GAS=int(sys.argv[2])
-def rpc(m,p=None,port=19545):
-    r=urllib.request.Request(f"http://127.0.0.1:{port}",
+def rpc(m,p=None):
+    r=urllib.request.Request("http://127.0.0.1:19545",
         data=json.dumps({"jsonrpc":"2.0","id":1,"method":m,"params":p or []}).encode(),
         headers={"content-type":"application/json"})
     return json.load(urllib.request.urlopen(r,timeout=15))["result"]
@@ -12,42 +24,29 @@ def pending():
         st=rpc("txpool_status")
         return int(st["pending"],16) if isinstance(st["pending"],str) else int(st["pending"])
     except Exception: return -1
-# wait until the backlog is actually draining (spam stopped by caller)
 p0=pending()
-h0=int(rpc("eth_blockNumber"),16); t0=time.time()
-rows=[]
+h_prev=int(rpc("eth_blockNumber"),16); t_prev=time.time(); t0=t_prev
+intervals=[]
 while True:
-    time.sleep(5)
-    h=int(rpc("eth_blockNumber"),16); p=pending(); t=time.time()
-    rows.append((t,h,p))
-    if p >= 0 and p < 3000:  # backlog nearly gone
+    time.sleep(1.0)
+    h=int(rpc("eth_blockNumber"),16); t=time.time()
+    if h>h_prev:
+        intervals.append((t_prev,t,h_prev,h))
+        h_prev,t_prev=h,t
+    p=pending()
+    if (p>=0 and p<3000) or t-t0>200:
         break
-    if t-t0 > 240:
-        break
-# analyse only FULL blocks during the drain
-h1=rows[-1][1]
-txs=[]; gasu=[]
-for x in range(h0+1,h1+1):
-    b=rpc("eth_getBlockByNumber",[hex(x),False])
-    txs.append(len(b["transactions"])); gasu.append(int(b["gasUsed"],16))
-full=[i for i,g in enumerate(gasu) if g >= GAS*95//100]
-n=len(full); dt=rows[-1][0]-t0
-if n<5:
-    print(f"[{LABEL}] insufficient full blocks in drain ({n})"); sys.exit()
-# height during the full-block stretch: blocks/sec over that span
-# use the count of full blocks over the total drain time up to when fullness ended
-last_full=max(full); first_full=min(full)
-span_blocks=last_full-first_full+1
-# time attribution: interpolate via rows
-def height_at(t):
-    for tt,hh,_ in rows:
-        if tt>=t: return hh
-    return rows[-1][1]
-# simpler: average over full blocks = (span time)/(span blocks): find timestamps around the span
-# approximate with block-count-weighted total time fraction
-frac=(span_blocks)/(h1-h0)
-span_time=dt*frac
-ms=span_time*1000/span_blocks
-tps=sum(txs[i] for i in full)/span_time
-print(f"[{LABEL}] drain: {h1-h0} blocks total, {n} FULL ({statistics.mean([txs[i] for i in full]):,.0f} tx avg)  "
-      f"start-backlog {p0:,}  height(full-stretch) {ms:.0f} ms  tps {tps:,.0f}")
+full_iv=[]
+for (ta,tb,ha,hb) in intervals:
+    gs=[]
+    for x in range(ha+1,hb+1):
+        b=rpc("eth_getBlockByNumber",[hex(x),False])
+        gs.append((int(b["gasUsed"],16),len(b["transactions"])))
+    if gs and all(g>=GAS*95//100 for g,_ in gs):
+        full_iv.append((tb-ta,hb-ha,sum(n for _,n in gs)))
+if len(full_iv)<3:
+    print(f"[{LABEL}] insufficient full intervals ({len(full_iv)})"); sys.exit()
+tot_t=sum(i[0] for i in full_iv); tot_b=sum(i[1] for i in full_iv); tot_tx=sum(i[2] for i in full_iv)
+per=[i[0]/i[1]*1000 for i in full_iv]
+print(f"[{LABEL}] {tot_b} FULL blocks / {tot_t:.1f}s (backlog {p0:,})  "
+      f"height {tot_t*1000/tot_b:.0f} ms (spread {min(per):.0f}-{max(per):.0f})  tps {tot_tx/tot_t:,.0f}")

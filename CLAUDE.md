@@ -533,6 +533,20 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**⚠️ MISSION 4 ITER 15 (2026-08-09): iter-14's "1.8-2.6x headroom" DOWNGRADED TO UNCONFIRMED.**
+Two problems, both mine: (1) the v1 drain harness's time attribution reduces algebraically to the
+ALL-block average (diluted by fast empty blocks after exhaustion, biased LOW) — iter-14's 60M
+"208ms" corrects to ~237ms from its 16-of-24-full composition; today's "93-114ms" prints were
+worthless dilution. v2 harness committed (1s sampling, all-full intervals only; NOTE: the v2
+rewrite initially failed to land — shell died mid-heredoc, old file kept running, caught via
+output format; VERIFY FILE CONTENT). (2) **Drain height is strongly CHAIN-AGE dependent**: fresh
+~237ms vs **513ms after ~1.5h churn** (measured cleanly, 38-of-39 full) — 513 is barely below the
+534-559 sustained numbers. HONEST CLAIM NOW: the frontier is delivery-shaped (builder-deadline
+fill-pacing mechanism PROVEN), fresh-chain capacity is meaningfully higher, magnitude 1.05-2.3x
+UNCONFIRMED. Deck/paper untouched. CLEAN EXPERIMENT: fresh boot per point → blast → v2 drain x3 →
+teardown; 60M/100M x stock/spec; record chain age per drain. After any killed cycle, spam nonce
+state is dirty — verify pool growth (>10k/20s) before trusting a blast.
+
 **🚨🚨 MISSION 4 ITER 14 (2026-08-09): THE FRONTIER WAS A DELIVERY CURVE — true capacity 1.8-2.6x
 higher.** New `fleet/drain-test.py`: pre-fill mempool, stop ALL spam, measure the drain of
 100%-full blocks = pure consensus capacity (fill time zero). Fleet, stock, unpaced: **60M drains at

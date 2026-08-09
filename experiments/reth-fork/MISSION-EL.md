@@ -271,6 +271,37 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## ⚠️ MISSION 4 ITER 15: ITER-14's "1.8-2.6x HEADROOM" DOWNGRADED TO UNCONFIRMED — attribution bug + chain-age confound (2026-08-09)
+
+Attempted the systematic drain-frontier sweep and instead found two problems with iter-14's
+headline, both mine.
+
+**1. The v1 drain harness's time attribution was WRONG.** `dt*frac/span_blocks` reduces
+algebraically to the ALL-block average — diluting full blocks with the fast empty blocks after the
+backlog runs out, biasing LOW. Iter-14's 60M "208 ms" came from a 16-of-24-full drain; corrected
+for its composition it is ~237 ms. Today's early "93-114 ms" prints were 21-25 full blocks diluted
+by 80+ empties — worthless. (drain-test.py v2, now committed, samples at 1 s and keeps only
+intervals whose blocks are ALL >=95% full. The v2 rewrite initially FAILED TO LAND — a shell died
+mid-heredoc and the old file kept running; caught because the output format didn't match. Verify
+the file content, not the write command.)
+
+**2. Drain height is strongly CHAIN-AGE dependent.** Same chain, same config: fresh ~237 ms
+(corrected iter-14 estimate) vs **513 ms after ~1.5 h of churn** — this one measured cleanly
+(38-of-39 blocks full, dilution negligible). 513 is barely below the 534-559 "sustained" numbers.
+
+**WHERE THE TRUTH CURRENTLY STANDS:** on a FRESH chain there is real evidence of substantial
+consensus headroom at 60M (~237 ms, roughly 2.3x the sustained number) — but it is a corrected
+estimate from a mis-instrumented run, not a clean measurement, and it decays with chain age at a
+rate that itself needs measuring. The honest claim is: "the sustained frontier is delivery-shaped
+(mechanism proven: builder-deadline fill-pacing), and fresh-chain capacity is meaningfully higher,
+magnitude 1.05-2.3x UNCONFIRMED pending clean fresh-chain drains." The deck/paper stay untouched.
+
+**THE CLEAN EXPERIMENT (next):** per point, boot a FRESH chain -> immediate blast -> v2 drain x3 ->
+teardown. Sizes 60M/100M x stock/spec = 4 fresh boots, ~80 min. Also record chain height at each
+drain so the age-decay curve comes out of the same data. Blast phase note: after any KILLED drain
+cycle, spammer nonce state is dirty and the next spam start can die silently — always verify pool
+growth (>10k in 20 s) before trusting a blast.
+
 ## 🚨🚨 MISSION 4 ITER 14: THE FRONTIER WAS A DELIVERY CURVE — true consensus capacity is 1.8-2.6x higher (2026-08-09)
 
 The drain test (new `fleet/drain-test.py`): pre-fill the mempool with a large backlog, STOP all
