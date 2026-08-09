@@ -533,6 +533,21 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🚨🚨 MISSION 4 ITER 14 (2026-08-09): THE FRONTIER WAS A DELIVERY CURVE — true capacity 1.8-2.6x
+higher.** New `fleet/drain-test.py`: pre-fill mempool, stop ALL spam, measure the drain of
+100%-full blocks = pure consensus capacity (fill time zero). Fleet, stock, unpaced: **60M drains at
+208 ms = 13,705 tps** (vs "sustained" 534-559/5,300 = 2.6x); **100M at 385 ms = 11,423 tps** (vs
+697/6,827 = 1.8x). MECHANISM: the builder's 500 ms deadline keeps its live best_transactions
+iterator open pulling txs AS THEY ARRIVE — under our spam tooling (delivery plateau ~5.3-5.8k) the
+builder waits for the pool to feed it, getPayload waits for the builder, height == txs/delivery.
+**Blocks read "100% full" while being FILL-PACED — fullness was never a sufficient saturation
+check; the drain test is.** REVISES: the sustained frontier + "knee at 100M" (drain 60M BEATS
+100M) + the 450ms-floor/100µs-per-tx model (fit to delivery-tainted points; the "vote gap" largely
+= builder fill-wait). Deck/paper numbers are now known LOWER BOUNDS — do NOT rewrite until the
+drain-frontier sweep (sizes x stock/spec x n>=3, bigger backlogs, + delivered-rate sweep at fixed
+size). CAVEATS: n=1/size, short drains (~48k backlog; -l resync races the drain tail — harness now
+settles+verifies), drain-mode ≠ product mode but IS the capacity measure.
+
 **🎯 MISSION 4 ITER 13 (2026-08-09): the mechanism number lands; the 60M wall is DELIVERY.**
 (1) **UNPACED 40M single-box pair: stock 485ms/3,930tps vs spec 437ms/4,355tps = -10% height,
 +10.8% tps** (sd 0.5%/4.8%, builds 121-153→49-69ms) — the prebuild's true floor cut, THE mechanism

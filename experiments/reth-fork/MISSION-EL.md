@@ -271,6 +271,51 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🚨🚨 MISSION 4 ITER 14: THE FRONTIER WAS A DELIVERY CURVE — true consensus capacity is 1.8-2.6x higher (2026-08-09)
+
+The drain test (new `fleet/drain-test.py`): pre-fill the mempool with a large backlog, STOP all
+spam, and measure the chain draining 100%-full blocks — fill time is zero because the transactions
+are already there. What remains is pure consensus capacity. Fleet, stock, unpaced:
+
+| size | drain height (full blocks) | drain tps | reported "sustained" | gap |
+|------|---------------------------|-----------|----------------------|-----|
+| 60M | **208 ms** (16 full blocks, 2,856 tx) | **13,705** | 534-559 ms / ~5,300 | **2.6x** |
+| 100M | **385 ms** (12 full blocks, 4,761 tx) | **11,423** | 697 ms / 6,827 | **1.8x** |
+
+**THE MECHANISM, now understood end-to-end:** the payload builder's 500 ms deadline keeps the
+build job's live `best_transactions` iterator open, pulling transactions AS THEY ARRIVE. Under
+any spam configuration we own (delivery plateau ~5.3-5.8k tx/s), the builder sits waiting for the
+pool to feed it to fullness, getPayload (await-in-progress) waits for the builder, and the height
+equals txs-per-block / delivery-rate. Blocks come out "100% full" — which every prior sweep took
+as proof of saturation — while actually being FILL-PACED. "100% full" was never a sufficient
+saturation check; the drain test is.
+
+**WHAT THIS REVISES (a lot):**
+- The sustained frontier (520 ms/2,287 ... 697 ms/6,827, "knee at 100M") is a DELIVERY curve.
+  True capacity: >=13.7k tps at 60M / >=11.4k at 100M — and in drain mode 60M BEATS 100M, so the
+  "knee" and possibly the whole bigger-blocks story need re-derivation.
+- The "height = 450 ms floor + ~100 us/tx" model was fit to delivery-tainted points. The
+  consensus-split decomposition's vote-gap term must have largely been fill-wait inside the
+  BUILDER (the CL build_time = 137-265 ms at 60M included the builder waiting for txs; in drain
+  the whole height is 208 ms).
+- Iter-13's "prebuild is invisible because 60M is ingest-bound" stands, and generalises: EVERY
+  operating point we measured was ingest-shaped.
+- Deck/paper: current frontier slides state capacity numbers that are LOWER BOUNDS by a measured
+  1.8-2.6x. Do NOT rewrite yet — re-derive the frontier with drain tests first (one clean pass).
+
+**CAVEATS (stated):** n=1 per size (the second/third blasts failed to build backlog — the -l
+nonce-resync races the previous drain's tail; fixed with settle+verify guards in the harness);
+drains are short (12-16 full blocks from a ~48k backlog capped by pool config 200k and delivery
+during blast); agreement not re-checked within drains (chain healthy, early check passed at boot).
+Drain-mode is also not a product operating mode — real traffic arrives continuously — but it is
+the correct measure of CONSENSUS capacity, and it says the lane has ~2x headroom the delivery
+tooling has been hiding.
+
+**NEXT (one systematic pass):** drain-frontier sweep — sizes 25/40/60/100/200M x stock-vs-spec x
+n>=3 drains each, bigger backlogs (raise pool caps or chain blasts), + a delivered-rate sweep at
+fixed size to map the transition from fill-paced to capacity-paced. THEN rewrite the frontier
+chart, deck, and model in one pass.
+
 ## 🎯 MISSION 4 ITER 13: THE MECHANISM NUMBER LANDS — and the fleet's 60M wall turns out to be DELIVERY (2026-08-09)
 
 Four results in one session (tailscale re-authed mid-iteration by the user).
