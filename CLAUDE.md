@@ -533,6 +533,23 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**✅ MISSION 4 STEP 1: SPECULATIVE PREBUILD IMPLEMENTED — NO reth fork needed (2026-08-09).**
+`ARC_SPECULATIVE_BUILD=1` (default OFF), entirely in `arc-execution-payload` (`src/speculative.rs`
++ 2 hooks in `payload.rs`). Zero fork changes because (1) reth 2.3's engine tree ALREADY
+`set_pending_block`s a newPayload'd block whose parent is the canonical head (Arc's case every
+height) and `state_by_block_hash` resolves the pending slot; (2) a 25 ms poll of `pending_block()`
+is the trigger (no public subscription; <=5% of the 350-900 ms vote gap). Prediction: timestamp =
+`max(parent_ts, now_secs)` (CL's own formula, lanes lockstep -> misses only on a second rollover,
+expect ~50-70% hits); fee_recipient/prev_randao LEARNED from the last real request; pbbr = N.hash.
+**Trap found: the pool must be pre-filtered with N's tx hashes** — stale nonces + `mark_invalid`'s
+remove-descendants semantics would empty every sender chain (near-empty speculative blocks).
+Serving: `try_build` -> Freeze iff ALL attrs match; labelled miss counters
+(`arc_speculative_build_outcome_total{outcome=hit|miss_timestamp|miss_parent|miss_other|miss_empty|built}`);
+fail-safe (wrong prediction = idle CPU, never a wrong block). Gate leg 3: stash==fresh byte
+equality + timestamp-miss falls through; all gates pass under both flag settings, reference hashes
+unchanged, full binary typechecks. **NOT live-validated yet** — next: build-docker, val1-only A/B
+vs 3 stock peers, 100+ block agreement, HIT RATE, height movement, mem-soak alongside.
+
 **📌 CLAUDE.md CATCH-UP (2026-08-09): iterations 9-15 + mission 4 step 0 — six updates silently
 failed to land here** (an anchored str.replace no-op'd after iter 8 wrote a ##-heading; every later
 update anchored on a **-heading that never existed. RULE: `assert anchor in s` before any anchored
