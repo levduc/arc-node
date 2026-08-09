@@ -271,6 +271,41 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🎯 MISSION 4 ITER 10: DUAL-TIMESTAMP CONFIRMS THE PHASE HYPOTHESIS — fleet ts-misses collapse 90-421 -> 2-8 (2026-08-09)
+
+Implemented dual-timestamp speculation (build BOTH `t0 = max(parent_ts, now)` and `t0+1`, stash up
+to two candidates per parent, serve whichever matches). Rebuilt via the container recipe, shipped
+(sha-verified bfce1b06), and re-ran the same-day fleet A/B at 60M with the FIXED instrumentation
+(per-window counter deltas + remote CL build_time via tailscale — both gaps from iter 9 closed):
+
+| | control (env off) | spec (dual-ts) |
+|---|---|---|
+| height | 534 ms (sd 1.3%) | **525 ms** (sd 0.5%) |
+| tps | 5,353 | 5,439 |
+| ts-miss / window | — | **2-8 per validator** (was 90-421) |
+| CL build val1/val2 | 137-158 ms | **54-63 ms** |
+| CL build val3/val4 | 137-248 ms | 102-153 ms |
+| hit rate | — | val1/2: 93-94%; val3: 68%; val4: 58% |
+
+**The phase-lock hypothesis is CONFIRMED by its own cure**: the timestamp-miss class is gone,
+phase-independent, exactly as designed. Fleet height moved 534 -> 525 (the hold boundary), tps
++1.6% — real but bounded by the residual miss class.
+
+**REMAINING GAP — miss_parent on the stragglers** (val3: 53, val4: 68 per window; the wifi and
+slower machines). The fork publishes pending when parent == canonical OR parent == current
+pending; on those hosts the parent's OWN pending was evidently never published either (a chain of
+unpublished pendings under FCU lag), so the condition still fails. NEXT REFINEMENT: under the env
+flag, publish pending on ANY valid insert (drop the parent conditions entirely — Arc-safe: one
+proposer per height, no side-chains). If val3/4 then hit like val1/2, projected fleet 60M ≈
+515-520 ms = HOLDS.
+
+Measured hit-rate economics: val1/2 at 93-94% halve their proposal build (137-158 -> 54-63 ms
+CL-side). Every remaining ms is in the straggler misses.
+
+DECK restructured per user request (separate commit): Four-Levers promoted from appendix beside
+the anatomy slide with a v2.5 scheduling row; Demo 2 updated 2,000/s -> 5,000-6,800 sustained;
+Summary rewritten around the frontier + cost model; dead skip-root idea marked resolved.
+
 ## 🚨 MISSION 4 ITER 9: THE SINGLE-BOX PREBUILD WIN DOES NOT TRANSFER TO THE FLEET — hit-rate collapse, phase-lock hypothesis (2026-08-09)
 
 Fleet session, fork image on all 4 machines (content-verified), one image both arms (the fork

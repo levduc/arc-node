@@ -533,6 +533,17 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🎯 MISSION 4 ITER 10 (2026-08-09): DUAL-TIMESTAMP CONFIRMS THE PHASE HYPOTHESIS.** Built both ts
+candidates (t0, t0+1), stash holds 2/parent, serve either. Fleet 60M same-day with FIXED
+instrumentation (window counter DELTAS + remote CL build via tailscale): control 534ms/5,353 vs
+spec **525ms/5,439 (sd 0.5%)**; **ts-miss 90-421 → 2-8/validator** — the class is DEAD, phase-
+independent. CL build val1/2: 137-158 → **54-63ms** (93-94% hits). Residual: **miss_parent on the
+stragglers** (val3 53, val4 68/window — papaduck + wifi-alien2): a CHAIN of unpublished pendings
+under FCU lag defeats even the parent==pending fork condition. NEXT: under the env flag publish
+pending on ANY valid insert (drop parent conditions; Arc-safe). Projected fleet 60M ≈ 515-520 =
+HOLDS if val3/4 reach val1/2 hit rates. Deck restructured (levers promoted + v2.5 row, Demo 2 and
+Summary refreshed, dead idea marked).
+
 **🚨 MISSION 4 ITER 9 (2026-08-09): THE SINGLE-BOX PREBUILD WIN DOES NOT TRANSFER TO THE FLEET.**
 Fork image on all 4 machines, one image both arms (env-dead edits ⇒ env-off = stock control),
 distributed spam, 100% full, same-day: 60M control 534ms/5,353 vs spec **538ms/5,304 — NIL**; 75M
