@@ -271,6 +271,45 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## ❌ MEMORY GROWTH IS CONFIG-INDEPENDENT — AND MY "16% FROM PERSISTENCE" WAS A MACHINE ARTIFACT (2026-08-09, iter 11)
+
+**RETRACTION FIRST.** Last iteration I reported that lowering the persistence threshold slowed
+memory growth 16% (val1 298 vs val2 353 MiB/min, matched 62 GB hardware). That was wrong. I never
+checked what the SAME machine pair does UNTREATED: in the all-stock baseline ginny already grew 15%
+slower than ginnythui (233 vs 274, ratio 0.850). The persistence run's ratio was 0.844. **The
+treatment effect was -0.7%, i.e. nothing.** Cross-machine A/B requires the untreated ratio for that
+pair as the control; I compared treated-vs-control across different boxes and read the hardware
+difference as a result.
+
+**THIS ITERATION.** Probed the remaining large caches, per validator, same chain/load/size, 35 min:
+val1 `--engine.cross-block-cache-size 256` (down from a 4096 MB default, 16x smaller), val4
+`--engine.disable-state-cache` (off entirely), val2/val3 stock.
+
+| run | ginny | thui | pduck | alien | ginny/thui | effect vs baseline |
+|-----|-------|------|-------|-------|------------|--------------------|
+| all-stock baseline | 233 | 274 | 323 | 194 | 0.850 | — |
+| persistence 2/4 | 298 | 353 | 415 | 288 | 0.844 | **-0.7%** |
+| cache 256 MB / cache OFF | 294 | 348 | 411 | 283 | 0.845 | **-0.7%** |
+
+**NEITHER KNOB DOES ANYTHING.** Shrinking the cross-block cache 16x, and disabling the state cache
+outright, change the growth rate by under 1% once normalised. The three runs' absolute rates are
+also within ~1.5% of each other (294/348/411 vs 298/353/415), across three different configs.
+**The growth is config-independent, so it is not any cache that reth exposes a flag for.**
+
+**WHAT IT SCALES WITH.** Consistent across all three runs and every config: **+3,060-4,440 MiB per
+1000 blocks**, i.e. **~0.65-0.93 KB per transaction processed** (blocks are 4,761 tx). Growth
+tracks transactions, not time and not blocks. That is the signature of per-transaction retention
+that is never released — a leak, or an unbounded structure with no knob.
+
+**CONFIG IS EXHAUSTED FOR THIS PROBLEM.** Three candidate mechanisms are now eliminated by
+measurement (in-memory block buffer, cross-block state cache, state cache entirely). What remains
+needs a heap profile of the payment EL under load, or an upstream reth question — a different kind
+of work from anything in this mission, and not config-only.
+
+**OPERATIONALLY, UNTIL THEN:** budget >=24 GB per payment EL at 100M, and expect to restart ELs
+periodically under sustained load; a node at its cap dies and silently corrupts throughput
+measurements before it does (that is how the 200M frontier row came out wrong).
+
 ## ❌ PERSISTENCE THRESHOLD IS NOT THE MEMORY CULPRIT — ~16%, NOT A FIX (2026-08-09, iter 10)
 
 Tested the mitigation named last iteration: LOWER the persistence threshold so the in-memory block
@@ -285,7 +324,7 @@ val2 + val3 stayed stock. Same chain, same blocks, identical load, 35 min.
 | val3 papaduck | 78 GB | stock | 3,033 -> 15,892 MiB | 415 MiB/min | 4,425 MiB |
 | val4 alien2 | 15 GB (11 GiB cap) | **LOW** | 689 -> 9,618 MiB | 288 MiB/min | 3,073 MiB |
 
-**MATCHED-HARDWARE RESULT (val1 vs val2, both 62 GB): 298 vs 353 MiB/min = 16% slower.** Real, and
+**[RETRACTED -- see the iteration-11 entry above: normalised against the untreated ratio for this machine pair the effect is -0.7%, i.e. nothing.]** ~~MATCHED-HARDWARE RESULT (val1 vs val2, both 62 GB): 298 vs 353 MiB/min = 16% slower.~~ Real, and
 in the right direction — but every node is still marked STILL CLIMBING and still adding
 3.1-4.4 GiB per 1000 blocks. **So the in-memory block buffer accounts for only ~16% of the growth;
 ~84% is something else. The leading hypothesis is ruled out.**
