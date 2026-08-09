@@ -271,6 +271,24 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## ⚠️ MISSION 4 ITER 5: NO VALID DATA — box contended, gas-at-500ms sweep aborted (2026-08-09)
+
+Attempted the money measurement (largest block holding the 500 ms pacer WITH prebuild on all 4).
+Fresh all-spec chain at 50M read **594 ms (sd 12.1%)** and a second window **611 ms (sd 17.5%)**,
+against yesterday's **527 ms (sd 2.3%)** on the IDENTICAL config and load. Load average was **38 on
+16 cores** during the windows (top consumers were our own containers, but the same demo footprint
+measured cleanly yesterday; 6 users logged in — daytime desktop use is the likely difference).
+CL build times also inflated (114-144 ms vs 81-115), consistent with global CPU contention rather
+than anything about the prebuild.
+
+**All numbers from this iteration are DISCARDED.** Quoting them would repeat the exact mistake the
+protocol exists to prevent (measuring the environment, not the chain). The sweep needs either a
+quiet box (overnight) or the fleet.
+
+STANDING RESULTS UNCHANGED: prebuild halves the proposer build at 88-90% hit rate with zero
+divergence (iter 3-4); the 500 ms pacer converts the saving into headroom (iter 4). NEXT (unchanged):
+gas-at-fixed-500ms sweep with prebuild, on a quiet box or the fleet; fresh-chain unpaced pair.
+
 ## 🎯 MISSION 4 STEP 3: ALL-4 CADENCE A/B — build halved network-wide; the PACER absorbs the saving (2026-08-09, iter 4)
 
 Two fresh chains, identical 50M config and load (6 spammers x 900/s, blocks 100% full), 12-min

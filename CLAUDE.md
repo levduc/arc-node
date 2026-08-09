@@ -533,6 +533,10 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**⚠️ MISSION 4 ITER 5 (2026-08-09): NO VALID DATA — box contended (load 38/16 cores, daytime use);
+50M all-spec read 594-611ms sd 12-17% vs 527ms sd 2.3% yesterday on identical config. ALL numbers
+discarded. The gas-at-500ms-with-prebuild sweep needs a quiet box or the fleet.**
+
 **🎯 MISSION 4 STEP 3: ALL-4 CADENCE A/B (2026-08-09) — build halved network-wide; the 500ms PACER
 absorbs the saving.** Two fresh chains, identical 50M config/load, 12-min windows: stock
 539ms/4,419tps/build 186-218ms vs all-spec **527ms/4,513tps/build 81-115ms, hit 88-90%**, both arms
