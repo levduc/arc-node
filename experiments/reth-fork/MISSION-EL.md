@@ -271,6 +271,39 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## ✅ MISSION 4 ITER 12: CHAIN-ANCHORED BINARY REGRESSION-PASSES SINGLE-BOX; fleet still blocked on tailscale (2026-08-09)
+
+Tailscale required re-auth again (fleet unreachable) -> single-machine work per the standing rule.
+Ran the two owed items in one 28-min single-box run on the chain-anchored binary (`3485bd62`, sha
+verified inside the container), spec on all 4, 60M, blocks 100% full:
+
+**REGRESSION: PASS.** All four validators healthy on the NEW publish path:
+| | v1 | v2 | v3 | v4 |
+|---|---|---|---|---|
+| hit rate (~600 proposals each) | 92% | 91% | 91% | 93% |
+| parent-miss | 3 | 25 | 1 | 0 |
+| ts-miss | 48 | 32 | 55 | 41 |
+
+Window: 530 ms / 5,394 tps at 100% full (val1 CL build 108.8 ms — window average including
+misses). Dual-ts build economics confirmed: ~4,815 builds over ~3,170 heights = ~1.5 builds/height
+(the second candidate is skipped when t1 == t0), so the extra CPU is as designed.
+
+**MEMORY with dual-ts speculation: growth ~245 MiB/min at 60M single-box — comparable to the known
+stock baseline (280-415 at 100M fleet), i.e. speculation adds no visible memory penalty.** BUT the
+run ended the same way every long single-box run does: all four pay ELs marched from ~400 MiB to
+5.8 GiB and **val2 was OOM-killed at the demo's 6 GiB cap at minute ~28** (`oom=true exit=137`) —
+the KNOWN unbounded-under-load growth, now with a third confirmed kill. This preempted the formal
+120-block agreement check (one EL down -> connection refused): the run's health evidence is the
+100%-full lockstep window + the hit-rate symmetry, NOT a completed 4-way agreement check. Recorded
+as such; the fleet rerun must do the agreement check early, not last.
+
+**OPS:** the demo's 6 GiB pay-EL cap bounds any single-box soak to ~25 min under 60M load. Either
+raise the cap for soaks or schedule checks before minute 20. (Also: agreement checks BEFORE
+long-tail measurements from now on.)
+
+NEXT (unchanged, needs tailscale re-auth): re-ship `3485bd62` -> verify per-host shas -> fleet spec
+60M/75M windows -> expect val3/4 parent-misses to collapse -> projected fleet 60M ~515-520 ms HOLDS.
+
 ## 🔧 MISSION 4 ITER 11: CHAIN-ANCHORED PENDING PUBLISH BUILT — fleet rerun blocked on a wedged ship (2026-08-09)
 
 **The straggler fix, designed around the trap in the naive version.** "Publish pending on ANY valid

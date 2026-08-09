@@ -533,6 +533,17 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**✅ MISSION 4 ITER 12 (2026-08-09): chain-anchored binary REGRESSION-PASSES single-box** (tailscale
+needed re-auth again; fleet blocked). 28-min run, spec all 4, 60M, 100% full: **hit rates 91-93% on
+all four**, parent-miss 3/25/1/0, window 530ms/5,394tps; dual-ts economics as designed (~1.5
+builds/height). **Memory: dual-ts adds no visible penalty** (~245 MiB/min at 60M vs 280-415
+baseline) — but the run ended in the KNOWN OOM: all pay ELs 400MiB→5.8GiB, val2 killed at the
+demo's 6GiB cap at ~min 28 (third confirmed kill), which PREEMPTED the formal agreement check (one
+EL down). Health evidence = 100%-full lockstep window + hit symmetry, NOT a completed 4-way check.
+**RULES: single-box soaks are bounded to ~25min by the 6GiB cap; run agreement checks EARLY, not
+last.** NEXT (needs tailscale re-auth): re-ship 3485bd62 → fleet spec windows → expect straggler
+parent-misses to collapse.
+
 **🔧 MISSION 4 ITER 11 (2026-08-09): chain-anchored pending publish BUILT; fleet rerun blocked on a
 wedged ship.** The naive "publish on any insert" is UNSAFE (unresolvable parent ⇒ overlay silently
 skips ancestors ⇒ INVALID speculative payloads). Safe fix (fork `794870f`): chain-state
