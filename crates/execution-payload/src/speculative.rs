@@ -302,20 +302,39 @@ pub fn spawn_speculative_watcher<EvmConfig, Client, Pool>(
             let mut last_parent: Option<B256> = None;
             loop {
                 std::thread::sleep(POLL_INTERVAL);
-                // The pending block is the newPayload'd-but-not-yet-canonical block N that reth
-                // published because its parent was the canonical head.
+                // Preferred trigger: the pending block — the newPayload'd-but-not-yet-canonical
+                // block N, published by reth's tree because N's parent was the canonical head.
+                // MEASURED GAP (2026-08-09, 60M): when newPayload(N) races FCU(N-1) — common once
+                // heights slow past ~550 ms — reth SKIPS the pending update (parent not canonical
+                // yet), the watcher goes blind for that height, and the stale stash produced a
+                // miss_parent on ~40% of proposals. FALLBACK: if pending is absent or BEHIND the
+                // canonical head, speculate on the canonical head itself. That window is shorter
+                // (decide -> next get_value, widened by the 500 ms pacer slack) but it converts a
+                // guaranteed miss_parent into a possible hit.
                 let pending = match client.pending_block() {
-                    Ok(Some(b)) => b,
-                    Ok(None) => continue,
+                    Ok(p) => p,
                     Err(err) => {
                         warn!(target: "payload_builder", %err, "(arc) speculative: pending_block failed");
                         continue;
                     }
                 };
-                let hash = pending.hash();
+                let latest_num = client.best_block_number().unwrap_or_default();
+                let candidate = match pending {
+                    Some(p) if p.header().number >= latest_num => p.into_sealed_block(),
+                    _ => {
+                        // pending absent or stale — canonical-head fallback
+                        let Ok(Some(hash)) = client.block_hash(latest_num) else { continue };
+                        match client.block(hash.into()) {
+                            Ok(Some(b)) => reth_primitives_traits::Block::seal_unchecked(b, hash),
+                            _ => continue,
+                        }
+                    }
+                };
+                let hash = candidate.hash();
                 if last_parent == Some(hash) {
                     continue;
                 }
+                let pending = candidate;
                 // Need learned attrs before we can predict; until the first real request, skip.
                 let Some((fee_recipient, prev_randao)) = learned()
                     .lock()

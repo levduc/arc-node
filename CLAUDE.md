@@ -533,6 +533,16 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🔬 MISSION 4 ITER 6 (2026-08-09): 60M exposed a TRIGGER GAP in speculation v1 — fixed, not yet
+re-measured.** Quiet box (pre-flight load check). 50M spec healthy (534ms, build 89-103ms); at 60M
+build jumped to 148-235ms with a NEW miss class: **miss_parent ~46% on val3** (0 at 50M). ROOT
+CAUSE: reth sets the pending block ONLY if the newPayload'd block's parent is already canonical;
+past ~550ms heights, newPayload(N) races FCU(N-1), reth skips the pending update, the watcher goes
+blind, stash goes stale → guaranteed miss_parent. v1 worked at 50M by timing luck. FIX: canonical-
+head fallback trigger in the watcher (~15 lines, same crate); gates pass; binary typechecks. The
+60M row measures v1's failure mode, NOT the prebuild's potential. Next: re-measure 50/60/75 with
+fallback + same-day stock controls.
+
 **⚠️ MISSION 4 ITER 5 (2026-08-09): NO VALID DATA — box contended (load 38/16 cores, daytime use);
 50M all-spec read 594-611ms sd 12-17% vs 527ms sd 2.3% yesterday on identical config. ALL numbers
 discarded. The gas-at-500ms-with-prebuild sweep needs a quiet box or the fleet.**

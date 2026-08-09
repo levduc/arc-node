@@ -271,6 +271,34 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🔬 MISSION 4 ITER 6: 60M EXPOSED A TRIGGER GAP — miss_parent storm; canonical-head fallback added (2026-08-09)
+
+Quiet box (load 0.11 pre-flight — checked BEFORE booting this time). All-spec chain, paced 500 ms:
+
+| window | height | txs/blk | CL build | verdict |
+|--------|--------|---------|----------|---------|
+| 50M | 534 ms (sd 9.1%) | 2,380 (100%) | 89-103 ms | speculation healthy |
+| 60M | 579 ms (sd 1.3%) | 2,856 (100%) | **148-235 ms** | speculation DEGRADED |
+
+At 60M a NEW miss class dominated: **miss_parent** (val3: ~46% of its proposals; zero in every
+50M run). Logs show no build errors — the stash was simply stale.
+
+**ROOT CAUSE (v1 design assumption violated):** reth sets the pending block ONLY when the
+newPayload'd block's parent is already canonical. Once heights slow past ~550 ms, `newPayload(N)`
+racing `FCU(N-1)` becomes common; reth then SKIPS the pending update, the watcher never sees N,
+and the stash keeps the previous height's build -> guaranteed miss_parent on that proposal. The
+single-trigger watcher worked at 50M by timing luck, not by design.
+
+**FIX (same crate, ~15 lines): canonical-head fallback trigger.** Each tick the watcher takes the
+pending block if it is at/ahead of the canonical head, else falls back to the canonical head block
+itself. The fallback window is shorter (decide -> next get_value, widened by the pacer slack) but
+converts a guaranteed miss into a possible hit. Build gate re-run both flag settings: identical,
+non-empty; full binary typechecks. NOT yet re-measured live.
+
+The 60M row above is therefore a measurement of speculation-v1's failure mode, NOT of the
+prebuild's potential at 60M. Re-measure 50/60/75 with the fallback + same-day stock controls next.
+(50M quiet-box spec = 534 ms sd 9.1% vs yesterday 527 sd 2.3% — consistent.)
+
 ## ⚠️ MISSION 4 ITER 5: NO VALID DATA — box contended, gas-at-500ms sweep aborted (2026-08-09)
 
 Attempted the money measurement (largest block holding the 500 ms pacer WITH prebuild on all 4).
