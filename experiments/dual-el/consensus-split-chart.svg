@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" width="1000" height="600" font-family="Inter,Helvetica,Arial,sans-serif">
+<rect width="1000" height="600" fill="#ffffff"/>
+<text x="92" y="34" font-size="19" font-weight="700" fill="#1a1f2e">Where a block height goes: execution is 7–14%, consensus is the rest</text>
+<text x="92" y="56" font-size="12.5" fill="#7b8394">4-machine fleet · every point 100% full · averaged across all four validators</text>
+<line x1="92" y1="492.0" x2="790" y2="492.0" stroke="#e6e9ef"/>
+<text x="82" y="496.0" font-size="11" fill="#7b8394" text-anchor="end">0</text>
+<line x1="92" y1="412.0" x2="790" y2="412.0" stroke="#e6e9ef"/>
+<text x="82" y="416.0" font-size="11" fill="#7b8394" text-anchor="end">300</text>
+<line x1="92" y1="332.0" x2="790" y2="332.0" stroke="#e6e9ef"/>
+<text x="82" y="336.0" font-size="11" fill="#7b8394" text-anchor="end">600</text>
+<line x1="92" y1="252.0" x2="790" y2="252.0" stroke="#e6e9ef"/>
+<text x="82" y="256.0" font-size="11" fill="#7b8394" text-anchor="end">900</text>
+<line x1="92" y1="172.0" x2="790" y2="172.0" stroke="#e6e9ef"/>
+<text x="82" y="176.0" font-size="11" fill="#7b8394" text-anchor="end">1200</text>
+<line x1="92" y1="92.0" x2="790" y2="92.0" stroke="#e6e9ef"/>
+<text x="82" y="96.0" font-size="11" fill="#7b8394" text-anchor="end">1500</text>
+<text x="30" y="292.0" font-size="12.5" font-weight="600" fill="#1a1f2e" transform="rotate(-90 30 292.0)" text-anchor="middle">block height (ms)</text>
+<line x1="92" y1="358.7" x2="790" y2="358.7" stroke="#15803d" stroke-width="1.6" stroke-dasharray="7 4"/>
+<text x="98" y="351.7" font-size="11" font-weight="600" fill="#15803d">2 blk/s target — 500 ms</text>
+<line x1="92" y1="372.0" x2="790" y2="372.0" stroke="#dc2626" stroke-width="1.3" stroke-dasharray="3 3" opacity="0.65"/>
+<text x="786" y="386.0" font-size="10.5" fill="#dc2626" text-anchor="end">~450 ms fixed consensus floor (independent of block size)</text>
+<rect x="133.9" y="483.4" width="90.7" height="8.6" fill="#2563eb"/>
+<rect x="133.9" y="482.4" width="90.7" height="1.0" fill="#0ea5e9"/>
+<rect x="133.9" y="480.8" width="90.7" height="1.6" fill="#7dd3fc"/>
+<rect x="133.9" y="451.3" width="90.7" height="29.5" fill="#f59e0b"/>
+<text x="179.2" y="470.0" font-size="10.5" font-weight="600" fill="#ffffff" text-anchor="middle">111</text>
+<rect x="133.9" y="357.0" width="90.7" height="94.2" fill="#dc2626"/>
+<text x="179.2" y="408.1" font-size="10.5" font-weight="600" fill="#ffffff" text-anchor="middle">353</text>
+<text x="179.2" y="347.0" font-size="11.5" font-weight="700" fill="#1a1f2e" text-anchor="middle">92% consensus</text>
+<text x="179.2" y="512" font-size="12" font-weight="700" fill="#1a1f2e" text-anchor="middle">25M</text>
+<text x="179.2" y="528" font-size="10.5" fill="#7b8394" text-anchor="middle">1,190 tx · 506 ms</text>
+<rect x="308.4" y="476.5" width="90.7" height="15.5" fill="#2563eb"/>
+<text x="353.8" y="488.2" font-size="10.5" font-weight="600" fill="#ffffff" text-anchor="middle">58</text>
+<rect x="308.4" y="474.9" width="90.7" height="1.5" fill="#0ea5e9"/>
+<rect x="308.4" y="473.0" width="90.7" height="1.9" fill="#7dd3fc"/>
+<rect x="308.4" y="438.9" width="90.7" height="34.1" fill="#f59e0b"/>
+<text x="353.8" y="459.9" font-size="10.5" font-weight="600" fill="#ffffff" text-anchor="middle">128</text>
+<rect x="308.4" y="345.2" width="90.7" height="93.7" fill="#dc2626"/>
+<text x="353.8" y="396.0" font-size="10.5" font-weight="600" fill="#ffffff" text-anchor="middle">352</text>
+<text x="353.8" y="335.2" font-size="11.5" font-weight="700" fill="#1a1f2e" text-anchor="middle">87% consensus</text>
+<text x="353.8" y="512" font-size="12" font-weight="700" fill="#1a1f2e" text-anchor="middle">50M</text>
+<text x="353.8" y="528" font-size="10.5" fill="#7b8394" text-anchor="middle">2,371 tx · 551 ms</text>
+<rect x="482.9" y="462.7" width="90.7" height="29.3" fill="#2563eb"/>
+<text x="528.2" y="481.4" font-size="10.5" font-weight="600" fill="#ffffff" text-anchor="middle">110</text>
+<rect x="482.9" y="460.7" width="90.7" height="2.0" fill="#0ea5e9"/>
+<rect x="482.9" y="458.1" width="90.7" height="2.7" fill="#7dd3fc"/>
+<rect x="482.9" y="414.2" width="90.7" height="43.9" fill="#f59e0b"/>
+<text x="528.2" y="440.1" font-size="10.5" font-weight="600" fill="#ffffff" text-anchor="middle">164</text>
+<rect x="482.9" y="270.9" width="90.7" height="143.3" fill="#dc2626"/>
+<text x="528.2" y="346.5" font-size="10.5" font-weight="600" fill="#ffffff" text-anchor="middle">538</text>
+<text x="528.2" y="260.9" font-size="11.5" font-weight="700" fill="#1a1f2e" text-anchor="middle">85% consensus</text>
+<text x="528.2" y="512" font-size="12" font-weight="700" fill="#1a1f2e" text-anchor="middle">100M</text>
+<text x="528.2" y="528" font-size="10.5" fill="#7b8394" text-anchor="middle">4,761 tx · 829 ms</text>
+<rect x="657.4" y="441.0" width="90.7" height="51.0" fill="#2563eb"/>
+<text x="702.8" y="470.5" font-size="10.5" font-weight="600" fill="#ffffff" text-anchor="middle">191</text>
+<rect x="657.4" y="439.0" width="90.7" height="2.1" fill="#0ea5e9"/>
+<rect x="657.4" y="436.0" width="90.7" height="3.0" fill="#7dd3fc"/>
+<rect x="657.4" y="359.6" width="90.7" height="76.4" fill="#f59e0b"/>
+<text x="702.8" y="401.8" font-size="10.5" font-weight="600" fill="#ffffff" text-anchor="middle">286</text>
+<rect x="657.4" y="119.2" width="90.7" height="240.3" fill="#dc2626"/>
+<text x="702.8" y="243.4" font-size="10.5" font-weight="600" fill="#ffffff" text-anchor="middle">901</text>
+<text x="702.8" y="109.2" font-size="11.5" font-weight="700" fill="#1a1f2e" text-anchor="middle">85% consensus</text>
+<text x="702.8" y="512" font-size="12" font-weight="700" fill="#1a1f2e" text-anchor="middle">200M</text>
+<text x="702.8" y="528" font-size="10.5" fill="#7b8394" text-anchor="middle">9,517 tx · 1398 ms</text>
+<text x="806" y="94" font-size="11.5" font-weight="700" fill="#1a1f2e">height is made of</text>
+<rect x="806" y="105" width="12" height="12" fill="#dc2626"/>
+<text x="823" y="115" font-size="10.5" fill="#1a1f2e">vote gap (peers execute + 2 rounds)</text>
+<rect x="806" y="125" width="12" height="12" fill="#f59e0b"/>
+<text x="823" y="135" font-size="10.5" fill="#1a1f2e">build + stream + decode</text>
+<rect x="806" y="145" width="12" height="12" fill="#7dd3fc"/>
+<text x="823" y="155" font-size="10.5" fill="#1a1f2e">newPayload other</text>
+<rect x="806" y="165" width="12" height="12" fill="#0ea5e9"/>
+<text x="823" y="175" font-size="10.5" fill="#1a1f2e">state root</text>
+<rect x="806" y="185" width="12" height="12" fill="#2563eb"/>
+<text x="823" y="195" font-size="10.5" fill="#1a1f2e">execution</text>
+<text x="806" y="232" font-size="11.5" font-weight="700" fill="#1a1f2e">marginal cost</text>
+<text x="806" y="250" font-size="10.5" fill="#1a1f2e"><tspan font-weight="600">per extra tx:</tspan> </text>
+<text x="806" y="267" font-size="10.5" fill="#1a1f2e"><tspan font-weight="600">50M→100M</tspan> exec 21.5 vs cons 93 µs</text>
+<text x="806" y="284" font-size="10.5" fill="#1a1f2e"><tspan font-weight="600">100M→200M</tspan> exec 17.1 vs cons 102 µs</text>
+<text x="806" y="301" font-size="10.5" fill="#7b8394">agreeing costs 4–6× running</text>
+<text x="92" y="570" font-size="11" fill="#7b8394">State root shrinks per transaction as blocks grow: 3.19 → 0.82 µs/tx across the 8× range (3.8 → 7.8 ms absolute). The commitment is never the constraint.</text>
+</svg>

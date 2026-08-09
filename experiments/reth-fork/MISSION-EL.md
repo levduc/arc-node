@@ -271,6 +271,49 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🔬 CONSENSUS vs EXECUTION ACROSS BLOCK SIZE — the fixed floor, measured (2026-08-09, iter 14)
+
+Asked directly: as the gas limit grows, how does the height split between consensus and execution?
+Previous answers came from one or two sizes. Swept the range on the 4-machine fleet, every point
+100% full, ~6 min each, averaged across all four validators (`fleet/consensus-split.sh`,
+chart `consensus-split-chart.py`).
+
+| gas | txs/blk | height | exec | root | np-other | build+stream | vote gap | EL total | consensus |
+|-----|---------|--------|------|------|----------|--------------|----------|----------|-----------|
+| 25M | 1,190 | 506 ms | 32.2 | 3.8 | 6.1 | 110.7 | 353.4 | 42.1 (8%) | 464.1 (**92%**) |
+| 50M | 2,371 | 551 ms | 58.3 | 5.8 | 7.2 | 127.8 | 351.5 | 71.3 (13%) | 479.3 (**87%**) |
+| 100M | 4,761 | 829 ms | 109.7 | 7.5 | 10.0 | 164.5 | 537.5 | 127.2 (15%) | 702.0 (**85%**) |
+| 200M | 9,517 | 1398 ms | 191.1 | 7.8 | 11.2 | 286.5 | 901.3 | 210.1 (15%) | 1187.8 (**85%**) |
+
+**FINDING 1 — THERE IS A ~450 ms FIXED CONSENSUS FLOOR, independent of block size.** Between 25M and
+50M the transaction count DOUBLES and consensus time barely moves: 464.1 -> 479.3 ms, i.e. **12.9 us
+per extra transaction**. Extrapolating that flat segment back to zero transactions gives a ~450 ms
+intercept. **That floor is why 2 blk/s is only reachable with small blocks** — at a 500 ms target
+roughly 90% of the budget is spent before the first transaction is executed. It also means an empty
+block costs nearly as much as a 2,400-tx one.
+
+**FINDING 2 — ABOVE ~2,400 TX THE FLOOR GIVES WAY TO ~100 us/tx, which is 4-6x the cost of EXECUTING
+the same transaction:**
+
+| step | execution | consensus | ratio |
+|------|-----------|-----------|-------|
+| 25M -> 50M | 22.1 us/tx | 12.9 us/tx | 0.6x (still on the floor) |
+| 50M -> 100M | 21.5 us/tx | 93.2 us/tx | **4.3x** |
+| 100M -> 200M | 17.1 us/tx | 102.1 us/tx | **6.0x** |
+
+So each additional transaction costs several times more to AGREE ON than to RUN. That is the whole
+reason bigger blocks stop paying, and it is not something a faster EVM can touch.
+
+**FINDING 3 — the commitment gets CHEAPER per transaction as blocks grow.** State root: 3.19 -> 2.45
+-> 1.58 -> **0.82 us/tx** across an 8x range, and only 3.8 -> 7.8 ms in absolute terms. Execution
+also amortises slightly (27.1 -> 20.1 us/tx). The two EL costs both improve with scale; only
+consensus degrades.
+
+**CONSEQUENCE FOR THE DESIGN.** The height is `~450 ms floor + ~100 us/tx above ~2,400 tx`. Latency
+is therefore bought almost entirely from consensus, at both ends: the floor sets the minimum, and
+the per-tx term sets the slope. Execution is 8-15% of the height at every size measured and shrinks
+per transaction. Nothing EL-side moves either term.
+
 ## 📌 MISSION 3 CLOSED — one authoritative chart, no experiment this iteration (2026-08-09, iter 13)
 
 Ran NO fleet experiment. The prompt's exit condition ("say so plainly rather than manufacturing a
