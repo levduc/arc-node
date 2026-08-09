@@ -271,6 +271,42 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## ✅ IT IS NOT A LEAK — MEMORY IS RECLAIMED, JUST 2.4x SLOWER THAN IT ACCUMULATES (2026-08-09, iter 12)
+
+The one question left worth answering, because it changes the operational advice: is the growth a
+hard leak, or reclaimable? Ran all 4 STOCK at 100M, load for 20 min, then let the chain keep
+producing IDLE for 14 min while still sampling memory.
+
+| node | peak (min ~22) | final (min 34) | released | release rate | growth rate | release/growth |
+|------|----------------|----------------|----------|--------------|-------------|----------------|
+| ginny | 6,885 MiB | 5,198 MiB | -1,687 | 130 MiB/min | 294 | 0.44 |
+| ginnythui | 8,631 | 6,671 | -1,960 | 151 MiB/min | 348 | 0.43 |
+| papaduck | 11,868 | 9,753 | -2,115 | 163 MiB/min | 411 | 0.40 |
+| alien2 | 6,938 | 5,166 | -1,772 | 148 MiB/min | 283 | 0.52 |
+
+**NOT A LEAK.** Every node released memory as soon as the transaction flow stopped, monotonically,
+on all four machines. (Memory kept rising ~2 min past the load ending — the backlog draining — then
+turned over.)
+
+**BUT RELEASE IS ~2.4x SLOWER THAN GROWTH** (0.40-0.52 ratio). That single number explains
+everything observed: under continuous load the node accumulates at ~350 MiB/min and can only give
+back ~150, so it climbs monotonically until either the load stops or the cap is hit. It also
+explains why nothing in the config mattered — the memory is genuinely in use while transactions are
+flowing; it is not a cache that could be shrunk.
+
+**THIS CHANGES THE OPERATIONAL ADVICE.** Previously: "budget >=24 GB and restart periodically".
+Corrected: **size for the longest expected CONTINUOUS burst, not for peak throughput.** A lane with
+quiet periods recovers on its own; a lane saturated 24/7 will still reach any cap eventually, and
+that is the case that needs either more RAM or a restart policy. At the measured rates, 100M
+sustained needs roughly (burst_minutes x 0.35 GB) of headroom above idle.
+
+**MISSION 3 IS CLOSED FOR GOOD.** Throughput: closed and measured (100M / ~6,800 tx/s / ~700 ms
+sustained; 25M / 2,287 tx/s / 520 ms if 2 blk/s is the promise; ceiling is consensus coordination,
+88% of a transaction's marginal cost sits outside execution). Memory: characterised, config
+eliminated, and now shown to be reclaimable rather than a leak. Correctness: four fast-path
+consensus bugs found and fixed, gate extended to state + receipts + logs + legacy + 2930 +
+zero-value + mixed. There is no further EL-side throughput work that measurement supports.
+
 ## ❌ MEMORY GROWTH IS CONFIG-INDEPENDENT — AND MY "16% FROM PERSISTENCE" WAS A MACHINE ARTIFACT (2026-08-09, iter 11)
 
 **RETRACTION FIRST.** Last iteration I reported that lowering the persistence threshold slowed
