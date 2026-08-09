@@ -533,6 +533,21 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🚨 MISSION 4 ITER 9 (2026-08-09): THE SINGLE-BOX PREBUILD WIN DOES NOT TRANSFER TO THE FLEET.**
+Fork image on all 4 machines, one image both arms (env-dead edits ⇒ env-off = stock control),
+distributed spam, 100% full, same-day: 60M control 534ms/5,353 vs spec **538ms/5,304 — NIL**; 75M
+559/6,394 vs 546/6,539 — marginal. (Single-box same-day was 554→514.) **CAUSE: hit rate collapsed
+to 47-69%** (vs 88-92%), miss_timestamp exploded (90-421/validator), miss_parent 207 on alien2
+(wifi straggler). **PHASE-LOCK HYPOTHESIS:** `max(parent_ts, now)` is predicted ~0.45s early and
+misses when the second boundary falls in that window — single-box 509-514ms heights are
+near-resonant with the 1s grid (2 heights ≈ 1.02s) so the boundary stayed clear = the 88-92% was
+partly RESONANCE LUCK; fleet 534-546ms drifts phase every height. **FIX (next): DUAL-TIMESTAMP
+SPECULATION** — build t0 and t0+1, stash both, serve either; kills the class by construction on
+idle cores. Rerun must also fix 2 measurement gaps: counter DELTAS per window (cumulative counters
+were polluted by ~40min idle pre-load) and remote-CL block_build_time capture. SSZ decode answered
+with numbers: stream+decode 18.2µs/tx + 6-11ms fixed = second-order vs vote gap 68.4µs/tx. Deck:
+anatomy slide added; prebuild status honest.
+
 **🎯 MISSION 4 ITER 8 (2026-08-09): FORK FIX LANDS — 60M HOLDS 500ms WITH PREBUILD: 514ms, 5,560
 tps.** First genuinely fork-requiring change of the project (~/reth-fork commit `290b95c`, both
 edits dead unless ARC_SPECULATIVE_BUILD=1): engine tree also publishes pending when the block

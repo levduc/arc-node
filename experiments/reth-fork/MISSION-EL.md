@@ -271,6 +271,52 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🚨 MISSION 4 ITER 9: THE SINGLE-BOX PREBUILD WIN DOES NOT TRANSFER TO THE FLEET — hit-rate collapse, phase-lock hypothesis (2026-08-09)
+
+Fleet session, fork image on all 4 machines (content-verified), one image both arms (the fork
+edits are env-dead, so env-off IS the stock control — and doubles as drop-in validation of the
+fork binary). Distributed spam, all points 100% full, 6-min windows, same day:
+
+| | control (env off) | spec (env on) |
+|---|---|---|
+| 60M | 534 ms / 5,353 tps | **538 ms / 5,304 tps — NIL** |
+| 75M | 559 ms / 6,394 tps | 546 ms / 6,539 tps — marginal |
+
+vs the single-box same-day A/B at 60M: 554 -> 514 (-40 ms). **The win does not transfer.**
+
+**WHY — the hit rate collapsed:** fleet 47-69% vs 88-92% single-box, with miss_timestamp exploding
+(90-421 per validator vs ~20-40) and miss_parent at 207 on alien2 (the wifi/15GB straggler).
+
+**PHASE-LOCK HYPOTHESIS (fits all observations):** the prediction `ts = max(parent_ts, now)` is
+evaluated ~0.45 s before the real request; it misses when the wall-clock second boundary falls
+inside that window. Whether it does depends on the PHASE of the block cadence against the 1-second
+timestamp grid. Single-box heights were 509-514 ms — two heights ~= 1.02 s, near-resonant, so the
+boundary stayed out of the speculation window and **the 88-92% hit rate was partly RESONANCE LUCK,
+not robustness**. Fleet heights are 534-546 ms — two heights ~= 1.07-1.09 s, the phase drifts every
+height, the boundary sweeps through the window, and ~30-50% of predictions miss.
+
+**THE ROBUST FIX (next): DUAL-TIMESTAMP SPECULATION.** Build BOTH candidates — t0 = max(parent_ts,
+now_secs) and t1 = t0+1 (skip when equal) — stash both, serve whichever matches. Kills the
+miss_timestamp class BY CONSTRUCTION, phase-independent; costs a second build on cores that are
+idle anyway plus a second stash slot. (alien2's miss_parent is the straggler variant and is
+partially inherent.)
+
+**MEASUREMENT GAPS in today's fleet windows (recorded so the rerun fixes them):** (1) counters were
+read CUMULATIVE and the chain idled ~40 min before load (head 2562 at load start) — in-window hit
+rates may be worse than the 47-69% cumulative; any rerun must snapshot counter DELTAS per window.
+(2) `fl_measure.py` does not capture the remote CLs' `block_build_time`, so today's fleet windows
+lack the mechanism metric entirely — add tailscale-side CL metric snapshots.
+
+**ANSWER TO "what about SSZ decode" (asked directly):** measured, it is real but second-order:
+stream+decode = 18.2 us/tx of the ~98 us/tx fleet marginal, and the fixed decode share inside
+newPayload is 6-11 ms/block. The dominant slope term remains the vote gap (68.4 us/tx = peers
+receiving + DECODING + EXECUTING the block + two vote rounds gated on the slowest machine) — so
+dissemination-and-agreement, of which SSZ decode is one modest slice. Compact blocks would attack
+the 18.2; deferred execution the peers-execute share; neither is EL-side.
+
+Deck: anatomy-of-a-height slide added (page 17), prebuild status stated honestly (single-box
+proven, fleet nil pending the dual-timestamp fix).
+
 ## 🎯 MISSION 4 ITER 8: FORK FIX LANDS — 60M HOLDS 500 ms WITH PREBUILD: 514 ms, 5,560 tps (2026-08-09)
 
 The first genuinely fork-requiring change of the project, and it delivers the mission goal:
