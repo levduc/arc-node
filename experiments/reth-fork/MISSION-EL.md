@@ -271,6 +271,43 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🔬 MISSION 4 ITER 7: SAME-DAY STOCK-vs-SPEC AT 50M + 60M — the fallback is NOT enough above the pacer floor (2026-08-09)
+
+Quiet box (pre-flight load 0.05). Two fresh chains, same-day, identical loads, images rebuilt with
+the canonical-head fallback. 6-min windows:
+
+| window | height | tps | CL build | verdict |
+|--------|--------|-----|----------|---------|
+| STOCK 50M | 509 ms (sd 1.4%) | 4,673 | 198-201 ms | **HOLDS** |
+| SPEC 50M | 509 ms (sd 0.3%) | 4,673 | **90-111 ms** | **HOLDS** |
+| STOCK 60M | 554 ms (sd 3.0%) | 5,159 | 262-269 ms | misses |
+| SPEC 60M | 586 ms (sd 1.4%) | 4,874 | 169-220 ms | misses — and WORSE than stock |
+
+**FINDING 1 — at 50M both arms pin the pacer floor (509 ms, identical heights, identical tps).**
+The prebuild halves the build (198->90-111) and the whole saving is pacer headroom, reconfirmed
+same-day with sd 0.3%. Note tonight's box regime is faster across the board (stock 50M HOLDS at
+509 vs 537-539 in earlier runs) — same-day pairs are the only valid comparison, again.
+
+**FINDING 2 — the canonical-head fallback FAILED at 60M** (miss_parent still 145 on val1), and the
+refined root cause explains why v1 ever worked at all: **the pending trigger's window at 50M was
+CREATED by the pacer slack.** Natural height < floor -> the CL pauses after decide -> FCU lands,
+pending publishes, the watcher has the whole vote gap. Above the floor (60M natural 554 > 500)
+there is NO slack: newPayload(N) races FCU(N-1) (~40% of heights), reth skips the pending publish
+(parent not yet canonical), and the fallback (canonical head AFTER FCU) starts a ~180 ms build
+racing a request that arrives within milliseconds. It cannot win.
+
+**FINDING 3 — under the miss-storm, speculation HURTS: 586 vs stock 554 at 60M.** Wasted spec
+builds + stale-stash misses cost ~6% cadence. The flag must stay OFF for >50M workloads until the
+visibility gap is fixed.
+
+**CONSEQUENCE — this is finally the fork's job.** The EL cannot see the newPayload'd block during
+the vote gap when reth withholds the pending publish; no Arc-crate trigger can fix visibility.
+The correct fix is the one-line relaxation in reth's engine tree (`insert_block_or_payload`):
+publish the pending block for a valid insert even when the parent is not yet canonical — sound on
+Arc, which has no competing side-chains; gate it behind the same ARC_SPECULATIVE_BUILD env so the
+EVM lane and default deployments are untouched. Then docker-from-fork (host-build + COPY), the
+documented long pole. That is the next iteration.
+
 ## 🔬 MISSION 4 ITER 6: 60M EXPOSED A TRIGGER GAP — miss_parent storm; canonical-head fallback added (2026-08-09)
 
 Quiet box (load 0.11 pre-flight — checked BEFORE booting this time). All-spec chain, paced 500 ms:

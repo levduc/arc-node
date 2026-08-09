@@ -533,6 +533,19 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🔬 MISSION 4 ITER 7 (2026-08-09): same-day stock-vs-spec at 50M+60M — fallback NOT enough above
+the pacer floor.** Quiet box, 2 fresh chains, 4 windows: STOCK 50M **509ms HOLDS**/4,673tps/build
+198-201 · SPEC 50M **509ms HOLDS**/4,673tps/build **90-111** (sd 0.3% — saving = pure pacer
+headroom, reconfirmed same-day) · STOCK 60M 554ms/5,159 · SPEC 60M **586ms/4,874 — WORSE than
+stock** (miss_parent still 145; wasted spec builds + stale stash cost ~6%). REFINED ROOT CAUSE: the
+pending trigger's window at 50M was CREATED by pacer slack (natural<floor → CL pauses → FCU lands →
+pending publishes). Above the floor there is NO slack; reth withholds the pending publish when
+newPayload(N) races FCU(N-1) (~40% of heights) and no Arc-crate trigger can see the block in time.
+**Flag must stay OFF for >50M until fixed. The fix is finally the FORK's job:** one-line relaxation
+in reth engine-tree insert_block_or_payload (publish pending even when parent not yet canonical —
+sound on Arc, no side-chains; gate behind ARC_SPECULATIVE_BUILD env), then docker-from-fork. Also:
+tonight's box regime faster across the board (stock 50M 509 vs 537-539 before) — same-day pairs only.
+
 **🔬 MISSION 4 ITER 6 (2026-08-09): 60M exposed a TRIGGER GAP in speculation v1 — fixed, not yet
 re-measured.** Quiet box (pre-flight load check). 50M spec healthy (534ms, build 89-103ms); at 60M
 build jumped to 148-235ms with a NEW miss class: **miss_parent ~46% on val3** (0 at 50M). ROOT
