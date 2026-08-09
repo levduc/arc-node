@@ -533,6 +533,19 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🔧 MISSION 4 ITER 11 (2026-08-09): chain-anchored pending publish BUILT; fleet rerun blocked on a
+wedged ship.** The naive "publish on any insert" is UNSAFE (unresolvable parent ⇒ overlay silently
+skips ancestors ⇒ INVALID speculative payloads). Safe fix (fork `794870f`): chain-state
+`set_pending_block_chain` (nested BlockStates, exact overlay through deep unpersisted ancestry) +
+engine tree assembles `[executed] + tree.blocks_by_hash(parent)` and publishes ONLY when the chain
+resolves — wrong overlay impossible by construction. Built (sha `3485bd62`), image smoke-tested,
+patch reverted. **Ship to remotes WEDGED (ginnythui, >20min on a 2-5min copy) and killed; remotes
+still on `bfce1b06`.** Also caught+stopped a boot/ship RACE that would have produced a
+mixed-version fleet measurement — **RULE: never boot while a ship is in flight; verify per-host
+binary sha before any fleet run.** NEXT: re-ship → verify shas → spec 60M/75M windows → expect
+val3/4 parent-misses to collapse (projected fleet 60M ≈515-520ms HOLDS) → mem-soak with spec on.
+Deck: two-problem arc made explicit in the opening (state solved → coordination is problem 2).
+
 **🎯 MISSION 4 ITER 10 (2026-08-09): DUAL-TIMESTAMP CONFIRMS THE PHASE HYPOTHESIS.** Built both ts
 candidates (t0, t0+1), stash holds 2/parent, serve either. Fleet 60M same-day with FIXED
 instrumentation (window counter DELTAS + remote CL build via tailscale): control 534ms/5,353 vs

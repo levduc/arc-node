@@ -271,6 +271,40 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🔧 MISSION 4 ITER 11: CHAIN-ANCHORED PENDING PUBLISH BUILT — fleet rerun blocked on a wedged ship (2026-08-09)
+
+**The straggler fix, designed around the trap in the naive version.** "Publish pending on ANY valid
+insert" is UNSAFE as stated: if the parent's state is not resolvable when publishing, the pending
+BlockState silently anchors PAST unpersisted ancestors and speculative builds would produce
+INVALID payloads (served on a hit -> rejected proposal -> liveness hit). The safe fix
+(fork commit `794870f`):
+- chain-state: new `set_pending_block_chain(chain_newest_first)` — builds nested BlockStates so
+  the overlay is exact through arbitrarily deep unpersisted ancestry.
+- engine tree: when parent != canonical head and the env is set, assemble `[executed] +
+  tree.blocks_by_hash(parent)` (the tree keeps the full executed chain back to the persisted
+  anchor) and publish the chained pending. Publishing only proceeds when the chain RESOLVES — a
+  wrong overlay is impossible by construction. Replaces iter-8's single-step parent==pending rule,
+  which the stragglers defeated with chains of unpublished pendings (53-68 parent-misses/window).
+
+Built in the bookworm container (sha `3485bd62`), image overlaid + glibc smoke-tested, fork patch
+reverted, repo clean.
+
+**Fleet rerun NOT done:** ship-images wedged mid-transfer to ginnythui (wired host, stuck >20 min
+on a 2-5 min copy) and was killed. Remotes still run the dual-ts binary `bfce1b06`. A boot/ship
+RACE was also caught and stopped before it produced a mixed-version fleet measurement (the boot
+script was launched while the ship was still copying — the remotes would have come up on the old
+binary and the window would have measured a version mix; rule: NEVER boot while a ship is in
+flight; verify per-host binary sha before any fleet run).
+
+NEXT: re-ship (idempotent, sha-checked) -> verify 3485bd62 on all four -> spec 60M window (+75M)
+with fl2_measure -> expect val3/4 parent-misses to collapse; projected fleet 60M ~515-520 ms =
+HOLDS. Then the owed mem-soak with speculation on.
+
+DECK (separate commits): opening now carries the two-problem arc explicitly — Problem 1 (shared
+state, solved by the lane, with measured spoiler) -> Problem 2 (coordination: a bigger block grows
+execution ~11 us/tx but consensus ~87 us/tx). This closes the contradiction between the original
+problem slides and the results section.
+
 ## 🎯 MISSION 4 ITER 10: DUAL-TIMESTAMP CONFIRMS THE PHASE HYPOTHESIS — fleet ts-misses collapse 90-421 -> 2-8 (2026-08-09)
 
 Implemented dual-timestamp speculation (build BOTH `t0 = max(parent_ts, now)` and `t0+1`, stash up
