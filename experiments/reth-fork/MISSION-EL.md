@@ -271,6 +271,54 @@ per block** to parse, hex-decode and re-encode into reth types. That work is **i
 - Record findings here and in CLAUDE.md every iteration, including negative results.
 
 
+## 🎯 MISSION 4 ITER 13: THE MECHANISM NUMBER LANDS — and the fleet's 60M wall turns out to be DELIVERY (2026-08-09)
+
+Four results in one session (tailscale re-authed mid-iteration by the user).
+
+**1. THE CLEAN MECHANISM MEASUREMENT — unpaced 40M pair, single box, same day, 100% full:**
+
+| 40M UNPACED | stock | spec |
+|---|---|---|
+| natural height | 485 ms (sd 0.5%) | **437 ms (-10%)** |
+| tps | 3,930 | **4,355 (+10.8%)** |
+| CL build | 121-153 ms | 49-69 ms |
+
+**This is the prebuild's true floor cut, finally visible**: in a consensus-bound regime (fill time
+~360 ms << height) with no pacer to clip it, removing the build from the critical path is worth
+-48 ms / +10.8% tps. THE mechanism number for the paper.
+
+**2. EVERY 60M MEASUREMENT FOR TWO DAYS WAS DELIVERY-BOUND.** The tell: fill time == height in all
+of them. Single-box 60M unpaced: stock 535 / spec 541 with delivery ~5.3k -> 2,856/5,300 = 538 ms.
+Fleet 60M (control 534, dual-ts 538, chain-anchored 538): delivery 5,311 -> fill 538 ms. Doubling
+fleet spammers made it WORSE (549 ms, 96% full, tps DOWN to 4,992 — the known over-offering
+ingress cost), so ~5.0-5.3k is the current spam tooling's delivery plateau at 60M cadence. **No
+build-side treatment can move an ingest-paced height.** RETROSPECTIVE CORRECTIONS: (a) iter-8's
+single-box "554 -> 514" is reinterpreted as a CPU artifact — freeing build cores sped the
+CO-LOCATED spammers (fleet spam is remote -> no such effect -> fleet nil); (b) the iter-9/10 fleet
+nils were delivery-masked, not only hit-rate-limited.
+
+**3. CHAIN-ANCHORED PUBLISH: WORKS.** On-fleet hit rates: val1 92-98%, val2 95-100%, val3 75-89%
+(parent-misses collapsed vs the 53/68 of the single-step rule). val4 (wifi alien2) remains chronic
+(39-53%, parent-miss 76-87): its FCU lag outruns even the chained window. Accepted as straggler
+reality — 3 of 4 validators now speculate at near-perfect rates.
+
+**4. FLEET 50M SPEC PACED: 524 ms HOLDS (sd 0.4%) — within the stock range (522-537).** At sizes
+below the pacer, both arms pin the floor; the win is stability margin by design.
+
+**WHERE THIS LEAVES PREBUILD:** mechanism proven (-10% where the regime allows; builds halve
+everywhere; 3/4 validators ~95%+ hits). At current PRODUCT configs it buys pacer margin, not tps,
+because: <=50M -> pacer clips; 60M -> delivery-limited at ~5.3k (needs >5.7k to make 500 ms
+feasible). The tps unlock is delivery-side or bigger blocks (100M+, where earlier frontier data
+shows 6.8k delivered).
+
+**⚠️ NEW OPEN QUESTION — THE BIGGEST ONE YET: how much of the fleet frontier is DELIVERY
+EQUILIBRIUM rather than consensus capacity?** Every "sustained, 100% full" point was measured with
+demand tuned to ~just fill the block — and at 100M the landed rate (6,830 tx/s) EQUALS
+txs-per-block / height there too. The "knee at 100M" may partly be where spam delivery scaling
+saturates, not where consensus does. Needs a designed experiment: at a FIXED size, sweep DELIVERED
+rate (not offered) and look for the height response. Until then, treat the frontier as an upper
+bound on latency and a lower bound on capacity.
+
 ## ✅ MISSION 4 ITER 12: CHAIN-ANCHORED BINARY REGRESSION-PASSES SINGLE-BOX; fleet still blocked on tailscale (2026-08-09)
 
 Tailscale required re-auth again (fleet unreachable) -> single-machine work per the standing rule.

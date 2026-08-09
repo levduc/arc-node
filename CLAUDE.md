@@ -533,6 +533,21 @@ gas limit at runtime on ONE chain (`experiments/dual-el/blocksize-sweep.sh`):
   stateRoot+blockHash+receiptsRoot at every height, ALL FOUR running eager recovery (previously
   only val1) — so eager recovery is now validated as the whole-network config, not just a mixed A/B.
 
+**🎯 MISSION 4 ITER 13 (2026-08-09): the mechanism number lands; the 60M wall is DELIVERY.**
+(1) **UNPACED 40M single-box pair: stock 485ms/3,930tps vs spec 437ms/4,355tps = -10% height,
++10.8% tps** (sd 0.5%/4.8%, builds 121-153→49-69ms) — the prebuild's true floor cut, THE mechanism
+number. (2) **Every 60M window for 2 days was delivery-bound**: fill time == height in ALL of them
+(single-box 535-541 @ ~5.3k delivery; fleet 534-538 @ 5,311); doubling fleet spammers made it WORSE
+(549ms, 96%, 4,992tps — over-offering ingress cost). RETROSPECTIVE: iter-8's single-box "-40ms" =
+CPU artifact (freed build cores sped CO-LOCATED spammers; fleet spam is remote → nil). (3)
+**Chain-anchored publish WORKS**: fleet hits val1 92-98% / val2 95-100% / val3 75-89% (parent-miss
+collapsed); val4/wifi-alien2 chronic (39-53%) — accepted straggler. (4) Fleet 50M spec paced 524ms
+HOLDS but within stock range (pacer clips both arms ≤50M). **NET: prebuild = proven -10% where
+consensus-bound; at product configs it buys pacer margin until delivery >5.7k at 60M.**
+**⚠️ BIGGEST OPEN QUESTION: how much of the fleet frontier is DELIVERY EQUILIBRIUM vs consensus
+capacity?** At 100M the landed rate equals fill rate too. Needs: fixed size, sweep DELIVERED rate,
+watch height response. Until then the frontier = upper bound on latency, lower bound on capacity.
+
 **✅ MISSION 4 ITER 12 (2026-08-09): chain-anchored binary REGRESSION-PASSES single-box** (tailscale
 needed re-auth again; fleet blocked). 28-min run, spec all 4, 60M, 100% full: **hit rates 91-93% on
 all four**, parent-miss 3/25/1/0, window 530ms/5,394tps; dual-ts economics as designed (~1.5
