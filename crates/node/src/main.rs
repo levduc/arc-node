@@ -29,6 +29,19 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[unsafe(export_name = "malloc_conf")]
 pub static malloc_conf: &[u8] = b"prof:true,prof_active:false,lg_prof_sample:19\0";
 
+/// Same config under the PREFIXED symbol name. tikv-jemalloc-sys builds jemalloc with
+/// `--with-jemalloc-prefix=_rjem_` unless `unprefixed_malloc_on_supported_platforms` is
+/// enabled somewhere in the dependency graph — and a prefixed jemalloc reads its config
+/// from `_rjem_malloc_conf`, silently ignoring `malloc_conf`. This workspace resolves
+/// PREFIXED (verified empirically: with only `malloc_conf` exported, `opt.prof` stays
+/// false and `/debug/pprof/allocs` closes the connection with an empty reply). Exporting
+/// under both names makes profiling work regardless of feature unification. Runtime
+/// override also works: `_RJEM_MALLOC_CONF=prof:true,prof_active:true`.
+#[cfg(feature = "pprof")]
+#[allow(non_upper_case_globals)]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+pub static rjem_malloc_conf: &[u8] = b"prof:true,prof_active:false,lg_prof_sample:19\0";
+
 use arc_evm_node::node::{ArcNode, ArcRpcConfig};
 use arc_evm_node::ARC_RPC_MAX_BATCH_ENTRIES_DEFAULT;
 use arc_execution_config::addresses_denylist::{
