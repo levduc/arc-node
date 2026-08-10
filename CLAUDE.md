@@ -490,6 +490,14 @@ how high can payment-lane tps go, and is "bigger blocks" the lever? Answer: **1 
   own. Re-runs MUST use `-l` (in the script) or start at nonce 0 → "nonce too low". The product dashboard
   summed pending+queued, so it showed a phantom backlog — payment-lane pending tile removed for this reason.
 
+**✅ PACED SWEEP REPRODUCED n=2 (iter 20, 2026-08-10, user-directed, remote-spam-verified):**
+operating points within 1% both days — 2 blk/s→50M/4.6k HELD, 1s→200M/9.2k HELD, 100M unpaced
+8.65-8.86k. **300M REQUALIFIED to a range: 8.2-10.6k @ 1.35-1.74s** (last-in-sequence both days;
+today's window suspect — val RPC dead at end (alien2 OOM window), agreement check didn't complete
+(no fork: production never stalled); yesterday's had verified agreement). Don't quote one 300M
+number. GOTCHA: remote spam binary is /tmp/arc-spammer → `pgrep -x spammer`=0 on remotes; census
+via pgrep -f arc-spammer or spam-log mtimes. Forensics confirmed yesterday's sweep was fleet-fed
+(log mtimes match every window; tailscale expired overnight, after it).
 **🎯 PACED SWEEP (iter 19, 2026-08-10): 1s HEARTBEAT HOLDS 200M/9,206 tps; sustained record
 10,595 @ 1.35s (300M).** Governed spam, one chain, runtime gas+pacer flips, all points 100% full
 queued=0: 500ms→50M/4,591 HELD (100M 580ms/8,213 + 130M 659ms/9,388 miss — sustained 500ms

@@ -11,7 +11,13 @@ fleet/LOADING.md for the technique; MISSION-EL.md iter 17-19 for its derivation.
 
 POINTS (sustained, all blocks 100% full):
   target 500ms:  50M 518ms/4,591tps HELD · 100M 580ms/8,213 miss · 130M 659ms/9,388 miss
-  target 1000ms: 100M 1,000ms/4,761 HELD · 200M 1,034ms/9,206 HELD · 300M 1,348ms/10,595 miss
+  target 1000ms: 100M 1,000ms/4,761 HELD · 200M 1,034ms/9,206 HELD · 300M miss (RANGE, see below)
+
+REPRODUCED n=2 (iter 20, remote-spam-verified): every operating point within 1% across two fresh
+chains (50M@500: 517-518ms/4,591-4,601 · 200M@1s: 1,034-1,039ms/9,166-9,206 · 100M unpaced:
+537-550ms/8,656-8,864). 300M did NOT reproduce as a point: 1,348/10,595 vs 1,739/8,214 —
+last-in-sequence both days (oldest chain, most state churn) and the second run's validator health
+was degrading (alien2 OOM window). Quote 300M as 8.2-10.6k @ 1.35-1.74s, never one number.
   unpaced:       100M 550ms/8,656 (iter-18 reference)
 
 READINGS:
@@ -35,7 +41,11 @@ PTS = [
     (1034, 9206, "200M @ 1s", True, "e"),
     (550, 8656, "100M unpaced", None, "w"),
 ]
-PTS.append((1348, 10595, "300M (misses 1s)", False, "e"))
+# 300M reproduced at 1,739ms/8,214 on an older chain with a degrading validator (iter 20):
+# quote as a RANGE, not a point — plotted at both measurements, joined.
+PTS.append((1348, 10595, "300M: 8.2-10.6k @ 1.35-1.74s (age-sensitive)", False, "e"))
+PTS.append((1739, 8214, "", False, "e"))
+RANGE_300M = ((1348, 10595), (1739, 8214))
 
 EL_A, EL_B = 127.0, 0.0588   # capacity model latency(n) = 127ms + 58.8us/tx (drain-fit)
 
@@ -78,6 +88,11 @@ a(f'<polyline points="{" ".join(pts)}" fill="none" stroke="{MUTED}" stroke-width
   f'stroke-dasharray="6 4"/>')
 a(f'<text x="{X(1160):.1f}" y="{Y(11600)-8:.1f}" font-size="10.5" fill="{MUTED}">'
   f'zero-ingress capacity (drain model, asymptote 17k)</text>')
+
+# 300M range connector
+(x1, y1), (x2, y2) = RANGE_300M
+a(f'<line x1="{X(x1):.1f}" y1="{Y(y1):.1f}" x2="{X(x2):.1f}" y2="{Y(y2):.1f}" '
+  f'stroke="#dc2626" stroke-width="1.4" stroke-dasharray="3 3" opacity="0.7"/>')
 
 # heartbeat verticals
 for ms, lab in [(500, "2 blk/s"), (1000, "1 blk/s")]:

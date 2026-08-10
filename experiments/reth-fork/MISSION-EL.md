@@ -4,6 +4,36 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10 — ITER 20: PACED SWEEP REPRODUCED n=2 (user-directed, censused fleet load) —
+operating points solid within 1%; 300M requalified as a RANGE
+
+Re-ran all 7 points on a fresh fleet chain after tailscale re-auth, with per-point remote-spam
+verification (forensics first: yesterday's sweep WAS fleet-fed — remote log mtimes/content match
+every window; tailscale expired only overnight).
+
+| point | yesterday | today | delta |
+|-------|-----------|-------|-------|
+| 100M unpaced | 550ms/8,656 | 537ms/8,864 | 2.4% |
+| 50M @500ms | 518/4,591 HELD | 517/4,601 HELD | 0.2% |
+| 100M @500ms | 580/8,213 miss | 574/8,292 miss | 1% |
+| 130M @500ms | 659/9,388 miss | 686/9,027 miss | 4% |
+| 100M @1s | 1,000/4,761 HELD | 1,008/4,721 HELD | 1% |
+| 200M @1s | 1,034/9,206 HELD | 1,039/9,166 HELD | 0.5% |
+| 300M @1s | 1,348/10,595 | 1,739/8,214 | **±25%** |
+
+- **OPERATING POINTS ARE FROZEN, n=2 <=1%:** 2 blk/s -> 50M/4.6k · 1s -> 200M/9.2k HELD.
+- **300M REQUALIFIED: 8.2-10.6k @ 1.35-1.74s, NOT a record point.** Last-in-sequence both days
+  (oldest chain, most state churn per block) AND today's window is additionally suspect: the
+  post-sweep agreement check hit Connection refused on a validator RPC (val4/alien2 OOM window —
+  ~55min loaded run ending at 300M) — a dying validator drags heights (known confound). Yesterday's
+  300M had verified agreement; today's formal check did not complete (production never stalled ->
+  no fork, but the 20-block check is missing). Do not quote a single 300M number.
+- GOTCHAS: remote spammer binary is /tmp/arc-spammer -> `pgrep -x spammer` counts 0 on remotes
+  (census read DEGRADED spuriously all run; verify via spam-log mtime/content instead, or
+  pgrep -f arc-spammer). Big-block beyond-frontier points should be measured FIRST in a sequence,
+  not last, and with mem-soak alongside.
+Teardown verified (0/0 all machines).
+
 ## 2026-08-10 — ITER 19: PACED SWEEP (latency-for-tps, governed load) — 1s heartbeat holds 9.2k tps
 
 User-directed: hold a block-time target, sweep gas, governed spam (POOL_TARGET=3 blocks' worth,
