@@ -4,6 +4,27 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-11 — PER-STAGE LEDGER RUN (150M, both regimes, all 4 validators' histograms):
+three results, one slide correction, one re-opened question
+
+SUSTAINED (governed, 399 blocks @ 756ms, 100% full): build 96.6-143.2ms/blk (13.5-20us/tx) ·
+newPayload 64.3-108.1ms (exec 60-95.5 + root 0.4-4.9) · FCU 1-2ms · txWait 3.8-7.0us/tx ·
+txExec 3.6-5.7us/tx. DRAIN (same chain, quiet pool): build 9.9-18.0ms/blk (1.4-2.5us/tx!) ·
+per-tx txWait/txExec UNCHANGED (3.5-7.0/3.5-4.7us).
+1. **BUILD IS WHERE INGRESS LANDS: 6-10x more expensive under live ingress (96-143ms) than
+   quiet-pool (10-18ms) for IDENTICAL 7,142-tx blocks** — pool lock/iterator contention inside
+   the builder, not RPC/gossip CPU. RE-OPENS: the prebuild drain A/B (-8% @60M) measured
+   against ~10ms quiet builds; sustained builds are ~100+ms → hiding them could be worth ~13%
+   of a sustained height. TODO (justified next experiment): sustained-regime prebuild A/B.
+2. **The 3-vs-20us/tx exec discrepancy resolved: histogram scope.** Per-tx executor+recovery
+   cost is regime-INDEPENDENT (wait 3.7-7.0 + exec 3.5-5.7 ≈ 7-13us/tx); the old 20.2us/tx
+   "EL slope" fit absorbed sustained-mode contention.
+3. **SLIDE CORRECTION: the finalize-bars EL segments were empty-block-diluted at big sizes**
+   (drain-window prom captures included post-drain racing empties). Honest EL = per-tx x n:
+   ~13/26/43/64/129ms at 30/60/100/150/300M → consensus share 85-93%, not 93-96%. Slide fixed
+   with method note; totals unchanged.
+Agreement OK; teardown verified. Raw snaps /tmp/led_*.json.
+
 ## 2026-08-11 — LANE-COMPARE RERUN (user-directed, replaces the July 2h-window table):
 both lanes loaded SIMULTANEOUSLY, 5-min window, 524 blocks each, fleet
 

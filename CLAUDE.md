@@ -523,6 +523,14 @@ pgrep -f matches its own shell; tailscale-ssh check expiry no-ops remote command
 codes lie; internal docker networks have no host route; anchored doc edits need
 `assert anchor in s`; smoke the VERBATIM harness arg string after any binary rebuild.
 
+**🔬 PER-STAGE LEDGER (2026-08-11, 150M both regimes):** (1) **build is where ingress lands:
+96-143ms sustained vs 10-18ms quiet-pool for identical blocks (6-10×, pool-lock/iterator
+contention)** → prebuild's sustained value likely ~13% not the drain-A/B's -8%; sustained
+prebuild A/B is the justified next experiment. (2) exec discrepancy resolved: per-tx
+executor+recovery is regime-independent (~7-13µs/tx); old 20µs "EL slope" absorbed contention.
+(3) finalize-bars EL segments were empty-block-diluted at big sizes — corrected to per-tx×n
+(consensus share 85-93%). GOTCHA: drain-window prom deltas include post-drain racing EMPTY
+blocks — always compute EL as per-tx × n, never ms/blk over a drain window.
 **📏📏 REPEAT CAMPAIGN (2026-08-10/11): all five sizes re-measured, EL captured on the same
 blocks — everything reproduces across campaigns days apart** (30M 181 · 60M 293 · 100M 401 ·
 150M 501/14.3k · 300M 1,003ms; medians of n=5-6 drains). **Consensus = 93-96% of finalize time
