@@ -490,6 +490,12 @@ how high can payment-lane tps go, and is "bigger blocks" the lever? Answer: **1 
   own. Re-runs MUST use `-l` (in the script) or start at nonce 0 → "nonce too low". The product dashboard
   summed pending+queued, so it showed a phantom backlog — payment-lane pending tile removed for this reason.
 
+**🔬 MEMORY GROWTH = REAL ANON HEAP (iter 23, 2026-08-10).** cgroup memory.stat attribution under
+governed load: anon climbs monotonically (~0.24GiB/min at ~5-6k tps) while file/MDBX-page-cache is
+squeezed 3.0→0.4GiB as the reclaim buffer once the cap pins. OOM = anon exhausting the cap after
+file is gone → docker/cgroup tuning CANNOT fix it (and no reth knob moves it, prior result).
+Component attribution needs a jemalloc-profiling build (reth_jemalloc_* gauges absent in this
+build) — recorded next step, not pursued.
 **🕐 OPERATING-POINT SOAK (iter 21, 2026-08-10): 200M@1s/9.2k is stable until memory, then
 degrades predictably.** 75-min governed soak, 5-min slices w/ agreement+memory: healthy
 1,026-1,053ms/9.0-9.3k (slices 1-5); **v4/alien2 (11GiB cap) OOM'd at ~27min** (all ELs grow

@@ -4,6 +4,23 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10 — ITER 23: MEMORY GROWTH ATTRIBUTED — IT IS REAL ANONYMOUS HEAP, NOT PAGE CACHE
+
+Single-machine attribution run (per-process phenomenon; fleet adds nothing): val1 payment EL under
+governed load (~5-6k tps), 20 x 1-min samples of the container cgroup's memory.stat (anon vs file)
++ memory.current, alongside reth /metrics.
+- **anon grows monotonically 0.46 -> 5.31 GiB (~0.24 GiB/min at this rate; scales with tps).**
+- **file (MDBX page cache) is the RECLAIM buffer, not the growth:** once memory.current pinned at
+  the 6 GiB cap, the kernel squeezed file 3.0 -> 0.4 GiB to make room for anon. OOM arrives when
+  anon alone approaches the cap and there is no file left to give back.
+- CONSEQUENCE: the cgroup-accounting hypothesis is DEAD — the 27-min OOM bound is real heap;
+  docker memory tuning cannot fix it. Prior result stands: no reth config knob moves it either.
+- reth_jemalloc_* gauges read absent in this build (0.0) — component attribution needs a
+  jemalloc-profiling build (MALLOC_CONF prof:true + jeprof, or reth --debug jemalloc feature).
+  That is the recorded next step for this thread if endurance ever becomes the binding product
+  constraint; NOT pursued now (bounded iteration).
+Teardown verified (0 containers).
+
 ## 2026-08-10 — ITER 21 COMPLETE: 75-MIN SOAK OF THE OPERATING POINT (200M @ 1s, governed) —
 three numbers for the runbook (all 15 slices in; tail slices 10-15 flat at 1,832-1,890ms /
 5,039-5,198 tps, degraded state fully stationary; teardown verified 0 containers / 0 spammers
