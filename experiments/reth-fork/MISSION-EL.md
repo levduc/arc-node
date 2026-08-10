@@ -4,6 +4,22 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10 — ITER 18 (in progress): pool governor built; BINARY/BRANCH LANDMINE found
+
+Built the closed-loop spammer governor (--pool-target, commit d67f106): background task polls
+txpool_status (250ms) into an AtomicU64; RateLimiter::wait() pauses while pending+queued > target.
+Covers both send modes; 74 tests pass (also fixed pre-existing spammer test-build breakage).
+
+LANDMINE (cost one void fleet window): `target/release/spammer` on this box was built from a
+DIFFERENT branch state — commit 420eb22 (--chain-id flag) was never on blockstm-native-transfers.
+Rebuilding the spammer from THIS branch silently produced a binary without --chain-id; every
+spammer then died at arg parse ("unexpected argument '--chain-id'") and the governed window
+measured an empty chain (0 tx — voided, obvious). All EARLIER measurements are unaffected (they
+used the old binary, which had the flag). FIX: cherry-picked 420eb22 (c9ad442), merged with the
+governor changes, 74 tests pass, full fleet arg shape smoke-tested.
+RULE: after rebuilding any harness binary, smoke the EXACT arg string the scripts use before a
+fleet run; a branch rebuild can silently drop flags the harness depends on.
+
 ## 2026-08-09 — ITER 17b: OVER-OFFERING HAS A CLIFF, NOT A PLATEAU — RATE sweep 1500/2500 COLLAPSED
 
 Follow-up sweep (fresh fleet chain, 100M unpaced, backpressure mode, S=4/machine):
