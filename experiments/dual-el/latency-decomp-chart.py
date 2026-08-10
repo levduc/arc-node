@@ -39,11 +39,14 @@ CONSEQUENCES:
 import sys
 
 # n (txs/blk), measured drain height ms (stock), label
-DRAIN = [(2856, 295, "60M"), (4761, 407, "100M")]
+# 2026-08-10 LAW SWEEP: +3 fresh-chain sizes (3 drains each) — refit 110ms + 58.7us/tx,
+# all residuals within 7% across 10x. 300M is the pooled estimate (few blocks/drain at that size).
+DRAIN = [(1428, 181, "30M"), (2856, 295, "60M"), (4761, 407, "100M"),
+         (7142, 501, "150M"), (14285, 955, "300M")]
 SPEC  = [(2856, 272), (4761, 410)]          # prebuild arm
-EL_A, EL_B = 18.1, 0.0202                    # ms, ms/tx
-CN_A, CN_B = 108.9, 0.0386
-NMAX, YMAX = 10000, 800
+EL_A, EL_B = 18.1, 0.0202  # EL fit unchanged                    # ms, ms/tx
+CN_A, CN_B = 91.9, 0.0385   # refit residual vs EL line (total: 110ms + 58.7us/tx, 5 sizes)
+NMAX, YMAX = 15000, 1100
 PRED = [(9517, "200M")]                      # model extrapolation
 
 W, H = 1000, 620
@@ -93,7 +96,7 @@ a(f'<polyline points="{top}" fill="none" stroke="{C_TOT}" stroke-width="2.5"/>')
 a(f'<text x="{X(6200):.1f}" y="{Y(el(6200)/2)+4:.1f}" font-size="12" font-weight="700" '
   f'fill="{C_EL}">EL: 18 ms + 20 µs/tx</text>')
 a(f'<text x="{X(5600):.1f}" y="{Y(el(5600)+cn(5600)/2)+4:.1f}" font-size="12" font-weight="700" '
-  f'fill="{C_CN}">consensus: 109 ms + 39 µs/tx</text>')
+  f'fill="{C_CN}">consensus: 92 ms + 38.5 µs/tx</text>')
 
 # measured drain points
 for (n, ms, lab) in DRAIN:
@@ -118,25 +121,28 @@ for (n, lab) in PRED:
 a(f'<line x1="{L}" y1="{Y(500):.1f}" x2="{L+PW}" y2="{Y(500):.1f}" stroke="#15803d" '
   f'stroke-width="1.4" stroke-dasharray="7 4" opacity="0.8"/>')
 a(f'<text x="{L+6}" y="{Y(500)-7:.1f}" font-size="10.5" font-weight="600" fill="#15803d">'
-  f'2 blk/s — 500 ms (crosses at ~6,300 tx ≈ ~132M gas)</text>')
+  f'2 blk/s — 500 ms (crosses at ~6,650 tx ≈ ~139M gas)</text>')
 
 # right panel: consequences
 lx = L + PW + 18
 a(f'<text x="{lx}" y="{T+6}" font-size="12.5" font-weight="700" fill="{INK}">what the two slopes mean</text>')
 lines = [
-    ("latency(n) ≈ 127 ms + 59 µs/tx", INK, 700),
+    ("latency(n) ≈ 110 ms + 58.7 µs/tx", INK, 700),
+    ("(5 sizes, 10×, residuals ≤7%)", MUTED, 400),
     ("tps(n) = n / latency(n)", INK, 700),
     ("→ asymptote ≈ 17k tps", C_CN, 700),
     ("", INK, 400),
     ("bigger blocks amortize the", MUTED, 400),
-    ("127 ms floor — never the", MUTED, 400),
+    ("110 ms floor — never the", MUTED, 400),
     ("59 µs/tx marginal cost:", MUTED, 400),
+    ("  30M   7.9k tps @ 181 ms", INK, 400),
     ("  60M   9.7k tps @ 295 ms", INK, 400),
     ("100M  11.7k tps @ 407 ms", INK, 400),
-    ("200M ~13.8k tps @ ~690 ms", MUTED, 400),
-    ("   ∞     17k tps @ ∞", MUTED, 400),
+    ("150M 14.3k tps @ 501 ms", INK, 400),
+    ("300M ~14.2-15.7k @ 0.9-1.0 s", INK, 400),
+    ("   ∞     17k tps (asymptote)", MUTED, 400),
     ("", INK, 400),
-    ("agreeing on a tx (39 µs)", MUTED, 400),
+    ("agreeing on a tx (38.5 µs)", MUTED, 400),
     ("costs ~1.9× running it (20 µs)", MUTED, 400),
     ("", INK, 400),
     ("sustained runs sit 1.6–1.8×", MUTED, 400),

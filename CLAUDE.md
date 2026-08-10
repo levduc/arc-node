@@ -523,6 +523,13 @@ pgrep -f matches its own shell; tailscale-ssh check expiry no-ops remote command
 codes lie; internal docker networks have no host route; anchored doc edits need
 `assert anchor in s`; smoke the VERBATIM harness arg string after any binary rebuild.
 
+**📏 LAW SWEEP (2026-08-10, user-directed): the law is MEASURED — 5 sizes × 3 fresh-chain
+drains, refit latency(n)=110ms+58.7µs/tx, residuals ≤7% over 10× (30M 181ms/7.9k · 60M 295/9.7k
+· 100M 407/11.7k · 150M 501/**14.3k** · 300M ~0.91-1.0s pooled/14.2-15.7k). Ceiling now measured:
+14.3k@150M = 84% of the 17k asymptote; 150→300M doubles latency for ~0-10% tps (capacity knee
+~150M). 2blk/s crossing → ~139M gas. ≥150M drains are resolution-limited (4-8 blocks vs 44-53 @
+30M; pool/median, note 1s sampling). Consensus slope = transport+decode(~18µs) + slowest-peer
+re-exec(~20µs); votes hash-sized ≈ 0.
 **✅✅ FLEET ENDURANCE SOAK PASSES (2026-08-10): 75 min at 200M@1s/9.2k tps, 15/15 slices
 healthy, agreement OK throughout + final 20-block check, all four validators alive** (pre-fix:
 v4 dead at slice 6). Memory converging sawtooth → late plateau: final v1 4.4 / v2 5.1 / v3 7.5 /

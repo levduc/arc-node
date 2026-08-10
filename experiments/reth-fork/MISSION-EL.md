@@ -4,6 +4,31 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10 — LAW SWEEP (user-directed): the law is now MEASURED at 5 sizes — refit
+110ms + 58.7us/tx, every residual within 7% over a 10x range; ceiling measured 14.3k tps
+
+Three NEW fresh-chain capacity points (3 drains each, drains FIRST, age 2.1-3.9k):
+| gas | txs | height | tps | old 2-pt-line pred |
+|-----|-----|--------|-----|--------------------|
+| 30M | 1,428 | 181ms (173/182/189) | 7.9k | 211 (-14%) |
+| 150M | 7,142 | 501ms (501/601*/501) | **14.3k** | 547 (-8%) |
+| 300M | 14,285 | ~0.91-1.0s pooled (1003/751*/1001) | 14.2-15.7k | 967 (+~0%) |
+(*one stall block in a tiny sample; >=150M drains hold only 4-8 blocks vs 44-53 at 30M — use
+pooled/median, and note the 1s-sampling resolution limit at big sizes.)
+REFIT on all five (30/60/100/150/300M): **latency(n) = 110ms + 58.7us/tx, residuals -7.0/+5.9/
++4.3/-5.7/+0.6%** — the law HOLDS across 10x; slope unchanged (58.7 vs 58.8), floor eases
+127->110ms (the 2-pt fit leaned on the 60M point's high side). CONSEQUENCES:
+- **Ceiling is now measured, not extrapolated: 14.3k tps @ 150M/501ms; ~14-16k @ 300M** =
+  84-92% of the 17k slope-asymptote. 150->300M doubles latency for ~0-10% tps — the knee is
+  ~150M at capacity.
+- 2 blk/s crossing moves 132M -> ~139M gas (n≈6,650).
+- The FRESH 300M point (~1.0s) replaces the age-smeared sustained range as the capacity number;
+  the old 8.2-10.6k range stays valid for SUSTAINED/paced regime only.
+- Consensus slope decomposition unchanged: ~38.5us/tx ≈ transport+decode (~18) + slowest-peer
+  re-execution (~20); votes are hash-sized and contribute ~0 (user Q&A, slide 11 step-4 label).
+Charts + slides 13/15 updated with measured points; agreement OK at every size; teardowns
+verified. Chart: latency-decomp-chart.py (5-point banner).
+
 ## 2026-08-10 — PPROF FIXES PORTED + COMPILE-VERIFIED EVERYWHERE (user-directed)
 
 The two heap-profiling fixes (b4df3e3 + c43527e) now live, cherry-picked cleanly and
