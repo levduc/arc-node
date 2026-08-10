@@ -4,6 +4,24 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-11 — LIVE-SUSTAINED GRID (one session, runtime gas flips, governed, unpaced):
+the regular grid slide-15 needed — and a NEW SUSTAINED RECORD
+
+| size | LIVE sustained | capacity (drain median) | live/capacity |
+|------|----------------|--------------------------|---------------|
+| 30M  | 217ms / 6,593  | 181 / 7,894  | 84% |
+| 60M  | 352 / 8,104    | 293 / ~9,970 | 81% |
+| 100M | 530 / 8,986    | 401 / 11,876 | 76% |
+| 150M | 725 / 9,850    | 501 / 14,255 | 69% |
+| 300M | 1,304 / **10,952** | 1,003 / 14,244 | 77% |
+All windows 100% full, agreement OK, one chain (ages 4.4-9.1k across windows). FINDINGS:
+1. **Live sustained keeps CLIMBING through 300M (10,952 = new sustained record)** while
+   capacity plateaus at 150M — the ingress cost is partly fixed-ish per height, so bigger
+   blocks amortize it too.
+2. The live/capacity ratio dips at 150M (69%) — ingress hurts most right at the capacity knee.
+3. Slide 15 rebuilt as grouped live-vs-capacity bars (5 sizes, latencies in tick labels) —
+   same visual language as the finalize-time bars; three-tank methodology slide precedes both.
+
 ## 2026-08-11 — CAMPAIGN #3 (user-directed third confirmation): every size holds
 
 | size | campaign-3 drains | cross-campaign median (n clean drains) |
