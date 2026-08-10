@@ -4,6 +4,24 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-11 — NIGHT CONFIRMATION RUN (user-directed): every non-Arc deck number re-measured
+on the fleet, one fresh chain, flips verified, remote spam verified, agreement OK
+
+| point | frozen (n=2) | tonight (n=3) | verdict |
+|-------|--------------|---------------|---------|
+| unpaced 100M governed | 537-550ms / 8,656-8,864 | 531ms / 8,967 | CONFIRMED (range 531-550) |
+| 50M @ 500ms | 517-518 / 4,591-4,601 HELD | 515 / 4,621 HELD | CONFIRMED (0.6% spread n=3) |
+| 200M @ 1s | 1,034-1,039 / 9,166-9,206 HELD | 1,026 / 9,285 HELD | CONFIRMED (1.3% spread n=3) |
+| 100M drain ceiling | 407ms / 11,699 (fresh, age ~2.9k) | 501ms / 9,505 (AGED ~5k, ran last, one 1s stall blk) | ceiling is FRESH-CHAIN; ages toward ~9.5k |
+
+Per-tx (val1 prom, THIS run, 16k-account chain): 100M: exec 8.7us / root 0.17us / persist 13.3us;
+200M: exec 8.5us / root 0.10us / persist 8.9us. Slide-15's table (root 2.5us, exec 13.5us) is from
+the 10M-ACCOUNT chain (2h window) — state size explains the delta; keep 10M as the conservative
+at-scale figure, cite tonight's as the small-state reconfirmation. Root per tx FALLS with block
+size again (0.17 -> 0.10us).
+RULE APPLIED: drain-last = aged measurement; the 11.7k ceiling now carries a "fresh-chain"
+qualifier everywhere it appears. Teardown verified.
+
 ## 2026-08-10 — ITER 23: MEMORY GROWTH ATTRIBUTED — IT IS REAL ANONYMOUS HEAP, NOT PAGE CACHE
 
 Single-machine attribution run (per-process phenomenon; fleet adds nothing): val1 payment EL under
