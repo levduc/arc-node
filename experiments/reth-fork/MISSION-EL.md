@@ -4,6 +4,28 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10 — ITER 26: MEMORY GROWTH ATTRIBUTED — 51% IS RETH'S RPC ETH CACHE (a stock flag
+nobody ever tested)
+
+Symbolized heap profile (profiling-profile binary, env-activated jemalloc prof, t17 snapshot at
+5.07 GiB container RSS, ~7.0 GB sampled in-use):
+- **51% (3.58 GB): `reth_rpc_eth_types::cache::cache_new_blocks_task` -> `ChainChange::new`** —
+  the RPC eth-state cache CLONES every canonical block (RecoveredBlock, 2.30 GB) + its receipts
+  (1.28 GB) into LRUs bounded by ENTRY COUNT (defaults ~5,000 blocks / 2,000 receipts), not bytes.
+  With 4.7-9.5k-tx payment blocks, entry bounds = many GB by design. Node-local, zero consensus
+  impact; explains "releases at ~40% when idle" (cache turnover) and why engine/persistence cache
+  knobs did nothing — the RPC cache flags (`--rpc-cache.max-blocks/max-receipts/max-headers`)
+  were never in those tests.
+- Remainder: ~17% receipts to_vec (execute path), rest diffuse (bodies in flight, pool, trie).
+LIVE A/B IN FLIGHT: val1 pay EL with `--rpc-cache.max-blocks 200 --rpc-cache.max-receipts 200`
+vs 3 stock, per-minute memory trajectories. If val1's growth halves, the 27-min endurance bound
+roughly doubles via a stock CLI flag.
+Also fixed on the way (both committed): Arc pprof was dead-on-arrival from TWO bugs —
+(1) malloc_conf exported unprefixed while tikv jemalloc reads _rjem_malloc_conf (b4df3e3);
+(2) activation via raw mallctl bypassed jemalloc_pprof PROF_CTL's cached bookkeeping, so the
+allocs handler always said "not activated" (c43527e). Workaround for old binaries:
+_RJEM_MALLOC_CONF=prof:true,prof_active:true env.
+
 ## 2026-08-10 (night) — ITER 24/25 IN PROGRESS: jemalloc profiling was BROKEN IN ARC — found,
 fixed, symbolized build running attribution
 
