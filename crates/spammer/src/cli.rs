@@ -397,6 +397,7 @@ mod tests {
         SpammerArgs {
             num_generators: defaults::NUM_GENERATORS,
             max_num_accounts: defaults::MAX_NUM_ACCOUNTS,
+            account_offset: 0,
             partition_mode: PartitionMode::Linear,
             num_txs: defaults::NUM_TXS,
             rate: defaults::RATE,

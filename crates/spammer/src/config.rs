@@ -439,6 +439,7 @@ mod tests {
             num_generators: 1,
             partition_mode: PartitionMode::Linear,
             max_num_accounts: 100,
+            account_offset: 0,
             preinit_accounts: false,
             query_latest_nonce: false,
             max_num_txs: 0,
