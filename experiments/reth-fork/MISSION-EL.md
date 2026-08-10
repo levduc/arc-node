@@ -4,6 +4,25 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10 — FLEET ENDURANCE SOAK PASSES: the fix holds on real hardware — 15/15 slices,
+20-block final agreement OK, all four validators alive the full 75 min
+
+Fleet, 200M@1s, governed ~9.2k tps, rpc-cache caps 200/200 (the launcher default):
+- **Chain: 1,008-1,057ms / 9,007-9,444 tps, 100% full EVERY slice, per-slice agreement OK,
+  spread 0-1, final 20-block 4-way agreement OK.** 75 minutes at the recommended operating
+  point with zero incidents — on the harness where pre-fix v4 died at slice 6.
+- **Memory: converging sawtooth to a LATE plateau** — slices 13-15 near-flat on all four
+  (final: v1 4.44 / v2 5.13 / v3 7.46 / v4 4.09 GiB). v4 (11 GiB cap, the pre-fix casualty)
+  finished at 4.09 with three of its last five slices NEGATIVE. Fleet plateaus are higher and
+  later than local (9.3k vs 7.8k tps, bigger pools, machine-dependent baselines — v3/papaduck
+  always runs high); tail rate over the last 5 slices ~0-15 MiB/min/validator vs ~250 pre-fix.
+- HONEST QUALIFIER: "plateau" on the fleet = converged-to-noise over the last 3 slices, not a
+  75-min flat line; if a >6h burst ever matters, extend the soak then. For every realistic
+  demo/benchmark window, memory is a solved problem.
+ENDURANCE CHAPTER CLOSED end-to-end: symptom -> profiling fixed -> attribution -> stock-flag
+cure -> local validation -> FLEET validation. Teardown verified 0 containers / 0 spammers on
+all 4 machines (exact-name checks).
+
 ## 2026-08-10 — ITER 28-30: ENDURANCE FIX VALIDATED — 75-min soak at the 200M@1s operating
 point, all four ELs PLATEAU at ~3.2 GiB, zero incidents
 

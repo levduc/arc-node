@@ -523,6 +523,11 @@ pgrep -f matches its own shell; tailscale-ssh check expiry no-ops remote command
 codes lie; internal docker networks have no host route; anchored doc edits need
 `assert anchor in s`; smoke the VERBATIM harness arg string after any binary rebuild.
 
+**✅✅ FLEET ENDURANCE SOAK PASSES (2026-08-10): 75 min at 200M@1s/9.2k tps, 15/15 slices
+healthy, agreement OK throughout + final 20-block check, all four validators alive** (pre-fix:
+v4 dead at slice 6). Memory converging sawtooth → late plateau: final v1 4.4 / v2 5.1 / v3 7.5 /
+v4 4.1 GiB, tail rate ~0-15 MiB/min (vs ~250 pre-fix); fleet plateaus higher+later than local
+(load, pools, per-machine baselines). Endurance chapter CLOSED with fleet receipts.
 **✅ ENDURANCE FIX VALIDATED AT THE OPERATING POINT (iters 28-30, 2026-08-10).** 75-min
 single-machine soak, 200M@1s, ~7.9k tps, caps 200/200: chain healthy ALL 15 slices (agreement OK,
 98-100% full), **memory plateaus at ~3.2 GiB on all four pay ELs (flat last 5 slices)** — the
