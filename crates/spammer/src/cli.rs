@@ -85,6 +85,12 @@ pub struct SpammerArgs {
     /// Number of transactions to send per second (all generators combined)
     #[clap(short = 'r', long, default_value_t = defaults::RATE, global = true, value_parser = clap::value_parser!(u64).range(1..))]
     pub rate: u64,
+    /// Closed-loop pool governor: pause sending while the target node's txpool
+    /// depth (pending + queued) exceeds this many transactions. 0 = open loop.
+    /// Over-offering past what the chain consumes collapses the pool (eviction
+    /// nonce-gaps accounts); target ~2-3 blocks' worth of transactions.
+    #[clap(long, default_value_t = 0, global = true)]
+    pub pool_target: u64,
     /// Maximum time in seconds to send transactions (applies to all generators) (0 for no limit)
     #[clap(short = 't', long, default_value_t = defaults::TIME, global = true)]
     pub time: u64,
@@ -225,6 +231,7 @@ impl SpammerArgs {
         }
         flag!(args, "-n", self.num_txs, defaults::NUM_TXS);
         flag!(args, "-r", self.rate, defaults::RATE);
+        flag!(args, "--pool-target", self.pool_target, 0);
         flag!(args, "-t", self.time, defaults::TIME);
         flag!(args, "-s", self.tx_input_size, defaults::TX_INPUT_SIZE);
         flag!(
@@ -343,6 +350,7 @@ impl SpammerArgs {
             query_latest_nonce: self.query_latest_nonce,
             max_num_txs: self.num_txs,
             max_rate: self.rate,
+            pool_target: self.pool_target,
             max_time: self.time,
             tx_input_size: self.tx_input_size,
             fresh_recipients: self.fresh_recipients,
@@ -382,6 +390,7 @@ mod tests {
             partition_mode: PartitionMode::Linear,
             num_txs: defaults::NUM_TXS,
             rate: defaults::RATE,
+            pool_target: 0,
             time: defaults::TIME,
             tx_input_size: defaults::TX_INPUT_SIZE,
             fresh_recipients: false,

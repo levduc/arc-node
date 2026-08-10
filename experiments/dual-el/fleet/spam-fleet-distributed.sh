@@ -69,8 +69,13 @@ start(){
       # nonce-gap (without it, a second run starts from nonce 0 -> all "nonce too low").
       # FF=1 -> --fire-and-forget: send without awaiting each WS response (backpressure mode's
       # per-tx round-trip is the measured delivery ceiling ~5.3-5.8k tx/s; capacity is ~12k).
+      # MEASURED DEAD for sustained load (no nonce repair -> queue collapse); kept for repro only.
       local ffarg=""; [ "${FF:-0}" = "1" ] && ffarg="--fire-and-forget"
-      local run="ws --targets ws://127.0.0.1:$ws --chain-id $CID -r $RATE -t $DUR -g 20 -a $ACCTS --account-offset $off -l --mix transfer=100 $ffarg"
+      # POOL_TARGET>0 -> closed-loop governor: pause while local pool pending+queued exceeds it.
+      # Open-loop RATE>=1500/spammer collapses the pool (iter 17b); with the governor you can set
+      # RATE high and let pool depth pace delivery. ~2-3 full blocks' worth is the right target.
+      local ptarg=""; [ "${POOL_TARGET:-0}" != "0" ] && ptarg="--pool-target $POOL_TARGET"
+      local run="ws --targets ws://127.0.0.1:$ws --chain-id $CID -r $RATE -t $DUR -g 20 -a $ACCTS --account-offset $off -l --mix transfer=100 $ffarg $ptarg"
       if [ "$n" -eq 1 ]; then
         nohup "$SPAMMER" $run >/tmp/spam-d-1-$j.log 2>&1 & disown
       else

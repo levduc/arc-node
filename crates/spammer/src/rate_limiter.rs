@@ -16,6 +16,8 @@
 
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use governor::{Jitter, Quota};
 
@@ -24,11 +26,21 @@ use governor::{Jitter, Quota};
 /// Spaces sends evenly across each second using `governor` instead of
 /// resetting a counter once per second. At 1000 TPS each call to `wait()`
 /// sleeps ~1ms, eliminating the burst-then-idle pattern of the old approach.
+///
+/// Optionally closed-loop: with a pool governor installed, `wait()` also
+/// pauses while the target node's txpool depth (pending + queued, fed by a
+/// background poller) exceeds `pool_target`. Open-loop over-offering past
+/// what the chain consumes drives the pool to its cap, where eviction
+/// nonce-gaps accounts and collapses throughput (measured: 8.1k tx/s at a
+/// balanced offer vs 3.2k at 2.5x over-offer) — the governor keeps the
+/// backlog bounded instead.
 pub(crate) struct RateLimiter {
     limiter: governor::DefaultDirectRateLimiter,
     jitter: Jitter,
     max_num_txs: u64,
     total_counter: AtomicU64,
+    /// (live pool depth gauge, pause threshold); None = open loop.
+    pool_governor: Option<(Arc<AtomicU64>, u64)>,
 }
 
 impl RateLimiter {
@@ -47,13 +59,27 @@ impl RateLimiter {
             jitter,
             max_num_txs,
             total_counter: AtomicU64::new(0),
+            pool_governor: None,
         }
+    }
+
+    /// Install the closed-loop pool governor: `wait()` pauses while
+    /// `gauge` (pending + queued, maintained by a background poller)
+    /// exceeds `target`.
+    pub fn with_pool_governor(mut self, gauge: Arc<AtomicU64>, target: u64) -> Self {
+        self.pool_governor = Some((gauge, target));
+        self
     }
 
     /// Wait until the rate limiter permits the next send.
     /// Also checks the total transaction limit, if it is set.
     /// Returns `true` to send or `false` to stop, when the transaction limit is reached.
     pub async fn wait(&self) -> bool {
+        if let Some((gauge, target)) = &self.pool_governor {
+            while gauge.load(Ordering::Relaxed) > *target {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
         self.limiter.until_ready_with_jitter(self.jitter).await;
         if self.max_num_txs == 0 {
             return true;

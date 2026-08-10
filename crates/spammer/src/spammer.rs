@@ -184,12 +184,59 @@ impl Spammer {
             (None, None)
         };
 
+        // Shared rate limiter for all senders. With --pool-target set, it runs
+        // closed-loop: a background task polls the first target's txpool_status
+        // and wait() pauses while pending+queued exceeds the target (open-loop
+        // over-offering collapses the pool via eviction nonce-gapping).
+        let pool_gauge = if config.pool_target > 0 {
+            let gauge = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let g = gauge.clone();
+            let builder = ws_client_builders
+                .first()
+                .cloned()
+                .ok_or_else(|| eyre::eyre!("No RPC endpoints available"))?;
+            tokio::spawn(async move {
+                let mut client = match builder.build().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!("pool-governor: failed to connect, disabling: {e}");
+                        return;
+                    }
+                };
+                loop {
+                    match client
+                        .request_response::<alloy_rpc_types_txpool::TxpoolStatus>(
+                            "txpool_status",
+                            serde_json::json!([]),
+                        )
+                        .await
+                    {
+                        Ok(st) => {
+                            g.store(
+                                st.pending.saturating_add(st.queued),
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                        }
+                        Err(_) => {
+                            // Leave the last reading in place; a dead node also
+                            // stops accepting txs, so senders stall on their own.
+                            let _ = client.reconnect().await;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            });
+            Some(gauge)
+        } else {
+            None
+        };
+
         // Shared rate limiter for all senders
-        let rate_limiter = Arc::new(RateLimiter::new(
-            config.max_rate,
-            config.max_num_txs,
-            config.num_generators,
-        ));
+        let mut limiter = RateLimiter::new(config.max_rate, config.max_num_txs, config.num_generators);
+        if let Some(gauge) = pool_gauge {
+            limiter = limiter.with_pool_governor(gauge, config.pool_target);
+        }
+        let rate_limiter = Arc::new(limiter);
 
         // Create transaction generators and senders
         let (tx_generators, tx_senders) = if config.fire_and_forget {

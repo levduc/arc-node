@@ -305,6 +305,9 @@ pub struct Config {
     pub max_num_txs: u64,
     /// Maximum rate of transactions to send per second (all generators together)
     pub max_rate: u64,
+    /// Closed-loop pool governor: pause sending while the target node's
+    /// txpool depth (pending + queued) exceeds this. 0 disables (open loop).
+    pub pool_target: u64,
     /// Maximum time in seconds to send transactions (0 for no limit)
     pub max_time: u64,
     /// Size of transaction input data in bytes
@@ -439,6 +442,9 @@ mod tests {
             query_latest_nonce: false,
             max_num_txs: 0,
             max_rate: 1000,
+            pool_target: 0,
+            fresh_recipients: false,
+            recipient_pool: None,
             max_time: 0,
             tx_input_size: 0,
             max_txs_per_account: 0,
