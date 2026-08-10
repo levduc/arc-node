@@ -114,5 +114,9 @@ What you should see (frozen, reproduced n=2 within 1%, chain age ~3-6k blocks):
 | 100M drain (capacity bound) | ~407 ms | ~11,700 |
 
 300M @ 1s is age/health-sensitive: 8.2-10.6k @ 1.35-1.74s — quote the range.
-Numbers assume healthy validators; run fleet/mem-soak.sh alongside anything >30 min
-(payment ELs grow ~0.4-0.6 GiB/min under 9k tps; alien2's 11 GiB cap is the first to go).
+Numbers assume healthy validators; run fleet/mem-soak.sh alongside anything >30 min.
+MEASURED ENDURANCE (75-min soak at 200M@1s): payment ELs grow ~0.4-0.6 GiB/min at 9.2k tps
+(linear, no plateau); an 11 GiB-capped EL OOMs at ~27 min. After a validator dies the chain
+continues 3-of-4 at ~1.85 s / ~5.1k tps (its proposer slots burn round timeouts: a dead
+validator costs ~45%, not 25%). Small-RAM validators need an EL restart cadence or a lower
+sustained rate for long demos.

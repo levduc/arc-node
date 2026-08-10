@@ -4,6 +4,25 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10 — ITER 21: 75-MIN SOAK OF THE OPERATING POINT (200M @ 1s, governed) — three
+numbers for the runbook (slices 1-9; completion pending, findings already stable)
+
+Fresh fleet chain, BLOCK_TIME_MS=1000, PAY_GAS=200M, governed spam (POOL_TARGET=28569, RATE=3500),
+5-min slices with per-slice 10-block agreement + per-EL memory:
+1. **HEALTHY STEADY STATE: 1,026-1,053ms / 9,047-9,285 tps, 100% full, agree OK, spread 0-2**
+   for slices 1-5 (~27 min) — the recommended point is stable while all validators live.
+2. **TIME-TO-OOM BOUND: ~27 min at 9.2k tps on an 11 GiB-capped payment EL.** All ELs grow
+   ~0.4-0.6 GiB/min under this load (v1 3.3->10.6, v2 4.3->12.9, v3 6.6->16.7 GiB over 5 slices);
+   v4/alien2 (11 GiB cap) died mid-slice-6 exactly on schedule. Predictable, linear, no plateau.
+3. **DEGRADED STEADY STATE (3-of-4, v4 dead): 1,846-1,875ms / ~5,100 tps, flat across slices 7-9.**
+   A dead validator costs ~45% of throughput at this point, NOT 25% — its round-robin proposer
+   slots burn full round timeouts every 4th height (compounds, then stabilizes by slice 7).
+OPS RULE: on an 11-16 GiB validator, either budget ~0.5 GiB/min of continuous 9k-tps burst
+(~27 min on 11 GiB) and schedule EL restarts, or cap the sustained rate. Big-RAM validators
+(62-78 GB) never approached limits (v3 at 21.5 GiB and climbing linearly, fine).
+Agreement checks: OK every slice until v4's RPC died (then UNREACHABLE by construction — the
+3-live lockstep continued; production never stalled => no fork).
+
 ## 2026-08-10 — ITER 20: PACED SWEEP REPRODUCED n=2 (user-directed, censused fleet load) —
 operating points solid within 1%; 300M requalified as a RANGE
 
