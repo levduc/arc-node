@@ -523,6 +523,12 @@ pgrep -f matches its own shell; tailscale-ssh check expiry no-ops remote command
 codes lie; internal docker networks have no host route; anchored doc edits need
 `assert anchor in s`; smoke the VERBATIM harness arg string after any binary rebuild.
 
+**📏📏 REPEAT CAMPAIGN (2026-08-10/11): all five sizes re-measured, EL captured on the same
+blocks — everything reproduces across campaigns days apart** (30M 181 · 60M 293 · 100M 401 ·
+150M 501/14.3k · 300M 1,003ms; medians of n=5-6 drains). **Consensus = 93-96% of finalize time
+at every size; EL 13-41ms.** Straggler episodes (occasional 1s stall blocks: 265ms@30M,
+638ms@100M drains) excluded from medians, kept on record. Slide 13 = stacked EL/consensus bars;
+slide 15 = 3-regime plot w/ legend below. 300M drains structurally thin (50k backlog ≈ 3.5 blk).
 **📏 LAW SWEEP (2026-08-10, user-directed): the law is MEASURED — 5 sizes × 3 fresh-chain
 drains, refit latency(n)=110ms+58.7µs/tx, residuals ≤7% over 10× (30M 181ms/7.9k · 60M 295/9.7k
 · 100M 407/11.7k · 150M 501/**14.3k** · 300M ~0.91-1.0s pooled/14.2-15.7k). Ceiling now measured:

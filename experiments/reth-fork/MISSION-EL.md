@@ -4,6 +4,30 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10/11 — REPEAT CAMPAIGN (user-directed): every size re-measured with EL captured
+on the SAME blocks; law + ceiling reproduce; slides rebuilt as EL-vs-consensus bars
+
+Second full campaign (fresh chain per size, 3 drains each, prom exec+root per drain), joined
+with campaign 1 => n=5-6 drains/size:
+| size | txs | EL med | consensus | total med (all drains) | tps |
+|------|-----|--------|-----------|-------------------------|-----|
+| 30M  | 1,428 | ~13ms | ~168 | 181 (182/189/173 + 265*/181/181) | 7.9k |
+| 60M  | 2,856 | ~15ms | ~278 | 293 (286/295/305 + 292/278/295) | 9.7k |
+| 100M | 4,761 | ~33ms | ~368 | 401 (401/418/401 + 364/401/638*) | 11.9k |
+| 150M | 7,142 | ~29ms | ~472 | 501 (501/601*/501 + 601*/501) | **14.3k** |
+| 300M | 14,285| ~41ms | ~962 | 1,003 (1003/751†/1001 + 1004; 3 under-filled drains) | 14.2k |
+(* straggler episodes — 1s stall blocks visible in spreads, excluded from medians, kept in the
+record; † coarse mixed sample. 300M drains are structurally thin: 50k backlog ≈ 3.5 blocks.)
+- **EVERY value reproduced across two campaigns days apart** (30M/60M/150M to the ms; 100M
+  median identical; 300M identical). The 14.3k ceiling @150M is now n=4 clean drains.
+- **CONSENSUS = 93-96% OF FINALIZE TIME AT EVERY SIZE**, EL 13-41ms flat-ish — measured on the
+  same blocks, one campaign, answering "cost of consensus on bigger blocks" directly.
+- Two more straggler episodes on record (R30d1 265ms, R100d3 638ms): occasional 1s round
+  timeouts, plausibly wifi-alien2; median-of-drains is the robust estimator, episodes shown.
+- Slides rebuilt per user: 13 = stacked EL/consensus bars (categorical sizes, no 10^4 axis);
+  15 = minimal-text 3-regime plot (held menu / sustained unpaced / capacity stars 11.9k @100M,
+  14.3k @150M), legend below the plot.
+
 ## 2026-08-10 — LAW SWEEP (user-directed): the law is now MEASURED at 5 sizes — refit
 110ms + 58.7us/tx, every residual within 7% over a 10x range; ceiling measured 14.3k tps
 
