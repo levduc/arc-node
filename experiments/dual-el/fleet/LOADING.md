@@ -115,8 +115,10 @@ What you should see (frozen, reproduced n=2 within 1%, chain age ~3-6k blocks):
 
 300M @ 1s is age/health-sensitive: 8.2-10.6k @ 1.35-1.74s — quote the range.
 Numbers assume healthy validators; run fleet/mem-soak.sh alongside anything >30 min.
-MEASURED ENDURANCE (75-min soak at 200M@1s): payment ELs grow ~0.4-0.6 GiB/min at 9.2k tps
-(linear, no plateau); an 11 GiB-capped EL OOMs at ~27 min. After a validator dies the chain
-continues 3-of-4 at ~1.85 s / ~5.1k tps (its proposer slots burn round timeouts: a dead
-validator costs ~45%, not 25%). Small-RAM validators need an EL restart cadence or a lower
-sustained rate for long demos.
+ENDURANCE (updated 2026-08-10): the historical ~0.4-0.6 GiB/min "unbounded" growth was reth's
+RPC eth cache (ENTRY-bounded LRU, 5000-block default = GBs at payment block sizes). With
+`--rpc-cache.max-blocks 200 --rpc-cache.max-receipts 200` (now the launch-payment-els.sh
+default, env PAY_RPC_CACHE_BLOCKS/RECEIPTS) memory PLATEAUS ~1.7 GiB under 5k tps — the old
+27-min OOM bound on 11 GiB validators is gone. If a validator DOES die, the chain continues
+3-of-4 at ~1.85 s / ~5.1k tps (proposer slots burn round timeouts: a dead validator costs
+~45%, not 25%).

@@ -490,6 +490,18 @@ how high can payment-lane tps go, and is "bigger blocks" the lever? Answer: **1 
   own. Re-runs MUST use `-l` (in the script) or start at nonce 0 → "nonce too low". The product dashboard
   summed pending+queued, so it showed a phantom backlog — payment-lane pending tile removed for this reason.
 
+**🎯 ENDURANCE SOLVED — RPC-CACHE CAPS (iters 26-27, 2026-08-10).** Heap-profiled the growth
+(had to FIX Arc's pprof first — dead-on-arrival from 2 bugs: malloc_conf unprefixed vs _rjem_
+prefix b4df3e3; activation bypassing jemalloc_pprof PROF_CTL bookkeeping c43527e; workaround
+_RJEM_MALLOC_CONF=prof:true,prof_active:true; profiles need `--profile profiling` build —
+release is stripped): **51% of in-use heap = reth's RPC eth cache** (ChainChange::new clones
+every block+receipts into ENTRY-bounded LRUs, 5000/2000 defaults = GBs at payment block sizes,
+never fills → the "unbounded" growth + idle release). A/B `--rpc-cache.max-blocks 200
+--rpc-cache.max-receipts 200`: **val1 FLAT at 1.7GiB from min 13; stock peers 5.2GiB+ still
+climbing; agreement OK.** 27-min OOM bound GONE; "no config knob moves it" SUPERSEDED (the knob
+was never in the earlier tests). launch-payment-els.sh now defaults PAY_RPC_CACHE_BLOCKS/
+RECEIPTS=200/200. Landmines: internal docker net has no host route (probe for the 404, not TCP);
+`pkill -x` silently fails on >15-char names (kernel comm truncation).
 **🔬 MEMORY GROWTH = REAL ANON HEAP (iter 23, 2026-08-10).** cgroup memory.stat attribution under
 governed load: anon climbs monotonically (~0.24GiB/min at ~5-6k tps) while file/MDBX-page-cache is
 squeezed 3.0→0.4GiB as the reclaim buffer once the cap pins. OOM = anon exhausting the cap after

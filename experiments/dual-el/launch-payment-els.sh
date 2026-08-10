@@ -23,6 +23,11 @@ for i in 1 2 3 4; do sleep ${STAGGER:-0};
   name="validator${i}_el_pay"
   http=$((19545 + (i-1)*100)); ws=$((19546 + (i-1)*100)); auth=$((19551 + (i-1)*100)); met=$((19001 + (i-1)*100))
   dd="$BASE/validator${i}/reth-pay"; mkdir -p "$dd"
+  # RPC eth-cache caps (PAY_RPC_CACHE_BLOCKS/RECEIPTS, default 200/200): reth's defaults
+  # (5000 blocks / 2000 receipts) are ENTRY counts — at 4.7-9.5k-tx payment blocks that is
+  # gigabytes and the cache never fills, which WAS the "unbounded" memory growth (heap-profiled
+  # 2026-08-10: 51% of in-use heap; capped val1 plateaued at 1.7GiB while stock peers passed
+  # 5.2GiB still climbing). Node-local, no consensus impact; recent blocks stay cached.
   # Extra node args: PAY_EL_EXTRA_ARGS applies to every payment EL; PAY_EL<i>_EXTRA_ARGS to one
   # validator only (node-local flags like --engine.state-root-fallback are consensus-safe per
   # node, so a single-validator A/B on identical blocks is valid).
@@ -46,7 +51,9 @@ for i in 1 2 3 4; do sleep ${STAGGER:-0};
       --metrics=0.0.0.0:9001 --disable-discovery --ipcdisable \
       --port 30303 \
       --arc.builder.deadline=500 --arc.builder.wait-for-payload=true --txpool.nolocals \
-      --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 ${extra_args} >/dev/null \
+      --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 \
+      --rpc-cache.max-blocks=${PAY_RPC_CACHE_BLOCKS:-200} --rpc-cache.max-receipts=${PAY_RPC_CACHE_RECEIPTS:-200} \
+      ${extra_args} >/dev/null \
     && { docker network connect "$HOSTNET" "$name" 2>/dev/null; \
          echo "launched $name on $NET+$HOSTNET (RPC http://127.0.0.1:${http})"; } \
     || echo "FAILED $name"

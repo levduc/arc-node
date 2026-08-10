@@ -4,6 +4,27 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10 — ITER 27: ENDURANCE SOLVED — rpc-cache caps make payment-EL memory FLAT
+(A/B: capped val1 plateaus at 1.7 GiB; stock peers pass 5.2 GiB still climbing)
+
+18-min same-box A/B, ~5k tps governed load, val1 `--rpc-cache.max-blocks 200
+--rpc-cache.max-receipts 200` vs val2-4 stock, per-minute memory:
+- val1: 0.66 -> 1.72 GiB, **FLAT from minute 13** (last 5 samples 1.70-1.76 — a plateau, not a
+  slower climb). The cache fills its 200 entries in ~2 min, then the process is bounded.
+- val2-4: 0.65 -> 5.22-5.34 GiB at minute 18, still climbing ~230 MiB/min (headed for the cap).
+- Agreement OK (the cache is read-path only; consensus untouched). Teardown verified.
+CONSEQUENCES:
+- **The 27-min OOM bound is GONE.** The 2026-08-09 memory model ("~350 MiB/min, not a leak, no
+  config knob moves it") is SUPERSEDED: the knob existed, it just was never tested — the growth
+  was reth's RPC eth cache LRU (entry-bounded) never filling at payment-lane block sizes.
+- launch-payment-els.sh now defaults `--rpc-cache.max-blocks/max-receipts` to
+  PAY_RPC_CACHE_BLOCKS/RECEIPTS (200/200). Long soaks/demos no longer need restart cadences on
+  small-RAM validators (val4/alien2's 11 GiB cap fits with 9+ GiB headroom).
+- Residual growth ~30-40 MiB/min at 5k tps remains (bodies in flight, pool, trie buffers) —
+  plateau behavior suggests bounded; re-verify on the next fleet soak.
+- The iter-21 soak numbers (healthy 1.03s/9.2k, dead-validator 1.85s/5.1k) stand; only the
+  time-to-OOM bound is obsolete. Deck/docs updated.
+
 ## 2026-08-10 — ITER 26: MEMORY GROWTH ATTRIBUTED — 51% IS RETH'S RPC ETH CACHE (a stock flag
 nobody ever tested)
 
