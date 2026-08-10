@@ -490,6 +490,39 @@ how high can payment-lane tps go, and is "bigger blocks" the lever? Answer: **1 
   own. Re-runs MUST use `-l` (in the script) or start at nonce 0 → "nonce too low". The product dashboard
   summed pending+queued, so it showed a phantom backlog — payment-lane pending tile removed for this reason.
 
+## 🐛 BUG LEDGER (consolidated, 2026-08-10 — details in the dated entries + MISSION-EL.md)
+
+**Consensus-critical (all in the gated-off native-transfer fast path; all fixed; ONE root shape:
+"assume what a tx is instead of asking it"; 3 of 4 invisible to state-only comparison):**
+1. Missing per-transfer log — fast path emitted no EIP-7708/NativeCoinTransferred log → receipts
+   root forked vs stock peers. Caught only by A/B vs UNMODIFIED peers.
+2. Legacy-tx fee shape — hardcoded 1559 formula collapsed to basefee for type-0 txs → state root
+   forked (receipts matched!). Fix: tx.effective_gas_price(basefee).
+3. Zero-value transfers — interpreter emits NOTHING when value==0; fast path emitted a log →
+   receipts diverged. Offline-gate catch (Workload::Mixed).
+4. (Related retraction, not a fork: "eager recovery 4x" was metric relocation — only
+   new_payload_latency counts.)
+**CL robustness (fixed unless noted):** proposer crash-exit on payment getPayload timeout (fix:
+skip round, 509f404); value-sync batch livelock (env-tunable batch/timeout); OPEN finding #7:
+ProcessSyncedValue treats newPayload=Syncing as fatal → CL crash-loop after pay-EL OOM (ops heal
+scripted in revive-val.sh; code fix pending, CL-side so out of mission scope).
+**Infra/observability (fixed 2026-08-10, PR patches in /tmp/pprof-fixes + branch
+`pprof-heap-profiling-fixes`, ported to fleet-multi-machine + payment-lane-gas):**
+5. pprof bug 1 — malloc_conf exported unprefixed; tikv jemalloc reads _rjem_malloc_conf →
+   opt.prof always false (b4df3e3).
+6. pprof bug 2 — --pprof.heap-prof activated via raw mallctl, bypassing jemalloc_pprof
+   PROF_CTL's cached bookkeeping → /debug/pprof/allocs always closed with an empty reply
+   (c43527e). Together: the feature was dead-on-arrival; env workaround
+   _RJEM_MALLOC_CONF=prof:true,prof_active:true.
+**NOT bugs (design-meets-unusual-scale, fixed by config):** RPC eth cache is ENTRY-bounded
+(5000 blocks) — gigabytes at payment block sizes = the "unbounded" memory growth; capped
+200/200 by default in all launchers. Pool-cap eviction collapse under over-offered load =
+open-loop spamming problem; fixed by the closed-loop governor (--pool-target).
+**Ops landmines (each cost a run):** pkill/pgrep -x fails silently on >15-char process names;
+pgrep -f matches its own shell; tailscale-ssh check expiry no-ops remote commands while exit
+codes lie; internal docker networks have no host route; anchored doc edits need
+`assert anchor in s`; smoke the VERBATIM harness arg string after any binary rebuild.
+
 **✅ ENDURANCE FIX VALIDATED AT THE OPERATING POINT (iters 28-30, 2026-08-10).** 75-min
 single-machine soak, 200M@1s, ~7.9k tps, caps 200/200: chain healthy ALL 15 slices (agreement OK,
 98-100% full), **memory plateaus at ~3.2 GiB on all four pay ELs (flat last 5 slices)** — the
