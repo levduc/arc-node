@@ -67,3 +67,52 @@ isolation (dedicated RPC/admission nodes), not better spammers.
   drained — a poisoned queued subpool silently ruins the next window.
 - Quote landed tx/s together with offered rate and mode; "delivery plateau" numbers
   are properties of the load config, not the chain.
+
+## Reproducing the headline numbers (4-machine fleet)
+
+Prereqs: tailscale authed to all remotes (`tailscale status`), images shipped
+(`fleet/ship-images.sh`), `cargo build --release -p spammer` — then smoke the VERBATIM
+spam arg string once (see rules above).
+
+```bash
+cd ~/arc-node-paymentlane
+
+# 1. Boot the fleet at an operating point (example: 1s heartbeat, 200M payment blocks)
+PAY_GAS=200000000 EXTRA_ACCOUNTS=16000 BLOCK_TIME_MS=1000 \
+  experiments/dual-el/fleet/demo-fleet-metamask.sh start
+# verify PRODUCING via RPC heads on all 4 (never by grepping the start log):
+#   ports http 19545/19645/19745/19845 on val1..4's tailscale IPs
+
+# 2. Governed load on all 4 machines (disjoint account ranges, pool-depth closed loop)
+#    POOL_TARGET = 3 * gas / 21000  (floor 12000); RATE is safe to over-provision
+POOL_TARGET=28569 S=4 ACCTS=1000 RATE=3500 \
+  experiments/dual-el/fleet/spam-fleet-distributed.sh start
+
+# 3. Measure a window (landed tps from block contents, fullness, height)
+WINDOW=240 experiments/dual-el/pay-throughput-bench.sh measure
+
+# 4. Re-configure AT RUNTIME (no restart) — STOP LOAD FIRST, verify the flip took:
+experiments/dual-el/fleet/spam-fleet-distributed.sh stop
+experiments/dual-el/set-block-time.sh 500                # pacer (0 = unpaced)
+PAY_GAS=100000000 EVM_GAS=30000000 \
+  experiments/dual-el/fleet/set-lane-economics.sh apply   # gas limit (verify header!)
+
+# 5. Capacity bound (drain test): blast the pool full, stop ALL spam, measure the drain
+python3 experiments/dual-el/fleet/drain-test.py "my-label" 100000000
+
+# 6. Agreement + teardown (verify 0 containers / 0 spammers on all 4 after)
+experiments/dual-el/fleet/clean-fleet.sh
+```
+
+What you should see (frozen, reproduced n=2 within 1%, chain age ~3-6k blocks):
+
+| config | height | sustained tps |
+|--------|-------:|--------------:|
+| 50M @ BLOCK_TIME_MS=500  | ~518 ms (HELD) | ~4,600 |
+| 200M @ BLOCK_TIME_MS=1000 | ~1,035 ms (HELD) | ~9,200 |
+| 100M unpaced | ~540-550 ms | ~8,650-8,850 |
+| 100M drain (capacity bound) | ~407 ms | ~11,700 |
+
+300M @ 1s is age/health-sensitive: 8.2-10.6k @ 1.35-1.74s — quote the range.
+Numbers assume healthy validators; run fleet/mem-soak.sh alongside anything >30 min
+(payment ELs grow ~0.4-0.6 GiB/min under 9k tps; alien2's 11 GiB cap is the first to go).
