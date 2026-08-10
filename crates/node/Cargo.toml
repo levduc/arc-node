@@ -14,7 +14,7 @@ path = "src/main.rs"
 [features]
 default = []
 js-tracer = ["reth-node-builder/js-tracer", "reth-ethereum/js-tracer"]
-pprof = ["dep:pprof_hyper_server", "dep:reth-node-metrics", "dep:tikv-jemalloc-ctl"]
+pprof = ["dep:pprof_hyper_server", "dep:reth-node-metrics", "dep:tikv-jemalloc-ctl", "dep:jemalloc_pprof"]
 arbitrary = [
     "alloy-primitives/arbitrary",
     "arc-execution-config/arbitrary",
@@ -65,6 +65,7 @@ revm-inspectors.workspace = true
 revm-primitives.workspace = true
 serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 tikv-jemalloc-ctl = { version = "0.6", optional = true }
+jemalloc_pprof = { version = "0.8", optional = true }
 
 tokio = { workspace = true, features = ["signal"] }
 tracing.workspace = true

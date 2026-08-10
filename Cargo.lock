@@ -1918,6 +1918,7 @@ dependencies = [
  "clap",
  "directories",
  "eyre",
+ "jemalloc_pprof",
  "metrics",
  "pprof_hyper_server",
  "protox",

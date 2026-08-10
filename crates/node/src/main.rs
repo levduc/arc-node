@@ -714,11 +714,25 @@ fn install_sigterm_handler(_engine_shutdown: reth_node_builder::rpc::EngineShutd
 #[cfg(feature = "pprof")]
 fn spawn_pprof_server(bind_address: std::net::SocketAddr, heap_prof: bool) {
     if heap_prof {
-        // SAFETY: writing a bool to a well-known jemalloc mallctl key.
-        if let Err(e) = unsafe { tikv_jemalloc_ctl::raw::write(b"prof.active\0", true) } {
-            tracing::error!(error = %e, "failed to activate jemalloc heap profiling; /debug/pprof/allocs will return empty profiles");
-        } else {
-            tracing::info!("jemalloc heap profiling activated");
+        // Activate through jemalloc_pprof's PROF_CTL, NOT a raw mallctl write. The
+        // /debug/pprof/allocs handler gates on PROF_CTL's CACHED bookkeeping
+        // (`activated()` returns a value captured from `opt.prof_active` at init and
+        // updated only by `activate()`), so a raw `prof.active` write leaves the
+        // handler convinced profiling is off and it closes the connection with an
+        // empty reply. PROF_CTL is `None` when jemalloc was built or configured
+        // without profiling (`opt.prof == false`) — report that loudly.
+        match jemalloc_pprof::PROF_CTL.as_ref() {
+            None => tracing::error!(
+                "jemalloc profiling unavailable (opt.prof=false — malloc_conf not applied?); \
+                 /debug/pprof/allocs will fail"
+            ),
+            Some(ctl) => match ctl.try_lock() {
+                Ok(mut ctl) => match ctl.activate() {
+                    Ok(()) => tracing::info!("jemalloc heap profiling activated"),
+                    Err(e) => tracing::error!(error = %e, "failed to activate jemalloc heap profiling"),
+                },
+                Err(e) => tracing::error!(error = %e, "failed to lock jemalloc PROF_CTL"),
+            },
         }
     }
 
