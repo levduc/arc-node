@@ -4,6 +4,23 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-11 — CAMPAIGN #3 (user-directed third confirmation): every size holds
+
+| size | campaign-3 drains | cross-campaign median (n clean drains) |
+|------|-------------------|----------------------------------------|
+| 30M  | 181 / 216* / 174  | **181ms** (n=8 clean of 9) |
+| 60M  | 286 / 281 / 286   | **286-295ms** (n=9) |
+| 100M | 501* / 385 / 401  | **401ms** (n=8 of 9) |
+| 150M | fail† / thin† / **501** | **501ms / 14.24-14.26k tps** (n=6, identical to the ms) |
+| 300M | 1,337* / thin† / fail† | **1,003ms** (n=4 clean, campaigns 1-2) |
+(* straggler episodes; † blast/backlog structural limits at big sizes: 50k backlog ≈ 7 blocks
+@150M, 3.5 @300M, plus first-blast nonce-resync warmup and end-of-point dirty-nonce races.
+HARNESS TODO recorded: scale blast target with block size.)
+THE CEILING IS TRIPLE-CONFIRMED: 150M = 501ms at 14.24-14.26k tps in every campaign. Agreement
+OK at every size in every campaign. Slide 14 (three-tank methodology) moved BEFORE the results
+per user; live-sustained grid (slide-15 bars) auto-started next; lane-compare (slide-16 rerun)
+queued behind it.
+
 ## 2026-08-10/11 — REPEAT CAMPAIGN (user-directed): every size re-measured with EL captured
 on the SAME blocks; law + ceiling reproduce; slides rebuilt as EL-vs-consensus bars
 
