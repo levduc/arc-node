@@ -4,6 +4,21 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-11 — LANE-COMPARE RERUN (user-directed, replaces the July 2h-window table):
+both lanes loaded SIMULTANEOUSLY, 5-min window, 524 blocks each, fleet
+
+| per-tx | EVM (1.6M-gas storage writes, 17.4 tx/blk) | PAY (transfers, 4,761/blk) | gap |
+|--------|--------------------------------------------|----------------------------|-----|
+| execution | 306.6us | 8.8us | 35x |
+| state root | 391.1us | 0.2us | ~2,000x |
+| persistence | 3,204us | 13.5us | 237x |
+
+Same chain, same certificate, same window — only the workload differs. NOTES vs the old
+10M-account 2h table (root 2.7ms/exec 3.2ms/persist 24ms per EVM tx): today's EVM per-tx costs
+are lower because the guzzler mix (1.6M gas/tx, 17/blk vs ~5/blk) and the small fresh state
+differ — provenance matters, both tables are real. Slide 16 is now a log-scale grouped bar
+graph with today's numbers + config stated on-slide. Teardown verified.
+
 ## 2026-08-11 — LIVE-SUSTAINED GRID (one session, runtime gas flips, governed, unpaced):
 the regular grid slide-15 needed — and a NEW SUSTAINED RECORD
 
