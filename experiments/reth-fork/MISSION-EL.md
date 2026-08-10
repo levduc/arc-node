@@ -4,7 +4,32 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
-## 2026-08-10 — ITER 18 (in progress): pool governor built; BINARY/BRANCH LANDMINE found
+## 2026-08-10 — ITER 18 COMPLETE: POOL GOVERNOR WORKS — sustained record 8,656 tx/s; the residual
+gap to capacity is CONCURRENT-INGRESS cost, not delivery
+
+Fleet 100M unpaced, fresh chain, RATE=2500/spammer (the config that collapsed to 3.2k open-loop),
+--pool-target 12000 on all 16 spammers, 300s window, chain age 3000 (comparable to the drain runs):
+**546 blocks, height 550ms, landed 8,656 tx/s, 99% full, pool pending 8.9k/14.2k/21.3k
+(min/med/max), queued 0/0/138.** Agreement OK. Teardown verified.
+
+1. **The governor kills the cliff.** Same RATE: open-loop 3,240 -> governed 8,656 tx/s. queued~=0
+   the whole window = the eviction/nonce-gap poisoning never formed -> iter-17b's mechanism is
+   confirmed by its controlled absence. Overshoot above target (max 21k) is the 250ms poll lag;
+   harmless.
+2. **New sustained record: 8,656 tx/s @ 550ms** (prior best 8,094 @ 588; pre-iter-17 baseline
+   6,827 @ 697). RECOMMENDED LOAD CONFIG: POOL_TARGET=12000, RATE high (2500), S=4/machine —
+   RATE is now safe to over-provision; the governor finds the equilibrium.
+3. **Delivery is EXHAUSTED as a lever.** Pending sat ABOVE target most of the window (senders
+   paused) — the pool was never starved and never poisoned, yet the chain ran 550ms, not the
+   407ms drain height at the same age. The residual sustained-vs-capacity gap (8.7k vs 11.7k,
+   550 vs 407ms) is the cost of CONCURRENT INGRESS (RPC admission + gossip + pool maintenance
+   while consenting). That work rides on the EL/CL boxes during every height; it is not spammer
+   tooling and not EL execution. Closing it would need ingress isolation (e.g. dedicated RPC/
+   admission cores or nodes) — out of scope for this mission's constraint.
+FINAL SUSTAINED LADDER (fleet, 100M, honest): 6.8k (pre-17 config) -> 8.1k (RATE=1000 open loop)
+-> 8.65k (governed; ceiling with concurrent ingress) -> 11.7k (drain = zero-ingress capacity).
+
+### Landmine log (from the in-progress entry)
 
 Built the closed-loop spammer governor (--pool-target, commit d67f106): background task polls
 txpool_status (250ms) into an AtomicU64; RateLimiter::wait() pauses while pending+queued > target.

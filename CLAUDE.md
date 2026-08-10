@@ -490,6 +490,19 @@ how high can payment-lane tps go, and is "bigger blocks" the lever? Answer: **1 
   own. Re-runs MUST use `-l` (in the script) or start at nonce 0 → "nonce too low". The product dashboard
   summed pending+queued, so it showed a phantom backlog — payment-lane pending tile removed for this reason.
 
+**🎯 POOL GOVERNOR — SUSTAINED RECORD 8,656 tx/s; DELIVERY EXHAUSTED AS A LEVER (2026-08-10,
+iter 18).** Spammer `--pool-target N` (commit d67f106): background txpool_status poller +
+RateLimiter pause while pending+queued>N; POOL_TARGET env in spam-fleet-distributed.sh.
+Fleet 100M governed test (RATE=2500, target 12k — the config that collapsed to 3.2k open-loop):
+**8,656 tx/s, 99% full, 550ms, pool pending med 14k, queued≈0** — cliff eliminated, iter-17b
+mechanism confirmed by controlled absence. RECOMMENDED: POOL_TARGET=12000 + RATE=2500 (RATE now
+safe to over-provision). Pending sat above target (senders paused) → the residual gap to capacity
+(8.7k@550ms vs drain 11.7k@407ms, same chain age) is CONCURRENT-INGRESS cost (admission+gossip
+while consenting), NOT spammer delivery — closing it needs ingress isolation, out of scope.
+Sustained ladder at 100M: 6.8k → 8.1k (RATE config) → 8.65k (governed) → 11.7k (zero-ingress).
+GOTCHAS: this branch's spammer lacked --chain-id/--account-offset (lived on other branches;
+target/release binary predated the branch — cherry-picked 420eb22+6d924ec back). RULE: smoke the
+VERBATIM script arg string after any harness-binary rebuild (two fleet windows voided).
 **⚠️ DELIVERY: OVER-OFFERING CLIFF (2026-08-09, iter 17).** Fleet 100M unpaced, backpressure spam:
 RATE=1000/spammer×16 = **8.1k landed sustained, 100% full, 588ms** (fill-paced; old "5.8k plateau"
 was RATE config). RATE≥1500 (24k+ offered) **collapses to 3-4k**: pool hits its cap, eviction
