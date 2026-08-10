@@ -4,6 +4,34 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10 — ITER 19: PACED SWEEP (latency-for-tps, governed load) — 1s heartbeat holds 9.2k tps
+
+User-directed: hold a block-time target, sweep gas, governed spam (POOL_TARGET=3 blocks' worth,
+RATE=3500/spammer). One fleet chain (1G genesis cap, runtime gas+pacer flips, quiesce->apply->verify
+per point), 240s windows, chain age 3.2-5.4k, ALL points 100% full with queued=0:
+
+| target | gas | height | tps | held? |
+|--------|-----|--------|-----|-------|
+| 500ms  | 50M | 518ms | 4,591 | HELD |
+| 500ms  | 100M| 580ms | 8,213 | miss |
+| 500ms  | 130M| 659ms | 9,388 | miss |
+| 1000ms | 100M| 1,000ms | 4,761 | HELD (exact) |
+| 1000ms | 200M| 1,034ms | 9,206 | HELD |
+| 1000ms | 300M| 1,348ms | 10,595 | miss — SUSTAINED RECORD |
+
+FINDINGS:
+1. **Operating points:** 2 blk/s promise -> 50M/4.6k. 1s heartbeat -> **200M/9.2k HELD** (2x tps for
+   2x latency). Record sustained 10.6k @ 1.35s (300M).
+2. **Sustained crossover for 500ms is ~50-60M, NOT the zero-ingress model's 132M** — concurrent
+   ingress displaces the frontier (100M runs 580ms sustained vs 407ms drain).
+3. Paced points run PARALLEL to the drain frontier; horizontal gap = ingress cost, roughly constant
+   ratio 1.3-1.6x at 100M+.
+4. Governor held every point healthy (pool pinned at target, queued 0 even at 46.7k backlog for
+   300M) — first sweep ever with neither fill-pacing nor collapse ambiguity anywhere.
+Agreement OK; teardown verified. Chart: experiments/dual-el/paced-tradeoff-chart.py. Deck: two new
+frames (load technique + pick-a-heartbeat). Governor + flags ported to fleet-multi-machine
+(cf6c530); LOADING.md on both branches.
+
 ## 2026-08-10 — ITER 18 COMPLETE: POOL GOVERNOR WORKS — sustained record 8,656 tx/s; the residual
 gap to capacity is CONCURRENT-INGRESS cost, not delivery
 

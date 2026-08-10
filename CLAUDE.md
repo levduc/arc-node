@@ -490,6 +490,15 @@ how high can payment-lane tps go, and is "bigger blocks" the lever? Answer: **1 
   own. Re-runs MUST use `-l` (in the script) or start at nonce 0 → "nonce too low". The product dashboard
   summed pending+queued, so it showed a phantom backlog — payment-lane pending tile removed for this reason.
 
+**🎯 PACED SWEEP (iter 19, 2026-08-10): 1s HEARTBEAT HOLDS 200M/9,206 tps; sustained record
+10,595 @ 1.35s (300M).** Governed spam, one chain, runtime gas+pacer flips, all points 100% full
+queued=0: 500ms→50M/4,591 HELD (100M 580ms/8,213 + 130M 659ms/9,388 miss — sustained 500ms
+crossover is ~50-60M, not the zero-ingress 132M); 1000ms→100M/4,761 exact + 200M/9,206 HELD +
+300M 1,348ms/10,595 miss. Paced points parallel the drain frontier; gap = concurrent-ingress cost
+(~1.3-1.6x at 100M+). Chart: `experiments/dual-el/paced-tradeoff-chart.py`; deck has load-technique
++ pick-a-heartbeat frames; LOADING.md (both branches) documents the technique; governor+flags
+ported to fleet-multi-machine (cf6c530 — that branch's spammer source now self-contained;
+previously its scripts only worked with a payment-lane-gas-built binary).
 **🎯 POOL GOVERNOR — SUSTAINED RECORD 8,656 tx/s; DELIVERY EXHAUSTED AS A LEVER (2026-08-10,
 iter 18).** Spammer `--pool-target N` (commit d67f106): background txpool_status poller +
 RateLimiter pause while pending+queued>N; POOL_TARGET env in spam-fleet-distributed.sh.
