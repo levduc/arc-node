@@ -4,6 +4,20 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10 — PPROF FIXES PORTED + COMPILE-VERIFIED EVERYWHERE (user-directed)
+
+The two heap-profiling fixes (b4df3e3 + c43527e) now live, cherry-picked cleanly and
+`cargo check -p arc-node-execution --features pprof` PASSING, on:
+- blockstm-native-transfers (origin of the fixes)
+- fleet-multi-machine (tip c447cd9; check 5m10s clean)
+- payment-lane-gas (tip 99db115; check 5m25s clean)
+- pprof-heap-profiling-fixes (clean branch off origin/main for the upstream PR; patches +
+  PR description also delivered as files in /tmp/pprof-fixes/)
+MISSION 4 STATE: no open items. Prebuild frozen (-8%@60M capacity, nil@100M); EL levers all
+closed; delivery closed-loop (governor); operating points n=3 <=1.3%; capacity model frozen
+(127ms + 59us/tx, fresh-chain ceiling qualifier); endurance closed with fleet receipts;
+pprof functional; bug ledger consolidated in CLAUDE.md.
+
 ## 2026-08-10 — FLEET ENDURANCE SOAK PASSES: the fix holds on real hardware — 15/15 slices,
 20-block final agreement OK, all four validators alive the full 75 min
 
