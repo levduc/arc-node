@@ -4,6 +4,24 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10 — ITER 28-30: ENDURANCE FIX VALIDATED — 75-min soak at the 200M@1s operating
+point, all four ELs PLATEAU at ~3.2 GiB, zero incidents
+
+Single-machine (fleet blocked on tailscale-ssh re-auth — check expired overnight; the fleet
+launcher ALSO got the caps: demo-fleet-metamask.sh has its OWN pay-EL docker run that
+launch-payment-els.sh edits don't cover — patched on both branches BEFORE this run).
+15 x 4-min slices, 4 governed spammers (~7.9k tps offered/landed), rpc-cache caps 200/200:
+- **Chain: 1,176-1,270ms / 7.5-8.1k tps, 98-100% full, agreement OK on ALL 15 slices** —
+  75 minutes at the operating point, zero stalls, zero divergence, no validator loss (pre-fix:
+  val died in slice 6 on this exact harness at 6 GiB caps).
+- **Memory: 2.2 -> 3.2 GiB decelerating sawtooth (250 -> 45 -> 22 -> ~15 MiB/min), then FLAT
+  for the last 5 slices (3.16-3.29 GiB, all four ELs).** A genuine plateau; the level scales
+  with block size (100M A/B plateaued 1.7 GiB — 200 cached blocks, 2x bigger at 200M).
+- The "~30-40 MiB/min residual" from iter 27 was the cache still FILLING; converged residual
+  ~0. Endurance at the operating point: bounded ~3.2 GiB vs 11 GiB fleet caps = indefinite.
+REMAINING (one formality): re-run this soak on the FLEET after tailscale re-auth (one command;
+launcher already carries the caps). Teardown verified 0/0.
+
 ## 2026-08-10 — ITER 27: ENDURANCE SOLVED — rpc-cache caps make payment-EL memory FLAT
 (A/B: capped val1 plateaus at 1.7 GiB; stock peers pass 5.2 GiB still climbing)
 

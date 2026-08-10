@@ -490,6 +490,15 @@ how high can payment-lane tps go, and is "bigger blocks" the lever? Answer: **1 
   own. Re-runs MUST use `-l` (in the script) or start at nonce 0 → "nonce too low". The product dashboard
   summed pending+queued, so it showed a phantom backlog — payment-lane pending tile removed for this reason.
 
+**✅ ENDURANCE FIX VALIDATED AT THE OPERATING POINT (iters 28-30, 2026-08-10).** 75-min
+single-machine soak, 200M@1s, ~7.9k tps, caps 200/200: chain healthy ALL 15 slices (agreement OK,
+98-100% full), **memory plateaus at ~3.2 GiB on all four pay ELs (flat last 5 slices)** — the
+iter-27 "residual growth" was the cache still filling; converged residual ≈ 0. Plateau scales
+with block size (1.7 GiB @100M, 3.2 @200M). GOTCHA fixed on both branches: fleet
+demo-fleet-metamask.sh has its OWN pay-EL docker run — launch-payment-els.sh edits don't reach
+it; caps added there too. Fleet soak re-run pending only tailscale-ssh re-auth (check-mode
+expires ~12h; every remote step silently no-ops with "Tailscale SSH requires an additional
+check" — VERIFY remote effects, the ssh exit code lies).
 **🎯 ENDURANCE SOLVED — RPC-CACHE CAPS (iters 26-27, 2026-08-10).** Heap-profiled the growth
 (had to FIX Arc's pprof first — dead-on-arrival from 2 bugs: malloc_conf unprefixed vs _rjem_
 prefix b4df3e3; activation bypassing jemalloc_pprof PROF_CTL bookkeeping c43527e; workaround
