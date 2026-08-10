@@ -4,6 +4,28 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-10 (night) — ITER 24/25 IN PROGRESS: jemalloc profiling was BROKEN IN ARC — found,
+fixed, symbolized build running attribution
+
+- Arc ships a full pprof stack (`--features pprof`: pprof_hyper_server on :6061,
+  `/debug/pprof/allocs`, `--pprof.heap-prof`) — but it NEVER worked: the config static is
+  exported as `malloc_conf` while tikv-jemalloc builds PREFIXED (`_rjem_malloc_conf`), so
+  `opt.prof` stayed false and the allocs handler returned Err -> hyper closes the connection
+  with an EMPTY REPLY (curl rc=52; the route 404s only when the feature is off — confusing).
+  Runtime workaround: `_RJEM_MALLOC_CONF=prof:true,prof_active:true`. FIX committed b4df3e3:
+  export the config under BOTH names. Verified end-to-end standalone: HTTP 200, valid pprof,
+  go tool pprof parses.
+- Release binaries are STRIPPED (workspace strip=true) -> profiles unsymbolized; the workspace
+  already has `[profile.profiling]` (release+debug, strip=false) — use it for attribution
+  builds (`cargo build --profile profiling -p arc-node-execution --features pprof`, in
+  rust:1.93-bookworm for container GLIBC).
+- LANDMINES (all cost a run each): (1) container-IP probing must skip the INTERNAL docker
+  network (no host route; probe for the pprof 404 on '/', not TCP-connect); (2) `pkill -x
+  arc-node-execution` matches NOTHING — kernel comm truncates names to 15 chars ("arc-node-
+  execut"); kill by PID or ss -tlnp for port holders; an orphaned standalone node holding
+  :6061 broke a demo boot (compose publishes 6061).
+Attribution run (symbolized, t2/t17 snapshots under governed load) in flight.
+
 ## 2026-08-11 — NIGHT CONFIRMATION RUN (user-directed): every non-Arc deck number re-measured
 on the fleet, one fresh chain, flips verified, remote spam verified, agreement OK
 
