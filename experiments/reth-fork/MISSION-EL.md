@@ -4,8 +4,10 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
-## 2026-08-10 — ITER 21: 75-MIN SOAK OF THE OPERATING POINT (200M @ 1s, governed) — three
-numbers for the runbook (slices 1-9; completion pending, findings already stable)
+## 2026-08-10 — ITER 21 COMPLETE: 75-MIN SOAK OF THE OPERATING POINT (200M @ 1s, governed) —
+three numbers for the runbook (all 15 slices in; tail slices 10-15 flat at 1,832-1,890ms /
+5,039-5,198 tps, degraded state fully stationary; teardown verified 0 containers / 0 spammers
+exact-name-checked on all 4 machines)
 
 Fresh fleet chain, BLOCK_TIME_MS=1000, PAY_GAS=200M, governed spam (POOL_TARGET=28569, RATE=3500),
 5-min slices with per-slice 10-block agreement + per-EL memory:
