@@ -4,6 +4,23 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-11 — CPUSET A/B: the contention tax is IN-PROCESS (pool locks), not CPU scheduling
+— decisive null, closes the decomposition
+
+Same chain/load (150M governed sustained), live docker-update cpuset, pay ELs pinned to HALF
+their hosts' cores away from spammers+CL:
+- no-pin: 742ms / 9,627 tps, builds v1-4 = 97/120/143/81ms
+- pinned: 742ms / 9,620 tps, builds = 93/113/133/84ms (±5-7% = noise)
+1. **Core isolation buys NOTHING** — and halving the ELs' cores cost nothing either: the EL has
+   large CPU headroom; its costs are serialization, not compute starvation.
+2. **The 6-10x build inflation is in-process: pool lock/iterator contention against concurrent
+   insertions** (the builder's best_transactions vs admission writes). Capturing the
+   drain-vs-sustained gap (501 vs ~730ms @150M) therefore requires pool-internal changes
+   (sharded locks / snapshot iterator — fork territory) or process-separated admission, NOT
+   ops tuning. Recorded as the priced-out closing lever alongside pending-visibility.
+Agreement OK; unpinned; teardown verified. CONTENTION STORY COMPLETE: measured (6-10x),
+localized (in-process pool), decomposed (not scheduling), remediation priced.
+
 ## 2026-08-11 — CLOSING VERDICT (user Q&A synthesis): no single culprit — a serial pipeline
 plus a contention multiplier
 

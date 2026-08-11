@@ -523,6 +523,12 @@ pgrep -f matches its own shell; tailscale-ssh check expiry no-ops remote command
 codes lie; internal docker networks have no host route; anchored doc edits need
 `assert anchor in s`; smoke the VERBATIM harness arg string after any binary rebuild.
 
+**🧪 CPUSET A/B (2026-08-11): decisive null — pinning pay ELs to HALF their cores away from
+spammers/CL changed nothing (742ms/9.6k both arms; builds ±5-7%).** The 6-10× build-ingress
+inflation is IN-PROCESS pool-lock/iterator contention, not CPU scheduling; the EL isn't even
+CPU-starved at half cores. Closing the drain-vs-sustained gap needs pool-internal work (sharded
+locks/snapshot iterator, fork) or process-separated admission — not ops tuning. Contention
+story complete: measured, localized, decomposed, remediation priced.
 **⚖️ SUSTAINED PREBUILD A/B @150M (2026-08-11): +2.8% tps only (709/10,074 vs 729/9,802) —
 hit-starved: miss_parent 69-101 vs hits 3-35 per validator.** The chain-anchored publish fix
 (91-100% hits @60M) fails at 150M sustained (heavier newPayload(N) races FCU(N-1)). The
