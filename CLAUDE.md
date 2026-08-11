@@ -661,7 +661,7 @@ delivery-confounded, SUPERSEDED). Bigger blocks: 60→100M = +21% tps for +37% l
 (diminishing returns, user accepts the latency trade). AUTHORITATIVE chart:
 `experiments/dual-el/latency-decomp-chart.py`; deck has the matching "law of the lane" frame
 (pushed). Prebuild-at-100M nil because peers' growing work overlaps the hidden build.
-**BRANCH `blockstm-native-transfers` (2026-08-07):** next experiment — Block-STM parallel execution
+**BRANCH `payment-el-perf` (2026-08-07, renamed from `blockstm-native-transfers` 2026-08-11 — Block-STM was never implemented here; the branch carries the native-transfer fast path, speculative prebuild, the EL measurement campaign, and the demo/bench tooling):** next experiment — Block-STM parallel execution
 for native transfers on the payment lane (the "parallel execution" lever from the 1 Ggas finding:
 exec 379ms/pass replayed ~5×/height is THE bottleneck; state-root 0.8ms is free). PRIOR WORK to build
 on: `payment-lane-gas` commit `bd943f0` = standalone grevm-style Block-STM bench
