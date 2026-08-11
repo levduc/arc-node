@@ -523,6 +523,21 @@ pgrep -f matches its own shell; tailscale-ssh check expiry no-ops remote command
 codes lie; internal docker networks have no host route; anchored doc edits need
 `assert anchor in s`; smoke the VERBATIM harness arg string after any binary rebuild.
 
+**🔧 DASHBOARD ONE-CLICK BENCH REBUILT (2026-08-11) + two platform facts.** run-bench.sh =
+governed sustained window + prefill/drain capacity phase (bench-pool-wait.py, bench-drain.py);
+9 test fires on the live demo chain. NEW FACTS: (1) **targetBlockTimeMs is CL-bounded to
+[0,1s]** (consensus_params.rs enforce_bounds resets out-of-range to 500ms) — the pacer can
+NEVER throttle consumption for pool-filling; the working fill throttle is the runtime GAS-LIMIT
+shrink (25M) + high-tip restore under load (governance tx must outbid the backlog; strip cast's
+"[2e10]" annotations when re-sending feeParams). (2) **reth --txpool.max-account-slots defaults
+16/sender** → pool ceiling = senders×16 (800 accts = 12.8k, measured 4×) — a 200M drain needs
+~50k+, so launchers now pass --txpool.max-account-slots=${PAY_ACCOUNT_SLOTS:-256} (fresh chains
+fill 150k+). run-bench skips the drain below 30k backlog with a card note (small-block capacity
+reads BELOW sustained = confusing); stop window bleeds ~8k txs (parallel pkill ~2s). Sustained
+on the demo chain reproduced 5×: 7.8-8.3k avg / 9.4-10.1k peak @ 200M 54-58%% full
+(delivery-bound). Dashboard stress button fixed (S=1 ACCTS=200 — the 16k-account assumption).
+All governance flips trap-restored + verified (200M / 500ms / 2.00 blk/s) after every fire.
+
 **🧪 CPUSET A/B (2026-08-11): decisive null — pinning pay ELs to HALF their cores away from
 spammers/CL changed nothing (742ms/9.6k both arms; builds ±5-7%).** The 6-10× build-ingress
 inflation is IN-PROCESS pool-lock/iterator contention, not CPU scheduling; the EL isn't even

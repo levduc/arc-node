@@ -122,3 +122,27 @@ default, env PAY_RPC_CACHE_BLOCKS/RECEIPTS) memory PLATEAUS ~1.7 GiB under 5k tp
 27-min OOM bound on 11 GiB validators is gone. If a validator DOES die, the chain continues
 3-of-4 at ~1.85 s / ~5.1k tps (proposer slots burn round timeouts: a dead validator costs
 ~45%, not 25%).
+
+## The per-sender slot cap gates prefill depth (2026-08-11)
+
+Building a drain-test backlog on a LIVE chain has two gates, discovered wiring the dashboard's
+one-click benchmark (run-bench.sh):
+
+1. **Consumption outruns delivery.** At 200M the chain consumes ~12-14k tps when fed but spam
+   delivery tops at ~8k, so the pool can never build at normal cadence — the chain fill-paces
+   every block. The pacer can't throttle it either: `targetBlockTimeMs` is CL-bounded to
+   **[0, 1s]** (crates/types/src/consensus_params.rs — out-of-range values silently reset to
+   the 500ms default). The working throttle is the GAS LIMIT: shrink the payment lane to 25M
+   at runtime (ProtocolConfig governance, quiet pool), fill, then flip to the drain size with
+   an aggressive priority fee (the governance tx must outbid the backlog) and verify on a live
+   header before stopping intake.
+2. **reth's per-sender slot cap.** `--txpool.max-account-slots` defaults to **16**: the pool
+   hard-ceilings at senders x 16 (800 spam accounts = 12.8k — measured plateau 12.7-12.9k on
+   four separate fills). A 200M drain needs ~50k+. Launchers now pass
+   `--txpool.max-account-slots=${PAY_ACCOUNT_SLOTS:-256}` so fresh chains fill to 150k+;
+   chains started before the fix cannot produce a full-size drain (run-bench.sh detects the
+   shallow pool and reports why instead of printing a confusing small-block capacity number).
+
+The stop window itself costs ~8k txs of backlog (parallel remote pkill ~2s while the chain
+keeps consuming) — another reason a drain needs a deep pool, and why run-bench.sh skips the
+drain below a 30k backlog.

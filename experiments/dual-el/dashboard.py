@@ -538,7 +538,10 @@ def _stress(action):
         try:
             env = dict(os.environ)
             if action == "start":
-                env.update(POOL_TARGET=str(_pool_target()), S="4", ACCTS="1000",
+                # S*ACCTS*4 machines must fit the chain's prefunded accounts (MetaMask demo
+                # default EXTRA_ACCOUNTS=1000) and ACCTS must divide the launcher's 20
+                # generators -> S=1 ACCTS=200 (same budget math as run-bench.sh).
+                env.update(POOL_TARGET=str(_pool_target()), S="1", ACCTS="200",
                            RATE="3500", DUR="86400")
             r = subprocess.run(["bash", _STRESS_SH, action], capture_output=True,
                                text=True, timeout=150, env=env)
@@ -1133,8 +1136,9 @@ function renderBench(b){
      brow('Gas / block', r.gas_per_block_m+'M ('+r.full_pct+'% full)')+
      brow('Exec / block', n(r.exec_ms)+' ms')+brow('State-root / block', n(r.root_ms)+' ms')+
      brow('Persist / block', n(r.persist_ms)+' ms')+
-     (r.capacity_tps?brow('Capacity (drain, intake stopped)', n(r.capacity_tps)+' tx/s @ '+n(r.capacity_ms)+' ms/blk'):'')+
-     '</table>'+(r.capacity_tps?'<div class=benchphase>sustained = governed live ingress; capacity = pre-filled pool, intake stopped ('+r.capacity_blocks+' full blocks)</div>':'');}
+     (r.capacity_tps?brow('Capacity (drain'+(r.capacity_gas_m?' @ '+r.capacity_gas_m+'M blocks':'')+', intake stopped)', n(r.capacity_tps)+' tx/s @ '+n(r.capacity_ms)+' ms/blk'):'')+
+     '</table>'+(r.capacity_tps?'<div class=benchphase>sustained = governed live ingress; capacity = pre-filled pool, intake stopped ('+r.capacity_blocks+' full blocks)</div>':'')+
+     (r.capacity_note?'<div class=benchphase>'+r.capacity_note+'</div>':'');}
 }
 async function tick(){
  let s;try{s=await(await fetch('/state')).json();}catch(e){return;}

@@ -52,6 +52,7 @@ for i in 1 2 3 4; do sleep ${STAGGER:-0};
       --port 30303 \
       --arc.builder.deadline=500 --arc.builder.wait-for-payload=true --txpool.nolocals \
       --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 \
+      --txpool.max-account-slots=${PAY_ACCOUNT_SLOTS:-256} \
       --rpc-cache.max-blocks=${PAY_RPC_CACHE_BLOCKS:-200} --rpc-cache.max-receipts=${PAY_RPC_CACHE_RECEIPTS:-200} \
       ${extra_args} >/dev/null \
     && { docker network connect "$HOSTNET" "$name" 2>/dev/null; \

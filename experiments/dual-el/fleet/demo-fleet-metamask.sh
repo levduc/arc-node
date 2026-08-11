@@ -56,7 +56,7 @@ payment_el_cmd(){ # payment_el_cmd <n> <base>
   --authrpc.addr=0.0.0.0 --authrpc.port=8551 --authrpc.jwtsecret=/app/assets/payment-jwt.hex \
   --metrics=0.0.0.0:9001 --disable-discovery --ipcdisable --port 30303 \
   --arc.builder.deadline=500 --arc.builder.wait-for-payload=true --txpool.nolocals \
-  --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 --rpc-cache.max-blocks=${PAY_RPC_CACHE_BLOCKS:-200} --rpc-cache.max-receipts=${PAY_RPC_CACHE_RECEIPTS:-200} ${extra_args} && docker network connect arc_testnet_default validator${n}_el_pay"
+  --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 --txpool.max-account-slots=${PAY_ACCOUNT_SLOTS:-256} --rpc-cache.max-blocks=${PAY_RPC_CACHE_BLOCKS:-200} --rpc-cache.max-receipts=${PAY_RPC_CACHE_RECEIPTS:-200} ${extra_args} && docker network connect arc_testnet_default validator${n}_el_pay"
 }
 
 start(){

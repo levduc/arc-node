@@ -4,6 +4,41 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-11 — Dashboard one-click bench: proper sustained+drain methodology; two new
+platform facts (pacer bounds, per-sender slot cap)
+
+User-directed (demo prep, not mission lever work). The dashboard's 5-min benchmark measured the
+spammer (open-loop RATE=12000 = the over-offering collapse); rebuilt as run-bench.sh with the
+LOADING.md methodology: phase 1 governed sustained window (pool-target = 3 blocks of the live
+gas limit), phase 2 capacity via prefill+drain. Nine test fires on the live demo chain, each
+catching a real bug:
+- fires 1-2: account budget (16k assumed vs 1k prefunded) + generator divisibility (ACCTS=200).
+- fire 3: serial tailscale spam-stop (10-15s) races the drain (~5s) -> sampler-first + parallel
+  pkill + stop-ts stamping (bench-drain.py counts only full blocks after stop).
+- fires 4-5: pool CANNOT build at 200M at ANY spam rate — consumption capacity (~12-14k) >
+  delivery (~8k); the chain fill-paces every block. (Fire 5 = the real dashboard button, user-
+  clicked; sustained 8,280/9,831 over 300s, consistent with CLI fires.)
+- fire 6: **targetBlockTimeMs is CL-bounded to [0,1s]** (crates/types/src/consensus_params.rs
+  enforce_bounds silently resets out-of-range to 500ms) — pacing to 4s to throttle consumption
+  was rejected on-chain-value-honored-but-clamped-in-CL; cadence stayed 0.6s. Pacer is NOT a
+  fill throttle.
+- fire 7: gas-limit throttle works end-to-end (25M shrink -> fill -> high-tip restore to 200M
+  under 12k backlog, verified on header in 2s each way; cast's "[2e10]" annotations corrupted
+  the tuple parse — sed-stripped). But the pool plateaued at 12.5k...
+- fire 8: **reth --txpool.max-account-slots defaults to 16/sender** -> pool hard-ceiling =
+  senders x 16 = 800 x 16 = 12.8k (measured plateau 12.7-12.9k on every fill). A 200M drain
+  needs ~50k; the 12.2k backlog bled out in the flip->stop gap (stop window costs ~8k txs).
+- fire 9 (final shape): adaptive — probe fill, skip the drain below 30k backlog with an
+  explanatory capacity_note on the card (a small-block drain would read BELOW sustained tps =
+  confusing); on deep pools drain at the chain's own gas limit. Launchers
+  (launch-payment-els.sh + fleet/demo-fleet-metamask.sh) now pass
+  --txpool.max-account-slots=${PAY_ACCOUNT_SLOTS:-256} so FRESH chains fill 150k+ and the
+  drain row appears at full size. All flips trap-restored (gas 200M + 500ms verified after
+  every fire; the demo chain was never left misconfigured).
+Sustained result reproduced 5x on the demo chain: 7.8-8.3k avg / 9.4-10.1k peak @ 200M, 54-58%
+full (delivery-bound, as expected at this size). Also fixed: dashboard stress button had the
+fire-1 account bug (S=4 ACCTS=1000 -> S=1 ACCTS=200).
+
 ## 2026-08-11 — CPUSET A/B: the contention tax is IN-PROCESS (pool locks), not CPU scheduling
 — decisive null, closes the decomposition
 
