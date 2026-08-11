@@ -502,29 +502,46 @@ def _congest(action):
         except Exception as e:
             return False, str(e)
 
-# ---- browser-controlled fleet stress test: start/stop fleet/spam-fleet.sh from the / dashboard.
-# spam-fleet drives the full demo-bloat profile (EVM guzzler bloat + payment pool-update + organic
-# growth) at every fleet machine; it tracks its own supervisor pid at /tmp/dualel-fleet/spam.pid.
-_STRESS_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fleet", "spam-fleet.sh")
-_STRESS_PID = "/tmp/dualel-fleet/spam.pid"
+# ---- browser-controlled fleet stress test: GOVERNED distributed payment spam.
+# The old spam-fleet.sh profile was open-loop: past the mempool cliff it collapses (eviction
+# nonce-gaps accounts) and below it the builder fill-paces — either way you measure the load
+# generator, not the chain (fleet/LOADING.md). This drives spam-fleet-distributed.sh with a
+# --pool-target computed from the live gas limit, so stress load is chain-limited by design.
+_STRESS_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fleet", "spam-fleet-distributed.sh")
 _stress_lock = threading.Lock()
 
 def _stress_running():
-    """True iff spam-fleet's supervisor process is alive (by its pidfile)."""
+    """True iff local governed spammers are alive (spammers run on every host; local is the tell)."""
     try:
-        pid = int(open(_STRESS_PID).read().strip())
-        os.kill(pid, 0)     # signal 0 = liveness check, doesn't actually signal
-        return True
+        return subprocess.run(["pgrep", "-x", "spammer"], capture_output=True).returncode == 0
     except Exception:
         return False
 
+def _pool_target():
+    """3 blocks' worth of transfers at the live gas limit (floor 12k)."""
+    try:
+        import urllib.request as _u
+        req = _u.Request("http://127.0.0.1:19545", data=json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "method": "eth_getBlockByNumber",
+             "params": ["latest", False]}).encode(),
+            headers={"content-type": "application/json"})
+        gas = int(json.load(_u.urlopen(req, timeout=8))["result"]["gasLimit"], 16)
+        return max(12000, gas // 21000 * 3)
+    except Exception:
+        return 12000
+
 def _stress(action):
-    """action in {start, stop}. Runs spam-fleet.sh synchronously; returns (ok, message)."""
+    """action in {start, stop}. Governed distributed spam; returns (ok, message)."""
     if action not in ("start", "stop"):
         return False, "bad action"
     with _stress_lock:
         try:
-            r = subprocess.run(["bash", _STRESS_SH, action], capture_output=True, text=True, timeout=40)
+            env = dict(os.environ)
+            if action == "start":
+                env.update(POOL_TARGET=str(_pool_target()), S="4", ACCTS="1000",
+                           RATE="3500", DUR="86400")
+            r = subprocess.run(["bash", _STRESS_SH, action], capture_output=True,
+                               text=True, timeout=150, env=env)
             return r.returncode == 0, (r.stdout or r.stderr or "")[-300:]
         except Exception as e:
             return False, str(e)
@@ -1115,7 +1132,9 @@ function renderBench(b){
      brow('Block rate', r.block_rate+' blocks/s')+brow('Txs / block', n(r.txs_per_block))+
      brow('Gas / block', r.gas_per_block_m+'M ('+r.full_pct+'% full)')+
      brow('Exec / block', n(r.exec_ms)+' ms')+brow('State-root / block', n(r.root_ms)+' ms')+
-     brow('Persist / block', n(r.persist_ms)+' ms')+'</table>';}
+     brow('Persist / block', n(r.persist_ms)+' ms')+
+     (r.capacity_tps?brow('Capacity (drain, intake stopped)', n(r.capacity_tps)+' tx/s @ '+n(r.capacity_ms)+' ms/blk'):'')+
+     '</table>'+(r.capacity_tps?'<div class=benchphase>sustained = governed live ingress; capacity = pre-filled pool, intake stopped ('+r.capacity_blocks+' full blocks)</div>':'');}
 }
 async function tick(){
  let s;try{s=await(await fetch('/state')).json();}catch(e){return;}
