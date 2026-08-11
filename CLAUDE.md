@@ -523,6 +523,11 @@ pgrep -f matches its own shell; tailscale-ssh check expiry no-ops remote command
 codes lie; internal docker networks have no host route; anchored doc edits need
 `assert anchor in s`; smoke the VERBATIM harness arg string after any binary rebuild.
 
+**⚖️ SUSTAINED PREBUILD A/B @150M (2026-08-11): +2.8% tps only (709/10,074 vs 729/9,802) —
+hit-starved: miss_parent 69-101 vs hits 3-35 per validator.** The chain-anchored publish fix
+(91-100% hits @60M) fails at 150M sustained (heavier newPayload(N) races FCU(N-1)). The
+ledger-implied ~13% is real (live builds 80-140ms) but gated on deeper fork pending-visibility
+work — OPEN, not pursued. Flag stays default-OFF; -8%@60M capacity remains the quotable win.
 **🔬 PER-STAGE LEDGER (2026-08-11, 150M both regimes):** (1) **build is where ingress lands:
 96-143ms sustained vs 10-18ms quiet-pool for identical blocks (6-10×, pool-lock/iterator
 contention)** → prebuild's sustained value likely ~13% not the drain-A/B's -8%; sustained

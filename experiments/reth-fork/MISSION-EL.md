@@ -4,6 +4,23 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-11 — SUSTAINED PREBUILD A/B AT 150M: +2.8% ONLY — hit-starved by miss_parent;
+the ~13% prize is real but gated on deeper pending-visibility work (honest negative)
+
+Two fresh chains, same day/load (governed, 150M unpaced), all-4 arms, fork binary 3485bd62:
+- STOCK: 729ms / 9,802 tps (builds 81.9-141.1ms — reconfirms the live-ingress build cost)
+- SPEC:  709ms / 10,074 tps = **-2.7% height / +2.8% tps**
+- WHY SO SMALL: **hits 6/35/3/7 vs miss_parent 100/69/101/99 per validator** (~5-35% hit rate;
+  miss_timestamp ~0 — dual-timestamp still works). The chain-anchored pending-publish fix that
+  gave 91-100% hits at 60M FAILS at 150M sustained: heavier newPayload(N) still races FCU(N-1)
+  and the pending never surfaces to the watcher in time. ~840 speculative builds/validator/
+  window (≈2.8/s) = harmless idle-CPU waste per design.
+- VERDICT: prebuild's sustained value at the knee = +2.8% as-is. The ledger-implied ~13% is
+  REAL (builds are 80-140ms live) but requires the next fork iteration on pending visibility
+  (publish-on-any-valid-insert or equivalent) — recorded OPEN, not pursued tonight.
+Both arms agreement OK; teardowns verified. Prebuild deck/docs status unchanged (flag stays
+default-OFF; -8% @60M capacity remains the quotable win).
+
 ## 2026-08-11 — PER-STAGE LEDGER RUN (150M, both regimes, all 4 validators' histograms):
 three results, one slide correction, one re-opened question
 
