@@ -4,6 +4,15 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-11 — DISSEMINATION BANDWIDTH SPLIT (user Q&A follow-up, measured):
+val1 -> papaduck, same host, two paths, 40MB x2 each:
+- direct LAN IP: 576-627 Mbps (val1's WI-FI RADIO is the ceiling, not the gigabit wire)
+- via tailscale: 423-524 Mbps (**userspace WireGuard tax ~15-25%** on top of the radio)
+Ranking of fan-out costs: Wi-Fi radio first (~600 ceiling), overlay second (-20%), naive x3
+unicast multiplication third. Earlier 209-434 Mbps figures included an extra SSH layer.
+Practical order: wire the proposer-heavy machines (free 2-3x) > tailscale kernel/direct path >
+protocol fixes (compact blocks / erasure coding) at this fleet size.
+
 ## 2026-08-11 — SUSTAINED PREBUILD A/B AT 150M: +2.8% ONLY — hit-starved by miss_parent;
 the ~13% prize is real but gated on deeper pending-visibility work (honest negative)
 
