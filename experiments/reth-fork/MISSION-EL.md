@@ -4,6 +4,21 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-11 — CLOSING VERDICT (user Q&A synthesis): no single culprit — a serial pipeline
+plus a contention multiplier
+
+Receipts commitment: dismissed by measurement (~0.3us/tx build + ordered in-memory root; both
+commitments together <1us/tx). Final ranked ledger at 150M sustained (~103us/tx):
+1. proposer build 14-20us/tx (6-10x contention-inflated; ~2us quiet)
+2. slowest-peer validation 9-15us/tx (recovery 4-7 + exec 3.5-6 + receipts)
+3. wire fan-out ~7us/tx (x3 unicast through ~470Mbps effective: Wi-Fi ceiling ~600 - overlay 15-25%)
+4. decode/pool-maintenance/gossip residual ~5-10us/tx
+5. state root + receipts root <1us/tx; fixed floor ~110ms (votes+scheduling).
+ONE-SENTENCE VERDICT: execution and commitments are solved; the lane's remaining cost is a
+serial pipeline of build, ship, and re-verify — every stage paying a contention tax for
+sharing its machine with the ingestion firehose. NEXT DECOMPOSITION (this iteration): cpuset
+experiment — is the build inflation core-scheduling or in-process pool-lock contention?
+
 ## 2026-08-11 — DISSEMINATION BANDWIDTH SPLIT (user Q&A follow-up, measured):
 val1 -> papaduck, same host, two paths, 40MB x2 each:
 - direct LAN IP: 576-627 Mbps (val1's WI-FI RADIO is the ceiling, not the gigabit wire)
