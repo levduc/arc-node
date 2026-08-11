@@ -24,11 +24,32 @@ r=urllib.request.Request('http://127.0.0.1:19545',data=json.dumps({'jsonrpc':'2.
 print(int(json.load(urllib.request.urlopen(r,timeout=10))['result']['gasLimit'],16))")
 PT=$(( GAS / 21000 * 3 )); [ "$PT" -lt 12000 ] && PT=12000
 
+# When a remote spammer fails to launch (tailscale ssh check expired), start that validator's
+# account range LOCALLY against val1's EL instead — the chain still gets the full 800-sender
+# spread (gossip fans txs out), delivery just comes from one box. Without this, dead remotes
+# halve delivery AND cap the fill at 200 senders x slots.
+local_topup(){ # $1 = duration seconds, $2 = extra spammer flags ('' or --pool-target N), $3 = rate
+  local n off i
+  n=$(grep -c '!! failed to launch' "$RUN/bench.log" 2>/dev/null || echo 0)
+  [ "$n" -gt 0 ] || return 0
+  echo "local top-up: $n remote spammer(s) failed — launching their ranges locally" >>"$RUN/bench.log"
+  i=0
+  for off in 200 400 600; do
+    [ $i -lt "$n" ] || break
+    setsid nohup "$REPO_ROOT/target/release/spammer" ws --targets ws://127.0.0.1:19546 \
+      --chain-id 1338 -r "$3" -t "$1" -g 20 -a 200 --account-offset $off -l \
+      --mix transfer=100 $2 >/tmp/spam-topup-$off.log 2>&1 &
+    i=$((i+1))
+  done
+}
+REPO_ROOT="$(cd "$DIR/../.." && pwd)"
+
 st "{\"state\":\"running\",\"phase\":\"starting governed load (pool target $PT)\",\"window_s\":$WINDOW}"
 if ! POOL_TARGET=$PT S=$S ACCTS=$ACCTS RATE=$RATE DUR=$((WINDOW+240)) \
      "$DIR/fleet/spam-fleet-distributed.sh" start >"$RUN/bench.log" 2>&1; then
   st '{"state":"error","phase":"spam start failed (see /tmp/pay-bench/bench.log)"}'; exit 1
 fi
+local_topup $((WINDOW+240)) "--pool-target $PT" "$RATE"
 st "{\"state\":\"running\",\"phase\":\"warming up (governed)\",\"window_s\":$WINDOW}"
 sleep 60
 st "{\"state\":\"running\",\"phase\":\"sustained window: ${WINDOW}s governed, live ingress\",\"window_s\":$WINDOW}"
@@ -105,6 +126,7 @@ else
   # fill: 25M @ 500ms consumes ~2.4k tps vs ~8k delivery -> the pool builds until either 150k or
   # the per-sender slot ceiling (accounts * max-account-slots; 12.8k on the default 800-acct demo)
   S=$S ACCTS=$ACCTS RATE=12000 DUR=300 "$DIR/fleet/spam-fleet-distributed.sh" start >>"$RUN/bench.log" 2>&1 || true
+  local_topup 300 "" 12000
   python3 "$DIR/bench-pool-wait.py" "$RUN" >>"$RUN/bench.log" 2>&1
   BACKLOG=$(cat "$RUN/backlog.txt" 2>/dev/null || echo 0)
 

@@ -12,7 +12,11 @@ while time.time()<deadline:
     h2=int(rpc("eth_blockNumber",[]),16)
     for x in range(h+1,h2+1):
         b=rpc("eth_getBlockByNumber",[hex(x),False])
-        full=int(b["gasUsed"],16) >= 0.95*int(b["gasLimit"],16)
+        gl=int(b["gasLimit"],16)
+        full=int(b["gasUsed"],16) >= 0.95*gl
+        # transition guard: blocks sealed at the FILL gas limit (25M) can be 100% full and land
+        # after the stop; only blocks at the drain size are capacity evidence
+        if drain_gas_m and abs(gl/1e6 - drain_gas_m) > 1: full=False
         events.append((time.time(),x,full,len(b["transactions"])))
     h=h2
     try: stop_ts=float(open(run+"/stop-ts").read().strip())
