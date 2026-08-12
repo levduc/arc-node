@@ -536,8 +536,17 @@ size-tracker LEAKS under repeated mass-drain churn** — fill ceilings degraded 
 8 cycles (192k→138k→53k→wedged at 48k), "txpool is full" storms while txpool_status shows room
 and SINGLE txs still land (acceptance probe passes; bulk rejected). Restart clears it. RULE: one
 chain supports a limited number of mass-drain cycles — fresh chain per campaign; declining
-backlog ceilings in the JSONL = re-boot. 30/60/100M re-measure pending (blocked on tailscale
-re-auth; fleet-only per user rule). Slides pending the complete table.
+backlog ceilings in the JSONL = re-boot. CANONICAL TABLE COMPLETE (fresh chain, all healthy pools): **30M 138ms/10.4k (139 blks) ·
+60M 252/11.3k (70) · 100M 344/13.8k (41) · 150M 444/16.1k (n=2) · 200M 573/16.6k · 300M
+773/18.5k (n=5) · 500M 1,420/16.8k · 1G ~2,227/~21k (3 blks, resolution-limited)**. New fit
+~70ms + ~49µs/tx (asymptote ~20k); plateau measured 16.6-19.2k from 150M; 300M→1G = nothing but
+latency ×2.9. New campaign is 12-24% faster than old AT EVERY SIZE → the whole old campaign was
+byte-cap-regime-depressed, fully superseded. Slides rebuilt from this one table (68fe4be):
+finalize-bars totals, TLDR capacity series, plateau frame — slide-14-vs-16 contradiction
+RESOLVED. Reproduce: SIZES="30 60 100 150 300" FILL_TARGET=190000 drain-campaign.sh on a FRESH
+fleet chain. ALSO: stale self-matching watcher shells from old sessions can block pgrep-gated
+automation for DAYS — patterns match fossil cmdlines; purge with ps -eo lstart before trusting
+any pgrep gate.
 
 **🎯 1-GGAS DEEP-DRAIN SWEEP — PLATEAU MEASURED, KNEE AT 200-300M (2026-08-12).** One chain,
 one day, ~190k prefill per size, intake stopped, only 100%-full target-size blocks counted:

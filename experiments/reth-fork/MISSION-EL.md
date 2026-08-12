@@ -11,7 +11,10 @@ User-directed (slide-14-vs-16 contradiction). drain-campaign.sh committed. Healt
 insensitive 100-192k. Old 14.2k campaign = byte-cap-pinned pools (eviction nonce-gapping) + thin
 drains — superseded. True-shallow impossible (transition refill). NEW: reth pool size-tracker
 leak under mass-drain churn (ceilings 192k→48k over 8 cycles; full-errors at status-0-room;
-restart clears). Fresh chain per campaign is now the rule. 30/60/100 pending tailscale re-auth.
+restart clears). Fresh chain per campaign is now the rule. CANONICAL TABLE COMPLETE (2026-08-12): 30M 138/10.4k ·
+60M 252/11.3k · 100M 344/13.8k · 150M 444/16.1k · 200M 573/16.6k · 300M 773/18.5k(n=5) · 500M
+1,420/16.8k · 1G ~2,227/~21k*. Fit ~70ms + ~49µs/tx. Old campaign 12-24% slower at every size
+(byte-cap regime) — superseded; slides rebuilt from this table.
 
 ## 2026-08-12 — 1-Ggas deep-drain sweep: the ~17k asymptote observed; knee 200-300M
 
