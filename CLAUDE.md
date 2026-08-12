@@ -523,6 +523,22 @@ pgrep -f matches its own shell; tailscale-ssh check expiry no-ops remote command
 codes lie; internal docker networks have no host route; anchored doc edits need
 `assert anchor in s`; smoke the VERBATIM harness arg string after any binary rebuild.
 
+**🎯 1-GGAS DEEP-DRAIN SWEEP — PLATEAU MEASURED, KNEE AT 200-300M (2026-08-12).** One chain,
+one day, ~190k prefill per size, intake stopped, only 100%-full target-size blocks counted:
+**200M 16,615tps@573ms (20 blks) · 300M 17,605@811 (12) · 500M 16,773@1,420 (7) · 1G ~21k@2,227
+(3 blks — resolution-limited, pool holds only 4; NOT evidence of growth)**. The fitted ~17k
+asymptote is now OBSERVED: tps flat 200M→1G while latency ×3.9. Deep pools (slots 256 + 512MB
+size caps) lift ceilings ~15-20% vs the ≤73k-backlog campaign (old 300M 14.2k → 17.6k) — same
+shape, higher plateau; quote the deep-drain numbers for capacity. Slides updated (new frame after
+TLDR, pushed 6fbe8de). HARNESS BUGS FIXED EN ROUTE: (1) bench-drain early-exit on wrong-size
+transition blocks killed the first 1G run mid-drain (its 2 blocks WERE 100% full on-chain);
+(2) trap restores must send HIGH-TIP governance (unpriced restore starved behind a 95k backlog,
+left chain at 25M); (3) after churn the pool can reject with "txpool is full" while txpool_status
+reads 0 (residual sub-pool accounting, self-clears ~minutes) — drain harness now probes with a
+real tx before filling. PROCESS LANDMINE (cost two runs tonight): capture PIDs from ps AFTER
+setsid (it re-forks; watching the wrapper PID = premature "done" → I stomped a live run with a
+manual restore). Sweep harness: scratchpad drain-size.sh (session-local).
+
 **✅ CAPACITY DRAIN VERIFIED END-TO-END ON THE FLEET (2026-08-11).** Third pool-cap layer found:
 per-sub-pool BYTE caps (~20MB ≈ 40-70k transfers; fill hit 70k in 12s then eviction collapsed it
 to 5k). Launchers now raise all three layers (counts 200k + slots 256 + pending/queued/basefee

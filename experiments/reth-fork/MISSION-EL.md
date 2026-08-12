@@ -4,6 +4,15 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-12 — 1-Ggas deep-drain sweep: the ~17k asymptote observed; knee 200-300M
+
+User-directed. Deep drains (190k prefill, intake stopped, target-size 100%-full blocks only):
+200M 16,615@573ms/20blks · 300M 17,605@811/12 · 500M 16,773@1,420/7 · 1G ~21k@2,227/3 (resolution-
+limited). tps flat across 5× block size; latency ×3.9. Deep pools lift ceilings 15-20% vs the
+shallow campaign (300M 14.2k→17.6k) — knee moves 150M→200-300M, shape unchanged. Fixes: drain
+sampler early-exit on wrong-size blocks; high-tip trap restores; pool acceptance probe (post-churn
+"txpool is full" at status 0). Slides: new plateau frame.
+
 ## 2026-08-11 — Dashboard one-click bench: proper sustained+drain methodology; two new
 platform facts (pacer bounds, per-sender slot cap)
 
