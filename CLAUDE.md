@@ -523,6 +523,14 @@ pgrep -f matches its own shell; tailscale-ssh check expiry no-ops remote command
 codes lie; internal docker networks have no host route; anchored doc edits need
 `assert anchor in s`; smoke the VERBATIM harness arg string after any binary rebuild.
 
+**✅ CAPACITY DRAIN VERIFIED END-TO-END ON THE FLEET (2026-08-11).** Third pool-cap layer found:
+per-sub-pool BYTE caps (~20MB ≈ 40-70k transfers; fill hit 70k in 12s then eviction collapsed it
+to 5k). Launchers now raise all three layers (counts 200k + slots 256 + pending/queued/basefee
+max-size 512MB). Verified live on a fresh 4-machine fleet: fill 165,643 in ~24s; **drain @ 200M =
+16,615 tps @ 573ms, 20 consecutive 100%-full 9,523-tx blocks (capacity_gas_m=200 on the card)**;
+sustained same run 9,435 avg / 12,216 peak (91%% full); chain restored 200M/500ms/2.00 blk/s.
+Card now shows capacity ~1.7x above sustained — the correct story.
+
 **🔧 DASHBOARD ONE-CLICK BENCH REBUILT (2026-08-11) + two platform facts.** run-bench.sh =
 governed sustained window + prefill/drain capacity phase (bench-pool-wait.py, bench-drain.py);
 9 test fires on the live demo chain. NEW FACTS: (1) **targetBlockTimeMs is CL-bounded to

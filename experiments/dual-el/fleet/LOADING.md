@@ -136,7 +136,13 @@ one-click benchmark (run-bench.sh):
    at runtime (ProtocolConfig governance, quiet pool), fill, then flip to the drain size with
    an aggressive priority fee (the governance tx must outbid the backlog) and verify on a live
    header before stopping intake.
-2. **reth's per-sender slot cap.** `--txpool.max-account-slots` defaults to **16**: the pool
+2a. **reth's per-sub-pool BYTE caps.** Even with counts at 200k and slots at 256, each
+   sub-pool has a ~20MB size cap (heap accounting ≈ 40-70k transfers): the fill raced to 70k
+   in 12s then eviction nonce-gapped senders and the pool collapsed to 5k. Launchers now pass
+   `--txpool.pending/queued/basefee-max-size=512`. With ALL THREE layers raised the fill
+   reaches 165k in ~24s and the drain runs at the chain's own block size (verified live:
+   200M drain = 16,615 tps @ 573ms, 20 consecutive 100%-full 9,523-tx blocks).
+2b. **reth's per-sender slot cap.** `--txpool.max-account-slots` defaults to **16**: the pool
    hard-ceilings at senders x 16 (800 spam accounts = 12.8k — measured plateau 12.7-12.9k on
    four separate fills). A 200M drain needs ~50k+. Launchers now pass
    `--txpool.max-account-slots=${PAY_ACCOUNT_SLOTS:-256}` so fresh chains fill to 150k+;
