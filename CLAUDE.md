@@ -523,6 +523,22 @@ pgrep -f matches its own shell; tailscale-ssh check expiry no-ops remote command
 codes lie; internal docker networks have no host route; anchored doc edits need
 `assert anchor in s`; smoke the VERBATIM harness arg string after any binary rebuild.
 
+**🔬 CANONICAL DRAIN CAMPAIGN + reth POOL-TRACKER LEAK (2026-08-12).** drain-campaign.sh
+(committed) = deterministic one-command capacity drains (JSONL rows carry fill_target/backlog/
+chain_age). Results, healthy pools (stop-time backlogs >=100k): **150M 437-451ms/15.8-16.3k (n=2;
+one 621ms/11.5k straggler outlier on record) · 300M 744-811ms/17.6-19.2k (n=5, tight)**; capacity
+is DEPTH-INSENSITIVE across 100-192k stop-backlogs. RECONCILIATION of the old 14.2-14.3k campaign:
+its pools ran PINNED at the 20MB byte cap (fills "48-73k" = the cap) with eviction nonce-gapping —
+a degraded-pool regime + 3-4-block drains; today's healthy-pool numbers supersede (+13% @150M,
++30% @300M). A true-shallow arm is IMPOSSIBLE by construction (spam feeds through the flip
+transition: a "53k" fill = 10 full 300M blocks by stop). **NEW PROBABLE reth BUG: pool
+size-tracker LEAKS under repeated mass-drain churn** — fill ceilings degraded monotonically over
+8 cycles (192k→138k→53k→wedged at 48k), "txpool is full" storms while txpool_status shows room
+and SINGLE txs still land (acceptance probe passes; bulk rejected). Restart clears it. RULE: one
+chain supports a limited number of mass-drain cycles — fresh chain per campaign; declining
+backlog ceilings in the JSONL = re-boot. 30/60/100M re-measure pending (blocked on tailscale
+re-auth; fleet-only per user rule). Slides pending the complete table.
+
 **🎯 1-GGAS DEEP-DRAIN SWEEP — PLATEAU MEASURED, KNEE AT 200-300M (2026-08-12).** One chain,
 one day, ~190k prefill per size, intake stopped, only 100%-full target-size blocks counted:
 **200M 16,615tps@573ms (20 blks) · 300M 17,605@811 (12) · 500M 16,773@1,420 (7) · 1G ~21k@2,227

@@ -4,6 +4,15 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-12b — canonical drain campaign; old-vs-new capacity reconciled; pool-tracker leak
+
+User-directed (slide-14-vs-16 contradiction). drain-campaign.sh committed. Healthy-pool drains:
+150M 437-451ms/16k (n=2, one straggler outlier), 300M 744-811ms/17.6-19.2k (n=5); depth-
+insensitive 100-192k. Old 14.2k campaign = byte-cap-pinned pools (eviction nonce-gapping) + thin
+drains — superseded. True-shallow impossible (transition refill). NEW: reth pool size-tracker
+leak under mass-drain churn (ceilings 192k→48k over 8 cycles; full-errors at status-0-room;
+restart clears). Fresh chain per campaign is now the rule. 30/60/100 pending tailscale re-auth.
+
 ## 2026-08-12 — 1-Ggas deep-drain sweep: the ~17k asymptote observed; knee 200-300M
 
 User-directed. Deep drains (190k prefill, intake stopped, target-size 100%-full blocks only):
