@@ -4,6 +4,17 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-13b — slide-14 campaign REPRODUCED n=2 + independent sanity check (user-directed)
+
+Fresh fleet chain, SIZES largest-first, all fills healthy 191-200k (no tracker degradation in 5
+cycles): 30M 138/10,379 (0.0% vs canonical!) · 60M 238/11,997 · 100M 363/13,099 · 150M 436/16,379
+· 300M 845/16,902 — all within ±6% (300M inside its n=6 744-845 band). SANITY: 15 blocks
+(first/mid/last per size) IDENTICAL hash+stateRoot on val1 vs REMOTE val2 (0 mismatches);
+latencies recomputed from on-chain timestamps alone: 30M 137ms / 300M 846ms — sampler agreement
+to the millisecond at both ends (middle sizes read high via timestamps because the span includes
+pre-stop ingress-built blocks — brackets the sampler from above, as expected). Slide 14 method
+note now carries the reproduction (62d3815).
+
 ## 2026-08-13 — 500M re-measured n=4: no dip, on-plateau (user question)
 
 500M x3 fresh-chain drains: 1,356/17,553 · 1,137/20,932 · 1,416/16,814 (+ original 1,420/16,773)
