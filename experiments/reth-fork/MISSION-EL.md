@@ -4,6 +4,13 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-13 — 500M re-measured n=4: no dip, on-plateau (user question)
+
+500M x3 fresh-chain drains: 1,356/17,553 · 1,137/20,932 · 1,416/16,814 (+ original 1,420/16,773)
+-> median 1.39s/17.2k, spread 16.8-20.9k (±11%; 6-7-block drains are noisy). The apparent 500M
+dip on the plateau frame was n=1 sampling. Slide updated to the median (0714950); label overlap
+fixed.
+
 ## 2026-08-12b — canonical drain campaign; old-vs-new capacity reconciled; pool-tracker leak
 
 User-directed (slide-14-vs-16 contradiction). drain-campaign.sh committed. Healthy-pool drains:
