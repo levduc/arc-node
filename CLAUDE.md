@@ -523,6 +523,58 @@ pgrep -f matches its own shell; tailscale-ssh check expiry no-ops remote command
 codes lie; internal docker networks have no host route; anchored doc edits need
 `assert anchor in s`; smoke the VERBATIM harness arg string after any binary rebuild.
 
+## 📌 PAYMENT-LANE STATUS SNAPSHOT (2026-08-16) — where everything stands
+
+**Branch `payment-el-perf`** (renamed from `blockstm-native-transfers` — Block-STM never
+implemented here; the verified parallel scheme is sender-partitioned, offline bench only).
+Repo clean, everything committed; all 4 machines torn down and REMOTELY VERIFIED clean
+(0 validator containers, 0 spammers, no chain datadirs; ginnythui's 18 containers are the
+user's personal services — "arc" grep false-positives on tubearchivist/archivist-redis).
+
+**MISSION 4 VERDICT (all levers measured, none re-openable without new information):** the EL
+is done as a lever (8-15% of height; exec 3.8ms/blk at the 2 blk/s point). Fast path ≈ +0.5%
+height (gated OFF); eager recovery = metric relocation (reverted); prebuild = -8% drain @60M /
++2.8% sustained @150M (hit-starved; ~13% prize gated on pending-visibility fork work — PARKED);
+persistence/cache/builder knobs + cpuset = null. Remaining bottleneck = consensus coordination
+(~49µs/tx: slowest-peer re-exec + transport + votes) — CL-side, out of scope. Priced-but-parked:
+pool-lock/snapshot-iterator fork (~15-20% sustained), pending-visibility fork (~10%), CL compact
+blocks / pipelining / erasure coding.
+
+**CANONICAL CAPACITY TABLE (2026-08-12/13, drain-campaign.sh, deep healthy pools; REPRODUCED
+n=2 on a second fresh chain within ±6%, 30M to the millisecond; drains cross-validator-verified
+(15/15 hash+stateRoot identical val1-vs-remote-val2) + latencies cross-checked against on-chain
+timestamps):**
+| gas | ms/blk | tps | n |
+|-----|--------|-----|---|
+| 30M | 138 | 10.4k | 2 |
+| 60M | 238-252 | 11.3-12.0k | 2 |
+| 100M | 344-363 | 13.1-13.8k | 2 |
+| 150M | 436-451 | ~16.1k | 3 (+1 straggler outlier 621/11.5k on record) |
+| 200M | 573 | 16.6k | 1 |
+| 300M | 744-845 | 17.6-19.2k (median 773/18.5k) | 6 |
+| 500M | 1.39s | 17.2k (spread 16.8-20.9k) | 4 |
+| 1G | ~2.2s | ~21k* | 1 (*3 blocks, resolution-limited) |
+Fit ≈ **70ms + 49µs/tx** (asymptote ~20k). **Plateau 16.6-19.2k from 150M; past 300M only
+latency grows** (300M→1G: nil tps, ×2.9 latency). Sustained (governed, live ingress): 6.6k@30M
+→ 11.0k@300M fleet grid; demo-chain 200M sustained reproduced 5×: 7.8-9.7k avg / 9.4-12.2k peak.
+Old ≤2026-08-11 drain numbers (14.2-14.3k etc.) = byte-cap-pinned pool regime, uniformly 12-24%
+slower at every size — SUPERSEDED; do not quote.
+
+**TOOLING (committed):** `drain-campaign.sh` = one-command deterministic capacity campaign
+(JSONL rows carry backlog + chain age; fresh chain per campaign — pool-tracker leak degrades
+fill ceilings over ~5-8 mass-drain cycles); `run-bench.sh` + helpers = dashboard one-click bench
+(governed sustained window + capacity drain; trap-restored governance flips, header-verified);
+pool caps trio now launcher defaults (slots 256 / 512MB sub-pool sizes / 200k counts — all
+three needed, each was a separate fill ceiling). Slides: every capacity frame reads from the
+one canonical campaign (paper repo 62d3815); slide-14-vs-16 contradiction resolved.
+
+**PLATFORM FACTS from the campaign week:** targetBlockTimeMs CL-clamped to [0,1s] (silent reset
+to 500ms); reth per-sender slot cap 16 → pool ceiling = senders×16; reth sub-pool byte caps
+~20MB ≈ 40-70k transfers; reth pool size-tracker LEAKS under repeated mass-drain churn
+("txpool is full" at status 0, single txs still accepted — restart clears); governance txs
+starve behind backlogs unless high-tip. Spam tx = type-2 EIP-1559 native transfer, 120-123 B
+signed (measured offline via cast, matches live 122 B avg), gasLimit 30k / gasUsed 21k.
+
 **🔬 CANONICAL DRAIN CAMPAIGN + reth POOL-TRACKER LEAK (2026-08-12).** drain-campaign.sh
 (committed) = deterministic one-command capacity drains (JSONL rows carry fill_target/backlog/
 chain_age). Results, healthy pools (stop-time backlogs >=100k): **150M 437-451ms/15.8-16.3k (n=2;
