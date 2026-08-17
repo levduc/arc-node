@@ -88,6 +88,40 @@ Builder failure matrix: slow/dead -> timeout -> self-build (slow height, no halt
 equivocating bodies -> only one matches the voted hash; censorship -> visible (empty
 blocks despite pre-announced txs) -> rotate; junk txs -> deterministic no-ops (total STF).
 
+## Phase-1 experiment spec: remote-builder getPayload (the cheapest real number)
+
+**Goal:** measure the builder-separation rung alone — expected capacity ~22-25k tps (law:
+removing the ~10 µs/tx build/coordination slice → 70 ms + ~39 µs/tx). A fleet drain number
+here validates the whole ladder's arithmetic before any vote-on-hash work is committed.
+
+**Setup:** builder = a 5th payment-EL (stock image, pool-caps trio, big RAM/NVMe) on the
+beefiest box (papaduck NVMe). All users/spammers submit to the BUILDER; builder peered to
+validator ELs (admin_addPeer) so txs pre-announce via existing gossip.
+
+**Two code touches discovered while speccing (both small, both CL-side — this branch
+explicitly lifts the no-CL constraint for design work):**
+1. **getPayload/validate split.** The CL uses ONE Engine per lane for both build and
+   validate. Add optional `--payment-builder-endpoint`: `get_value` (build path) uses the
+   builder engine when configured + healthy, falls back to local on timeout (same skip-round
+   semantics as the 509f404 fix); `received_proposal_part`/newPayload/FCU validation stays
+   on the LOCAL engine untouched. Additive; None = today's behavior byte-for-byte.
+2. **Builder follow feed.** The builder EL must track the canonical head to build on it.
+   Cheapest: ONE designated CL (the builder's co-located validator) also forwards
+   newPayload+FCU to the builder engine — the dual-EL "second engine" pattern, additive.
+   (Fallback ops heal if builder falls behind: reth p2p backfill via forkchoiceUpdated,
+   as in revive-val.sh.)
+
+**Run plan:** fresh fleet chain + builder; all 4 CLs get `--payment-builder-endpoint` →
+builder authrpc (shared payment-jwt, tailscale IP; 2-8 ms LAN RTT is one getPayload per
+height — negligible). Then `drain-campaign.sh` at 150/300 M, n≥2, vs the canonical table
+as same-methodology control. Success = capacity moves 16-19k → ≥22k with all-validator
+agreement over 100+ blocks. Gates first: both offline gates + build_gate on the CL change;
+val-behavior A/B is inherent (fallback path = stock).
+
+**Explicitly out of scope for phase 1:** vote-on-hash, total-STF, lagged root, compact
+blocks — phase 1 keeps today's consensus rules exactly, so its number isolates the
+builder slice alone.
+
 ## Failure modes
 
 - Builder withholds body after header commit → availability rule blocks the vote; height
