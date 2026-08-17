@@ -17,6 +17,9 @@ BASE="${BASE:-$(pwd)/.quake/$TESTNET}"
 ASSETS="${ASSETS:-$BASE/assets}"
 DD="${DD:-$BASE/builder/reth-pay}"
 NAME=builder_el_pay
+# PEERS entries: "host:httpPort" (local) or "host:httpPort:p2pPort" (fleet — the peer's
+# published pay-EL p2p port on that host, e.g. 30411..30414; enode IPs are rewritten to the
+# host address because container IPs are meaningless across machines).
 PEERS="${PEERS:-127.0.0.1:19545 127.0.0.1:19645 127.0.0.1:19745 127.0.0.1:19845}"
 
 [ -f "$ASSETS/payment-jwt.hex" ] || { echo "missing $ASSETS/payment-jwt.hex"; exit 1; }
@@ -55,16 +58,26 @@ BENODE=$(curl -s -m 5 -X POST http://127.0.0.1:19945 -H 'content-type: applicati
   | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['enode'].split('@')[0])")
 BIP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$NAME" 2>/dev/null)
 [ -n "$BIP" ] || BIP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$HOSTNET\").IPAddress}}" "$NAME")
-for hp in $PEERS; do
+for entry in $PEERS; do
+  host="${entry%%:*}"; rest="${entry#*:}"; hp="$host:${rest%%:*}"
+  p2p="${rest#*:}"; [ "$p2p" = "$rest" ] && p2p=""
   # tell the peer about the builder
   curl -s -m 5 -X POST "http://$hp" -H 'content-type: application/json' \
     --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"admin_addPeer\",\"params\":[\"${BENODE}@${BUILDER_ADDR:-$BIP}:${BUILDER_P2P:-30303}\"]}" >/dev/null
-  # tell the builder about the peer
-  PENODE=$(curl -s -m 5 -X POST "http://$hp" -H 'content-type: application/json' \
+  # tell the builder about the peer (rewrite enode address for cross-machine peering)
+  PPUB=$(curl -s -m 5 -X POST "http://$hp" -H 'content-type: application/json' \
     --data '{"jsonrpc":"2.0","id":1,"method":"admin_nodeInfo","params":[]}' \
-    | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['enode'])" 2>/dev/null)
-  [ -n "$PENODE" ] && curl -s -m 5 -X POST http://127.0.0.1:19945 -H 'content-type: application/json' \
-    --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"admin_addPeer\",\"params\":[\"$PENODE\"]}" >/dev/null
+    | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['enode'].split('@')[0])" 2>/dev/null)
+  if [ -n "$PPUB" ]; then
+    if [ -n "$p2p" ]; then PEN="${PPUB}@${host}:${p2p}"; else
+      PIP=$(curl -s -m 5 -X POST "http://$hp" -H 'content-type: application/json' \
+        --data '{"jsonrpc":"2.0","id":1,"method":"admin_nodeInfo","params":[]}' \
+        | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['enode'].split('@')[1])" 2>/dev/null)
+      PEN="${PPUB}@${PIP}"
+    fi
+    curl -s -m 5 -X POST http://127.0.0.1:19945 -H 'content-type: application/json' \
+      --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"admin_addPeer\",\"params\":[\"$PEN\"]}" >/dev/null
+  fi
 done
 sleep 3
 NPEERS=$(curl -s -m 5 -X POST http://127.0.0.1:19945 -H 'content-type: application/json' \
