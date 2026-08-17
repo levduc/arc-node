@@ -755,6 +755,19 @@ impl App {
             }
         }
 
+        // The remote builder serves getPayload for the same payment lane, so it needs the
+        // identical Engine API V4/V5 selection — without this, get_payload fails with
+        // "-38005: Unsupported fork" and every proposal falls back to the local build.
+        if let Some(ref builder_engine) = payment_builder_engine {
+            if let Some(ref genesis_path) = env_config.genesis_file_path {
+                builder_engine
+                    .set_osaka_from_genesis_file(genesis_path)
+                    .wrap_err("Failed to configure Osaka activation for builder engine")?;
+            } else {
+                builder_engine.set_osaka_from_chain_id(chain_id.as_u64());
+            }
+        }
+
         info!(
             %chain_id,
             genesis_hash = %genesis_block.block_hash,
