@@ -59,6 +59,7 @@ pub async fn handle(
     network: NetworkHandle,
     engine: &Engine,
     payment_engine: Option<&Engine>,
+    payment_builder_engine: Option<&Engine>,
     height: Height,
     round: Round,
     timeout: Duration,
@@ -77,6 +78,7 @@ pub async fn handle(
         network,
         engine,
         payment_engine,
+        payment_builder_engine,
         metrics,
         store,
         height,
@@ -124,6 +126,7 @@ async fn on_get_value(
     network: NetworkHandle,
     engine: &Engine,
     payment_engine: Option<&Engine>,
+    payment_builder_engine: Option<&Engine>,
     metrics: AppMetrics,
     store: Store,
     height: Height,
@@ -159,6 +162,7 @@ async fn on_get_value(
             let task = build_and_validate_block(
                 engine,
                 payment_engine,
+                payment_builder_engine,
                 &metrics,
                 &store,
                 height,
@@ -229,6 +233,7 @@ async fn on_get_value(
 async fn build_and_validate_block(
     engine: &Engine,
     payment_engine: Option<&Engine>,
+    payment_builder_engine: Option<&Engine>,
     metrics: &AppMetrics,
     store: &Store,
     height: Height,
@@ -242,6 +247,7 @@ async fn build_and_validate_block(
     let block = build_block(
         engine,
         payment_engine,
+        payment_builder_engine,
         metrics,
         height,
         round,
@@ -281,6 +287,7 @@ async fn build_and_validate_block(
 pub async fn build_block(
     engine: &Engine,
     payment_engine: Option<&Engine>,
+    payment_builder_engine: Option<&Engine>,
     metrics: &AppMetrics,
     height: Height,
     round: Round,
@@ -309,10 +316,26 @@ pub async fn build_block(
                 .wrap_err("payment lane: failed to fetch EL2 head")?
                 .ok_or_else(|| eyre!("payment lane: EL2 has no latest block"))?;
             let timestamp = execution_payload.timestamp();
-            let payment_payload = pe
-                .generate_block(&payment_parent, timestamp, fee_recipient)
-                .await
-                .wrap_err("payment lane: failed to build payment payload")?;
+
+            // Phase-1 builder separation (docs/deferred-exec-100k.md): when a remote
+            // builder is configured AND its head matches the local lane head (the decide
+            // path keeps them in lockstep), build the payment payload on the builder.
+            // Any mismatch or error falls back to the local build — stock behavior.
+            // Validation of the built payload stays on the LOCAL engine either way.
+            let built_remotely = match payment_builder_engine {
+                Some(be) => {
+                    builder_payment_payload(be, &payment_parent, timestamp, fee_recipient).await
+                }
+                None => None,
+            };
+
+            let payment_payload = match built_remotely {
+                Some(p) => p,
+                None => pe
+                    .generate_block(&payment_parent, timestamp, fee_recipient)
+                    .await
+                    .wrap_err("payment lane: failed to build payment payload")?,
+            };
             debug!(
                 "🪙 Got payment payload: {:?}",
                 PrettyPayload(&payment_payload)
@@ -350,4 +373,50 @@ async fn get_previously_built_block(
     let blocks = undecided_blocks.get_by_round(height, round).await?;
     let block = blocks.into_iter().find(|p| p.proposer == proposer);
     Ok(block)
+}
+
+/// Phase-1 builder separation: attempt to build the payment payload on the REMOTE
+/// builder engine. Returns `None` on any problem — stale builder head, RPC error,
+/// build failure — so the caller falls back to the local build path. Fail-safe by
+/// construction: this function can slow a height, never break one.
+async fn builder_payment_payload(
+    builder: &Engine,
+    local_parent: &ExecutionBlock,
+    timestamp: u64,
+    fee_recipient: &Address,
+) -> Option<alloy_rpc_types_engine::ExecutionPayloadV3> {
+    let builder_head = match builder.eth.get_block_by_number("latest").await {
+        Ok(Some(head)) => head,
+        Ok(None) => {
+            warn!("builder: no latest block; falling back to local build");
+            return None;
+        }
+        Err(e) => {
+            warn!("builder: head fetch failed; falling back to local build: {e:#}");
+            return None;
+        }
+    };
+
+    // The builder must sit exactly on the local lane head (the decide path forwards
+    // every decided payment block to it). A lagging builder would produce a payload
+    // whose parent the validators reject — cheaper to detect here and fall back.
+    if builder_head.block_hash != local_parent.block_hash {
+        warn!(
+            builder_head = %builder_head.block_hash,
+            local_head = %local_parent.block_hash,
+            "builder: head mismatch; falling back to local build"
+        );
+        return None;
+    }
+
+    match builder.generate_block(&builder_head, timestamp, fee_recipient).await {
+        Ok(payload) => {
+            debug!("🏗️ Payment payload built via remote builder");
+            Some(payload)
+        }
+        Err(e) => {
+            warn!("builder: build failed; falling back to local build: {e:#}");
+            None
+        }
+    }
 }

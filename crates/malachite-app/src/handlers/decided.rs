@@ -57,6 +57,7 @@ pub async fn handle(
     state: &mut State,
     engine: &Engine,
     payment_engine: Option<&Engine>,
+    payment_builder_engine: Option<&Engine>,
     certificate: CommitCertificate<ArcContext>,
     commit_ack: Reply<()>,
 ) -> eyre::Result<()> {
@@ -73,6 +74,7 @@ pub async fn handle(
     let block = decide(
         block_finalizer,
         payment_engine,
+        payment_builder_engine,
         store, // undecided blocks repository
         store, // decided blocks repository
         pruning_service,
@@ -145,6 +147,7 @@ async fn store_proposal_monitor_on_decision(
 async fn decide(
     block_finalizer: impl BlockFinalizer,
     payment_engine: Option<&Engine>,
+    payment_builder_engine: Option<&Engine>,
     undecided_blocks: impl UndecidedBlocksRepository,
     decided_blocks: impl DecidedBlocksRepository,
     pruning_service: impl PruningService,
@@ -208,6 +211,26 @@ async fn decide(
                 format!("payment lane: failed to advance EL2 head to {payment_hash} at height={height}")
             })?;
         debug!("🪙 Payment lane forkchoice updated to {payment_hash} at height {height}");
+
+        // Phase-1 builder separation: keep the remote builder following the canonical
+        // payment head by forwarding every decided payment block to it (newPayload +
+        // forkchoice). Fire-and-forget: a lagging or dead builder only causes the
+        // build path's head-mismatch guard to fall back to local builds — never an
+        // error on the decide path. Reth p2p backfill heals larger gaps.
+        if let Some(be) = payment_builder_engine {
+            let be = be.clone();
+            let payload = payment_payload.clone();
+            tokio::spawn(async move {
+                let hash = payload.payload_inner.payload_inner.block_hash;
+                if let Err(e) = be.notify_new_block(&payload, Vec::new()).await {
+                    debug!("builder follow: newPayload({hash}) failed: {e:#}");
+                    return;
+                }
+                if let Err(e) = be.set_latest_forkchoice_state(hash).await {
+                    debug!("builder follow: forkchoice({hash}) failed: {e:#}");
+                }
+            });
+        }
     }
 
     // Update the latest block
@@ -508,6 +531,7 @@ mod tests {
         let result = decide(
             block_finalizer,
             None,
+            None,
             undecided_blocks,
             decided_blocks,
             pruning_service,
@@ -546,6 +570,7 @@ mod tests {
         let result = decide(
             block_finalizer,
             None,
+            None,
             undecided_blocks,
             decided_blocks,
             pruning_service,
@@ -582,6 +607,7 @@ mod tests {
 
         let result = decide(
             block_finalizer,
+            None,
             None,
             undecided_blocks,
             decided_blocks,
@@ -625,6 +651,7 @@ mod tests {
 
         let result = decide(
             block_finalizer,
+            None,
             None,
             undecided_blocks,
             decided_blocks,

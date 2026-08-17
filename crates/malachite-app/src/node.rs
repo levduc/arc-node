@@ -621,6 +621,40 @@ impl App {
         }
     }
 
+    /// Phase-1 builder separation (docs/deferred-exec-100k.md): connect to an optional
+    /// REMOTE payment-lane builder engine, used only on the proposer's build path.
+    /// Env-configured so fleet deploys need no CLI/compose changes:
+    ///   ARC_PAYMENT_BUILDER_ENGINE  = builder authrpc URL (e.g. http://<ip>:19751)
+    ///   ARC_PAYMENT_BUILDER_ETH_RPC = builder eth RPC URL (e.g. http://<ip>:19745)
+    ///   ARC_PAYMENT_BUILDER_JWT     = jwt path (defaults to the payment lane's jwt)
+    /// Fail-safe: any misconfiguration logs a warning and returns None (stock behavior).
+    /// Validation and forkchoice always stay on the LOCAL payment engine.
+    async fn connect_to_payment_builder_engine(&self) -> Option<Engine> {
+        let engine_url = std::env::var("ARC_PAYMENT_BUILDER_ENGINE").ok()?;
+        let eth_url = std::env::var("ARC_PAYMENT_BUILDER_ETH_RPC").ok()?;
+        let jwt = std::env::var("ARC_PAYMENT_BUILDER_JWT")
+            .ok()
+            .or_else(|| self.start_config.payment_execution_jwt.clone());
+        let Some(jwt) = jwt else {
+            tracing::warn!("builder: no JWT configured (ARC_PAYMENT_BUILDER_JWT or payment jwt); ignoring builder");
+            return None;
+        };
+        let (Ok(engine_url), Ok(eth_url)) = (engine_url.parse(), eth_url.parse()) else {
+            tracing::warn!("builder: invalid builder URLs; ignoring builder");
+            return None;
+        };
+        match Engine::new_rpc(engine_url, eth_url, None, &jwt).await {
+            Ok(engine) => {
+                tracing::info!("🏗️ Connected to REMOTE payment-lane builder engine");
+                Some(engine)
+            }
+            Err(e) => {
+                tracing::warn!("builder: connection failed; running without builder: {e:#}");
+                None
+            }
+        }
+    }
+
     /// Query the execution engine to retrieve the chain ID and genesis block.
     ///
     /// These are used during node startup to compute the initial network ID
@@ -674,6 +708,14 @@ impl App {
 
         // Connect to the optional payment-lane execution engine (second EL).
         let payment_engine = self.connect_to_payment_engine().await?;
+
+        // Optional remote builder for the payment lane (phase-1 builder separation).
+        // Only meaningful when a payment lane exists.
+        let payment_builder_engine = if payment_engine.is_some() {
+            self.connect_to_payment_builder_engine().await
+        } else {
+            None
+        };
 
         let (chain_id, genesis_block) = self
             .resolve_chain_identity(&engine)
@@ -775,6 +817,7 @@ impl App {
                 channels,
                 engine,
                 payment_engine,
+                payment_builder_engine,
                 rx_app_req,
                 cancel_token,
             )

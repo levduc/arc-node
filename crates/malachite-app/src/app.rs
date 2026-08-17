@@ -35,6 +35,7 @@ pub async fn run(
     channels: Channels<ArcContext>,
     engine: Engine,
     payment_engine: Option<Engine>,
+    payment_builder_engine: Option<Engine>,
     rx_app_req: Receiver<AppRequest>,
     cancel_token: CancellationToken,
 ) -> eyre::Result<()> {
@@ -48,6 +49,7 @@ pub async fn run(
             channels,
             &engine,
             payment_engine.as_ref(),
+            payment_builder_engine.as_ref(),
             rx_app_req,
         ))
         .await;
@@ -89,6 +91,7 @@ async fn go(
     mut channels: Channels<ArcContext>,
     engine: &Engine,
     payment_engine: Option<&Engine>,
+    payment_builder_engine: Option<&Engine>,
     mut rx_app_req: Receiver<AppRequest>,
 ) -> eyre::Result<Never> {
     loop {
@@ -98,7 +101,7 @@ async fn go(
             msg = channels.consensus.recv() => match msg {
                 Some(msg) => {
                     // Abort on error to shut down the application.
-                    handle_consensus(msg, state, &mut channels, engine, payment_engine).await
+                    handle_consensus(msg, state, &mut channels, engine, payment_engine, payment_builder_engine).await
                         .wrap_err("Error handling consensus message")?;
                 },
                 None => {
@@ -129,6 +132,7 @@ async fn handle_consensus(
     channels: &mut Channels<ArcContext>,
     engine: &Engine,
     payment_engine: Option<&Engine>,
+    payment_builder_engine: Option<&Engine>,
 ) -> eyre::Result<()> {
     match msg {
         // Consensus is ready.
@@ -183,6 +187,7 @@ async fn handle_consensus(
                 channels.network.clone(),
                 engine,
                 payment_engine,
+                payment_builder_engine,
                 height,
                 round,
                 timeout,
@@ -222,7 +227,15 @@ async fn handle_consensus(
 
             info!(%height, %round, %value_id, %signatures, "🎉 Consensus has decided on value");
 
-            decided::handle(state, engine, payment_engine, certificate, reply).await?;
+            decided::handle(
+                state,
+                engine,
+                payment_engine,
+                payment_builder_engine,
+                certificate,
+                reply,
+            )
+            .await?;
         }
 
         // Notification that a height has been finalized.
