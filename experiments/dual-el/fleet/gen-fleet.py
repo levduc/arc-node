@@ -50,11 +50,22 @@ for n in (2, 3, 4):
         if kind == "cl":
             svc.setdefault("environment", {}).update(
                 {"ARC_VALUE_SYNC_BATCH_SIZE": "3", "ARC_VALUE_SYNC_TIMEOUT_SECS": "15"})
+            # Optional extra CL env (JSON dict), e.g. the phase-1 builder endpoints
+            # (ARC_PAYMENT_BUILDER_ENGINE/_ETH_RPC) — injected into ALL validators' CLs.
+            import json as _json, os as _os
+            _extra = _os.environ.get("CL_EXTRA_ENV")
+            if _extra:
+                svc["environment"].update(_json.loads(_extra))
         svcs[name] = svc
     remote = {"services": svcs,
               "networks": {"default": {"name": "arc_testnet_default", "driver": "bridge", "internal": True},
                  "host-access": {"name": "arc_testnet_host-access", "driver": "bridge"}}}
     open(f"{LOCAL_BASE}/compose-val{n}.yaml", "w").write(yaml.dump(remote, sort_keys=False))
+
+import json as _json, os as _os
+_extra = _os.environ.get("CL_EXTRA_ENV")
+if _extra and "validator1_cl" in c["services"]:
+    c["services"]["validator1_cl"].setdefault("environment", {}).update(_json.loads(_extra))
 
 open(COMPOSE + ".prefleet", "w").write(yaml.dump(orig, sort_keys=False))
 open(COMPOSE, "w").write(yaml.dump(c, sort_keys=False))
