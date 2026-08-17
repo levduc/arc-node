@@ -52,6 +52,42 @@ Slow height, never a halt.
 External validation: commonware Constantinople (70k tps @ 250 ms, 50 validators) is
 essentially this recipe (simplex + erasure-coded broadcast + separated execution).
 
+## PBS design (builder/proposer separation, concretely)
+
+Keep malachite's RoundRobin **proposer** unchanged (consensus leader, signs/streams the
+proposal). The **builder** is a separate always-on service — a beefed-up payment-EL node —
+that admits transactions, builds continuously, and serves payloads. Phase 1 needs zero new
+message types: the Engine API already IS the builder interface; the proposer's getPayload
+simply points at the builder instead of its local EL.
+
+Per-height flow:
+- continuous: users -> builder RPC (admission/sig-verify/pool = the ingress wall, solved at
+  one sharded node); builder PRE-ANNOUNCES admitted txs to validators (their pools become
+  receive-only caches — kills the measured 6-10x pool-lock build inflation on validators,
+  and makes compact-block reconstruction possible despite centralized ingress; steady tx
+  streaming replaces bursty 12 MB block dissemination).
+- at decide(N-1): builder already holds block N — RoundRobin is deterministic, so the next
+  proposer's fee_recipient/parent/timestamp are known in advance. This subsumes the parked
+  speculative-prebuild work: every miss class (miss_timestamp, miss_parent, FCU races)
+  existed because a validator had to GUESS attributes; the builder doesn't guess, it is the
+  pipeline — hit rate ~100% by construction.
+- proposer fetches header + tx-hash list, streams a compact proposal; validators
+  body-complete-check (availability rule) then vote; execution in the vote gap.
+
+Design picks:
+1. **Selection**: one designated builder + 1-2 standbys, proposer-side timeout -> fallback
+   to local self-build (today's path kept verbatim). No auction/relay machinery — fixed-fee
+   lane has ~no MEV; rotate the builder set per epoch against censorship.
+2. **Ingress/dissemination hybrid**: centralized submission + pre-announcement (above);
+   coded broadcast only for residual missing txs.
+3. **Fees**: fee_recipient stays the PROPOSER (Arc's per-tx credit semantics unchanged —
+   the semantics all existing gates validate); builder compensated at protocol/ops level.
+   No builder-pays-proposer commitment game.
+
+Builder failure matrix: slow/dead -> timeout -> self-build (slow height, no halt);
+equivocating bodies -> only one matches the voted hash; censorship -> visible (empty
+blocks despite pre-announced txs) -> rotate; junk txs -> deterministic no-ops (total STF).
+
 ## Failure modes
 
 - Builder withholds body after header commit → availability rule blocks the vote; height
