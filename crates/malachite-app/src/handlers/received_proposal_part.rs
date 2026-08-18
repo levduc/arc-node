@@ -24,7 +24,7 @@ use malachitebft_app_channel::Reply;
 use malachitebft_core_types::Height as _;
 
 use arc_consensus_types::proposer::ProposerSelector;
-use arc_consensus_types::{Address, ArcContext, Height, ProposalPart, ProposalParts, Round, ValidatorSet};
+use arc_consensus_types::{ArcContext, Height, ProposalPart, ProposalParts, Round, ValidatorSet};
 use arc_eth_engine::engine::Engine;
 use arc_signer::ArcSigningProvider;
 
@@ -52,7 +52,6 @@ pub async fn handle(
     state: &mut State,
     engine: &Engine,
     payment_engine: Option<&Engine>,
-    payment_builder_engine: Option<&Engine>,
     from: PeerId,
     part: StreamMessage<ProposalPart>,
     reply: Reply<Option<ProposedValue<ArcContext>>>,
@@ -66,10 +65,6 @@ pub async fn handle(
     let context = HandlerContext {
         engine,
         payment_engine,
-        payment_builder_engine,
-        prebuilt_slot: state.builder_prebuilt.clone(),
-        my_address: state.address(),
-        fee_recipient: state.fee_recipient(),
         store: state.store().clone(),
         metrics: state.metrics().clone(),
         signing_provider: state.signing_provider().clone(),
@@ -141,10 +136,6 @@ fn record_proposal_in_monitor(state: &mut State, proposed_value: &ProposedValue<
 struct HandlerContext<'a, 'b> {
     engine: &'a Engine,
     payment_engine: Option<&'a Engine>,
-    payment_builder_engine: Option<&'a Engine>,
-    prebuilt_slot: crate::builder_prebuild::PrebuiltSlot,
-    my_address: Address,
-    fee_recipient: Address,
     store: Store,
     metrics: AppMetrics,
     signing_provider: ArcSigningProvider,
@@ -201,72 +192,6 @@ async fn on_received_proposal_part(
         from,
     )
     .await?;
-
-    // Builder v1.2 (docs/deferred-exec-100k.md): feed the builder at VALIDATION time —
-    // giving it the whole vote window to execute this block, in parallel with every
-    // validator doing the same — and, when WE are the next height's round-0 proposer
-    // (never the current proposer under RoundRobin), chain speculative builds so the
-    // stash is ready long before our get_value. Wrong speculation (decided != validated,
-    // failed rounds) is reconciled by the decide-time feed and caught by get_value's
-    // exact-match guard: a miss builds locally, never breaks a height.
-    if block.validity == Validity::Valid {
-        if let (Some(be), Some(pp)) = (context.payment_builder_engine, block.payment_payload.as_ref()) {
-            let im_next = context
-                .proposer_selector
-                .select_proposer(
-                    &context.current_validator_set,
-                    block.height.increment(),
-                    Round::new(0),
-                )
-                .address
-                == context.my_address;
-            let be = be.clone();
-            let pp = pp.clone();
-            let slot = context.prebuilt_slot.clone();
-            let fee_recipient = context.fee_recipient;
-            let evm_timestamp = block.execution_payload.timestamp();
-            tokio::spawn(async move {
-                let hash = pp.payload_inner.payload_inner.block_hash;
-                if be.notify_new_block(&pp, Vec::new()).await.is_err() {
-                    return;
-                }
-                if be.set_latest_forkchoice_state(hash).await.is_err() {
-                    return;
-                }
-                if !im_next {
-                    return;
-                }
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let t0 = evm_timestamp.max(now);
-                let head = match be.eth.get_block_by_number("latest").await {
-                    Ok(Some(h)) if h.block_hash == hash => h,
-                    _ => return,
-                };
-                // validation -> our get_value spans up to ~1.2s: cover three seconds.
-                slot.lock().await.clear();
-                let (r0, r1, r2) = tokio::join!(
-                    be.generate_block(&head, t0, &fee_recipient),
-                    be.generate_block(&head, t0 + 1, &fee_recipient),
-                    be.generate_block(&head, t0 + 2, &fee_recipient),
-                );
-                let mut stash = slot.lock().await;
-                stash.clear();
-                for (ts, r) in [(t0, r0), (t0 + 1, r1), (t0 + 2, r2)] {
-                    if let Ok(payload) = r {
-                        stash.push(crate::builder_prebuild::PrebuiltPayment {
-                            parent: hash,
-                            timestamp: ts,
-                            fee_recipient,
-                            payload,
-                        });
-                    }
-                }
-            });
-        }
-    }
 
     let proposed_value = ProposedValue::from(&block);
 

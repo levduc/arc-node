@@ -204,16 +204,7 @@ async fn handle_consensus(
                 .metrics
                 .start_msg_process_timer("ReceivedProposalPart");
 
-            received_proposal_part::handle(
-                state,
-                engine,
-                payment_engine,
-                payment_builder_engine,
-                from,
-                part,
-                reply,
-            )
-            .await;
+            received_proposal_part::handle(state, engine, payment_engine, from, part, reply).await;
         }
 
         // Notification that consensus has decided a value.
