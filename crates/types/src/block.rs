@@ -236,7 +236,14 @@ pub fn unframe_lanes(
     if bytes.len() < 8 {
         return Err(eyre::eyre!("lane bytes too short to contain length prefix"));
     }
-    let len_evm = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
+    let raw_len = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+    if raw_len & COMPACT_LANE_BIT != 0 {
+        return Err(eyre::eyre!(
+            "compact lane frame (ARC_COMPACT_PAYMENT_PROPOSALS) on a full-format-only \
+             path — this node/path cannot decode compact proposals"
+        ));
+    }
+    let len_evm = raw_len as usize;
     let evm_end = 8usize
         .checked_add(len_evm)
         .filter(|&e| e <= bytes.len())
@@ -252,6 +259,128 @@ pub fn unframe_lanes(
         None
     };
     Ok((execution_payload, payment_payload))
+}
+
+/// Bit 63 of the EVM length prefix marks a COMPACT payment section
+/// (`frame_lanes_compact`). Real payload lengths can never approach 2^63, so a
+/// legacy decoder sees an absurd length and fails its bounds check — fail-closed.
+pub const COMPACT_LANE_BIT: u64 = 1 << 63;
+
+/// Hard cap on the number of tx hashes a compact frame may carry, checked
+/// BEFORE any EL fetch (DoS bound). 1 Ggas / 21k gas = 47,619 transfers; 200k
+/// leaves generous headroom.
+pub const MAX_COMPACT_TX_HASHES: usize = 200_000;
+
+/// Decoded form of a framed lane buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaneFrame {
+    /// Full payloads for both lanes (payment optional) — the legacy format.
+    Full(ExecutionPayloadV3, Option<ExecutionPayloadV3>),
+    /// EVM full + payment as header-with-empty-txs plus the tx hash list.
+    /// The receiver reconstructs the full payment payload from its EL pool;
+    /// the structural/newPayload block-hash check verifies the reconstruction.
+    CompactPayment {
+        execution_payload: ExecutionPayloadV3,
+        payment_header: ExecutionPayloadV3,
+        tx_hashes: Vec<BlockHash>,
+    },
+}
+
+/// Compact variant of [`frame_lanes`]:
+/// `[u64-LE len(evm) | COMPACT_LANE_BIT] [evm SSZ]
+///  [u64-LE len(payment_header)] [payment header SSZ, transactions stripped]
+///  [k * 32B tx hashes]`
+///
+/// Tx hashes are `keccak256` of the raw payload tx bytes — exactly the tx hash
+/// for both legacy (RLP) and EIP-2718 typed (envelope incl. type byte) txs.
+/// LIVE-PROPOSAL WIRE FORMAT ONLY: stores and value-sync always carry full
+/// payloads (decided txs leave the pools).
+pub fn frame_lanes_compact(
+    execution_payload: &ExecutionPayloadV3,
+    payment_payload: &ExecutionPayloadV3,
+) -> Vec<u8> {
+    let evm = execution_payload.as_ssz_bytes();
+    let mut header_only = payment_payload.clone();
+    header_only.payload_inner.payload_inner.transactions = Vec::new();
+    let header_ssz = header_only.as_ssz_bytes();
+    let txs = &payment_payload.payload_inner.payload_inner.transactions;
+
+    let mut buf = Vec::with_capacity(16 + evm.len() + header_ssz.len() + txs.len() * 32);
+    buf.extend_from_slice(&((evm.len() as u64) | COMPACT_LANE_BIT).to_le_bytes());
+    buf.extend_from_slice(&evm);
+    buf.extend_from_slice(&(header_ssz.len() as u64).to_le_bytes());
+    buf.extend_from_slice(&header_ssz);
+    for tx in txs {
+        let mut hasher = Keccak256::new();
+        hasher.update(tx.as_ref());
+        buf.extend_from_slice(&hasher.finalize());
+    }
+    buf
+}
+
+/// Decodes a framed lane buffer in EITHER format (full or compact).
+/// Decoding compact frames is unconditional (not flag-gated) so a mixed
+/// new-binary fleet interoperates regardless of per-node emission flags.
+pub fn unframe_lanes_any(bytes: &[u8]) -> eyre::Result<LaneFrame> {
+    if bytes.len() < 8 {
+        return Err(eyre::eyre!("lane bytes too short to contain length prefix"));
+    }
+    let raw_len = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+    if raw_len & COMPACT_LANE_BIT == 0 {
+        let (evm, pay) = unframe_lanes(bytes)?;
+        return Ok(LaneFrame::Full(evm, pay));
+    }
+
+    let len_evm = (raw_len & !COMPACT_LANE_BIT) as usize;
+    let evm_end = 8usize
+        .checked_add(len_evm)
+        .filter(|&e| e + 8 <= bytes.len())
+        .ok_or_else(|| eyre::eyre!("invalid compact evm length prefix"))?;
+    let execution_payload = ExecutionPayloadV3::from_ssz_bytes(&bytes[8..evm_end])
+        .map_err(|e| eyre::eyre!("Failed to decode execution payload: {e:?}"))?;
+
+    let len_hdr =
+        u64::from_le_bytes(bytes[evm_end..evm_end + 8].try_into().unwrap()) as usize;
+    let hdr_end = (evm_end + 8)
+        .checked_add(len_hdr)
+        .filter(|&e| e <= bytes.len())
+        .ok_or_else(|| eyre::eyre!("invalid compact payment header length prefix"))?;
+    let payment_header = ExecutionPayloadV3::from_ssz_bytes(&bytes[evm_end + 8..hdr_end])
+        .map_err(|e| eyre::eyre!("Failed to decode compact payment header: {e:?}"))?;
+    if !payment_header
+        .payload_inner
+        .payload_inner
+        .transactions
+        .is_empty()
+    {
+        return Err(eyre::eyre!(
+            "compact payment header must carry no transactions"
+        ));
+    }
+
+    let tail = &bytes[hdr_end..];
+    if tail.len() % 32 != 0 {
+        return Err(eyre::eyre!(
+            "compact tx hash section length {} not a multiple of 32",
+            tail.len()
+        ));
+    }
+    let k = tail.len() / 32;
+    if k > MAX_COMPACT_TX_HASHES {
+        return Err(eyre::eyre!(
+            "compact frame carries {k} tx hashes (cap {MAX_COMPACT_TX_HASHES})"
+        ));
+    }
+    let tx_hashes = tail
+        .chunks_exact(32)
+        .map(BlockHash::from_slice)
+        .collect();
+
+    Ok(LaneFrame::CompactPayment {
+        execution_payload,
+        payment_header,
+        tx_hashes,
+    })
 }
 
 #[cfg(test)]
@@ -374,5 +503,124 @@ mod tests {
         let (evm_out, pay_out) = unframe_lanes(&framed).unwrap();
         assert_eq!(evm_out, evm);
         assert_eq!(pay_out, None);
+    }
+}
+
+#[cfg(test)]
+mod compact_frame_tests {
+    use super::*;
+    use alloy_primitives::{Bloom, Bytes as AlloyBytes, B256, U256};
+    use alloy_rpc_types_engine::{ExecutionPayloadV1, ExecutionPayloadV2};
+
+    fn payload_with_txs(seed: u8, txs: Vec<AlloyBytes>) -> ExecutionPayloadV3 {
+        ExecutionPayloadV3 {
+            payload_inner: ExecutionPayloadV2 {
+                payload_inner: ExecutionPayloadV1 {
+                    parent_hash: B256::repeat_byte(seed),
+                    fee_recipient: Default::default(),
+                    state_root: B256::repeat_byte(seed.wrapping_add(1)),
+                    receipts_root: B256::repeat_byte(seed.wrapping_add(2)),
+                    logs_bloom: Bloom::default(),
+                    prev_randao: B256::ZERO,
+                    block_number: seed as u64,
+                    gas_limit: 30_000_000,
+                    gas_used: 21_000,
+                    timestamp: 1_000 + seed as u64,
+                    extra_data: AlloyBytes::default(),
+                    base_fee_per_gas: U256::from(1u64),
+                    block_hash: B256::repeat_byte(seed.wrapping_add(3)),
+                    transactions: txs,
+                },
+                withdrawals: vec![],
+            },
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
+        }
+    }
+
+    #[test]
+    fn compact_round_trip() {
+        let evm = payload_with_txs(0x10, vec![]);
+        let txs = vec![
+            AlloyBytes::from(vec![0x02, 0xde, 0xad]),
+            AlloyBytes::from(vec![0x02, 0xbe, 0xef, 0x01]),
+        ];
+        let pay = payload_with_txs(0x20, txs.clone());
+        let framed = frame_lanes_compact(&evm, &pay);
+        match unframe_lanes_any(&framed).unwrap() {
+            LaneFrame::CompactPayment {
+                execution_payload,
+                payment_header,
+                tx_hashes,
+            } => {
+                assert_eq!(execution_payload, evm);
+                assert!(payment_header
+                    .payload_inner
+                    .payload_inner
+                    .transactions
+                    .is_empty());
+                assert_eq!(
+                    payment_header.payload_inner.payload_inner.block_hash,
+                    pay.payload_inner.payload_inner.block_hash
+                );
+                assert_eq!(tx_hashes.len(), 2);
+                for (h, tx) in tx_hashes.iter().zip(&txs) {
+                    let mut hasher = Keccak256::new();
+                    hasher.update(tx.as_ref());
+                    assert_eq!(h.as_slice(), &hasher.finalize()[..]);
+                }
+            }
+            other => panic!("expected compact frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn full_frames_still_decode_via_any() {
+        let evm = payload_with_txs(0x10, vec![AlloyBytes::from(vec![0x01])]);
+        let pay = payload_with_txs(0x20, vec![AlloyBytes::from(vec![0x02])]);
+        let framed = frame_lanes(&evm, Some(&pay));
+        match unframe_lanes_any(&framed).unwrap() {
+            LaneFrame::Full(e, Some(p)) => {
+                assert_eq!(e, evm);
+                assert_eq!(p, pay);
+            }
+            other => panic!("expected full frame, got {other:?}"),
+        }
+        // single-EL
+        let framed = frame_lanes(&evm, None);
+        assert!(matches!(
+            unframe_lanes_any(&framed).unwrap(),
+            LaneFrame::Full(_, None)
+        ));
+    }
+
+    #[test]
+    fn legacy_decoder_fails_closed_on_compact_and_names_the_flag() {
+        let evm = payload_with_txs(0x10, vec![]);
+        let pay = payload_with_txs(0x20, vec![AlloyBytes::from(vec![0x02, 0x01])]);
+        let framed = frame_lanes_compact(&evm, &pay);
+        let err = unframe_lanes(&framed).unwrap_err();
+        assert!(err.to_string().contains("ARC_COMPACT_PAYMENT_PROPOSALS"));
+    }
+
+    #[test]
+    fn compact_rejects_bad_hash_remainder() {
+        let evm = payload_with_txs(0x10, vec![]);
+        let pay = payload_with_txs(0x20, vec![AlloyBytes::from(vec![0x02, 0x01])]);
+        let mut framed = frame_lanes_compact(&evm, &pay);
+        framed.push(0xff); // 33-byte tail
+        assert!(unframe_lanes_any(&framed).is_err());
+    }
+
+    #[test]
+    fn flag_off_framing_byte_identical() {
+        // frame_lanes untouched by the compact addition
+        let evm = payload_with_txs(0x10, vec![AlloyBytes::from(vec![0x01])]);
+        let pay = payload_with_txs(0x20, vec![AlloyBytes::from(vec![0x02])]);
+        let framed = frame_lanes(&evm, Some(&pay));
+        assert_eq!(
+            u64::from_le_bytes(framed[..8].try_into().unwrap()) & COMPACT_LANE_BIT,
+            0
+        );
     }
 }
