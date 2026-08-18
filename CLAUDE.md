@@ -490,6 +490,20 @@ how high can payment-lane tps go, and is "bigger blocks" the lever? Answer: **1 
   own. Re-runs MUST use `-l` (in the script) or start at nonce 0 → "nonce too low". The product dashboard
   summed pending+queued, so it showed a phantom backlog — payment-lane pending tile removed for this reason.
 
+**🧱 BUILDER SEPARATION PHASE 1 CLOSED (2026-08-17, branch `builder-separation`): v1.1 is the
+result, v1.2 measured NEGATIVE and was reverted.** Dedicated builder EL (papaduck NVMe) + CL-side
+prebuild stash. v0 (on-demand remote build) = -5..-10% (build stayed on critical path). v1.1
+(decide-time kick, dual timestamp t0/t0+1, commit b888ce6) = **+7% @150M / parity @300M / +11%
+@500M (18,649 tps)**, hit 54-82%. v1.2 (feed+kick at VALIDATION time, 3 timestamps) = **-5/-8/-9%
+across 150/300/500M, REVERTED (ea6e92c)** — three structural causes from live logs: builder must
+EXECUTE the fed block before builds start (get_value wins the race → candidates=0 dominant miss),
+stretched rounds blow even a 3-ts window (ts_needed = ts_prebuilt+4..6s observed), and 8
+full-payload feeds/height (4 validators × validation+decide) contend the builder + burn CL-side
+serialization on the critical path (val3, co-located with builder, worst hit rate 31%). LESSON:
+kick timing is NOT the lever; further prebuild gains need pending-visibility work — parked.
+Full record: docs/deferred-exec-100k.md RESULTS. NEXT RUNG: vote-on-hash (consensus-on-hash +
+total STF + lagged state root, docs/deferred-exec-100k.md) — user-authorized CL work, this branch.
+
 ## 🐛 BUG LEDGER (consolidated, 2026-08-10 — details in the dated entries + MISSION-EL.md)
 
 **Consensus-critical (all in the gated-off native-transfer fast path; all fixed; ONE root shape:
