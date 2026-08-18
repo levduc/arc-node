@@ -362,6 +362,11 @@ pub fn validate_payment_payload_structurally(
     // Arc convention: parent_beacon_block_root = parent execution block hash
     // (see eth-engine notify_new_block / payload attributes).
     block.header.parent_beacon_block_root = Some(parent_hash);
+    // Prague: Arc's consensus protocol ships payloads with NO requests sidecar,
+    // so the only requests hash any Arc validator can ever accept (gated mode
+    // enforces this via newPayload with empty execution_requests) is the empty
+    // one. Measured on live payment blocks: requestsHash = sha256 of empty.
+    block.header.requests_hash = Some(alloy_eips::eip7685::EMPTY_REQUESTS_HASH);
     let computed = block.header.hash_slow();
     if computed != claimed_hash {
         return PayloadValidationResult::Invalid {
@@ -533,6 +538,11 @@ mod tests {
             .into_block_raw()
             .expect("test payload must convert");
         block.header.parent_beacon_block_root = Some(parent);
+        // Prague: Arc's consensus protocol ships payloads with NO requests sidecar,
+        // so the only requests hash any Arc validator can ever accept (gated mode
+        // enforces this via newPayload with empty execution_requests) is the empty
+        // one. Measured on live payment blocks: requestsHash = sha256 of empty.
+        block.header.requests_hash = Some(alloy_eips::eip7685::EMPTY_REQUESTS_HASH);
         p.payload_inner.payload_inner.block_hash = block.header.hash_slow();
         p
     }
