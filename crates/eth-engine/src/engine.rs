@@ -100,6 +100,13 @@ pub trait EthereumAPI: Send + Sync {
     async fn txpool_status(&self) -> eyre::Result<TxpoolStatus>;
     /// Get the contents of the transaction pool.
     async fn txpool_inspect(&self) -> eyre::Result<TxpoolInspect>;
+    /// Fetch raw transaction bytes (EIP-2718 envelope / legacy RLP) by hash,
+    /// order-preserving, `None` per unknown hash. reth serves pool txs first,
+    /// then the database.
+    async fn get_raw_transactions_by_hash(
+        &self,
+        hashes: &[B256],
+    ) -> eyre::Result<Vec<Option<alloy_primitives::Bytes>>>;
 }
 
 /// Function that checks whether Osaka is active at a given timestamp.
@@ -593,6 +600,13 @@ where
     async fn txpool_inspect(&self) -> eyre::Result<TxpoolInspect> {
         (**self).txpool_inspect().await
     }
+
+    async fn get_raw_transactions_by_hash(
+        &self,
+        hashes: &[B256],
+    ) -> eyre::Result<Vec<Option<alloy_primitives::Bytes>>> {
+        (**self).get_raw_transactions_by_hash(hashes).await
+    }
 }
 
 #[async_trait]
@@ -633,6 +647,13 @@ impl EthereumAPI for Box<dyn EthereumAPI> {
 
     async fn txpool_inspect(&self) -> eyre::Result<TxpoolInspect> {
         (**self).txpool_inspect().await
+    }
+
+    async fn get_raw_transactions_by_hash(
+        &self,
+        hashes: &[B256],
+    ) -> eyre::Result<Vec<Option<alloy_primitives::Bytes>>> {
+        (**self).get_raw_transactions_by_hash(hashes).await
     }
 }
 

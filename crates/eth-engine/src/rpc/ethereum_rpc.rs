@@ -316,6 +316,60 @@ impl EthereumRPC {
     }
 
     /// Get the contents of the transaction pool.
+    /// Fetch raw transaction bytes by hash via a JSON-RPC batch of
+    /// `eth_getRawTransactionByHash`. Order-preserving; `None` per miss.
+    pub async fn get_raw_transactions_by_hash(
+        &self,
+        hashes: &[arc_consensus_types::B256],
+    ) -> eyre::Result<Vec<Option<alloy_primitives::Bytes>>> {
+        if hashes.is_empty() {
+            return Ok(vec![]);
+        }
+        let batch_requests = hashes
+            .iter()
+            .enumerate()
+            .map(|(id, h)| {
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "eth_getRawTransactionByHash",
+                    "params": [format!("{h:#x}")],
+                    "id": id
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let response = self
+            .client
+            .post(self.url.clone())
+            .json(&batch_requests)
+            .timeout(self.batch_request_timeout)
+            .send()
+            .await
+            .wrap_err("Failed to send raw-tx batch request")?;
+        let batch_responses: Vec<Value> = response
+            .json()
+            .await
+            .wrap_err("Failed to parse raw-tx batch response")?;
+
+        let mut results: Vec<Option<alloy_primitives::Bytes>> = vec![None; hashes.len()];
+        for resp in batch_responses {
+            let (Some(id), Some(result)) = (
+                resp.get("id").and_then(|v| v.as_u64()),
+                resp.get("result"),
+            ) else {
+                continue;
+            };
+            let id = id as usize;
+            if id >= hashes.len() || result.is_null() {
+                continue;
+            }
+            if let Ok(bytes) = from_value::<alloy_primitives::Bytes>(result.clone()) {
+                results[id] = Some(bytes);
+            }
+        }
+        Ok(results)
+    }
+
     pub async fn txpool_inspect(&self) -> eyre::Result<TxpoolInspect> {
         self.rpc_request("txpool_inspect", json!([]), self.default_timeout)
             .await
@@ -394,6 +448,15 @@ impl EthereumAPI for EthereumRPC {
         self.txpool_inspect()
             .await
             .wrap_err("EthereumRPC txpool_inspect call failed")
+    }
+
+    async fn get_raw_transactions_by_hash(
+        &self,
+        hashes: &[arc_consensus_types::B256],
+    ) -> eyre::Result<Vec<Option<alloy_primitives::Bytes>>> {
+        self.get_raw_transactions_by_hash(hashes)
+            .await
+            .wrap_err("EthereumRPC get_raw_transactions_by_hash call failed")
     }
 }
 

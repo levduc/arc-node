@@ -252,6 +252,31 @@ impl EthereumIPC {
         Ok(results)
     }
 
+    /// Fetch raw transaction bytes by hash via an IPC batch of
+    /// `eth_getRawTransactionByHash`. Order-preserving; `None` per miss.
+    pub async fn get_raw_transactions_by_hash(
+        &self,
+        hashes: &[arc_consensus_types::B256],
+    ) -> eyre::Result<Vec<Option<alloy_primitives::Bytes>>> {
+        if hashes.is_empty() {
+            return Ok(vec![]);
+        }
+        let params_list = hashes
+            .iter()
+            .map(|h| rpc_params![format!("{h:#x}")])
+            .collect::<Vec<_>>();
+        let batch: Vec<Option<Option<alloy_primitives::Bytes>>> = self
+            .ipc
+            .batch_request(
+                "eth_getRawTransactionByHash",
+                &params_list,
+                ETH_BATCH_REQUEST_TIMEOUT,
+            )
+            .await
+            .wrap_err("Failed to send raw-tx IPC batch request")?;
+        Ok(batch.into_iter().map(|b| b.flatten()).collect())
+    }
+
     /// Get the status of the transaction pool.
     pub async fn txpool_status(&self) -> eyre::Result<TxpoolStatus> {
         self.rpc_request("txpool_status", rpc_params!(), ETH_DEFAULT_TIMEOUT)
@@ -331,6 +356,15 @@ impl EthereumAPI for EthereumIPC {
     /// Get the contents of the transaction pool.
     async fn txpool_inspect(&self) -> eyre::Result<TxpoolInspect> {
         self.txpool_inspect().await
+    }
+
+    async fn get_raw_transactions_by_hash(
+        &self,
+        hashes: &[arc_consensus_types::B256],
+    ) -> eyre::Result<Vec<Option<alloy_primitives::Bytes>>> {
+        self.get_raw_transactions_by_hash(hashes)
+            .await
+            .wrap_err("EthereumIPC get_raw_transactions_by_hash call failed")
     }
 }
 
