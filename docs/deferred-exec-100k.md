@@ -124,6 +124,33 @@ builder slice alone.
 
 ## Phase-1 RESULTS (2026-08-17/18, fleet, paired same-chain arms)
 
+### Persistence profiling, first pass — per-table byte attribution (2026-08-18, 1.57M txs)
+
+Table/segment growth on val1's payment EL across a 25-min sustained window (reth_db_table_size +
+static-file segment gauges, host port 19001; ~479 B written per 122 B tx = ~4x byte amplification
+before MDBX page-COW):
+
+| table/segment | share | B/tx | note |
+|---|---|---|---|
+| transactions (static) | 45.6% | 218 | append-only already (V2) |
+| receipts | 30.6% | 147 | fully derivable for plain transfers -> synthetic candidate |
+| account-change-sets | 12.8% | 61 | UNWIND data — Arc has BFT finality, no reorgs: pure waste |
+| transaction-senders | 10.6% | 51 | recomputable cache |
+| ALL state tables (HashedAccounts etc.) | ~0.2% | ~1 | closed account set: state is NOT the write cost |
+
+Persist duration histogram same window: 185.1s over 2,732 saves = **67.7ms/block at only 569
+txs/block** — fixed per-block overhead dominates small blocks (44µs/tx figure holds for full ones).
+IMPLICATION: receipts + change-sets + senders = **54% of bytes are droppable/derivable on a
+payment lane without touching the tx bodies**; state tables are irrelevant. The surgery list from
+the caveats section is confirmed in priority order: (1) drop change-sets (no reorgs on Arc),
+(2) synthetic receipts, (3) lazy senders.
+
+FINAL-RUN CAVEATS (methodology): sustained-at-1G window was mis-governed (POOL_TARGET=12000 caps
+the pool below one 47,618-tx block -> 569 txs/blk, 1.1k tps — NOT a capacity statement; 1G
+sustained needs POOL_TARGET ~100-150k and remains admission-bound ~8-10k regardless); the
+post-churn 1G drain read 3,432ms/13.9k = the documented aged-chain artifact (age 3,232 after 25min
+churn) — the canonical 1G capacity remains the fresh-chain n=2: **29.4k/29.1k tps @ ~1.62s**.
+
 ### Deferred exec SOLIDIFIED at 1G — ~29k tps with zero reth modifications (2026-08-18, n=2)
 
 Two fresh fleet chains, deferred on all 4 CLs (env-verified), drain ladder incl. 1G, 50-height
