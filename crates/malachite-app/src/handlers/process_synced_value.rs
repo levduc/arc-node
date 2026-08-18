@@ -202,12 +202,24 @@ async fn on_process_synced_value(
             )
         })?
     {
-        debug_assert_eq!(
-            existing.validity, validity,
-            "dedup hit at height={height}, round={round}, block_hash={block_hash}: \
-             existing.validity ({:?}) != freshly-computed validity ({validity:?})",
-            existing.validity,
-        );
+        // Under deferred execution the round path stores a STRUCTURAL verdict
+        // while this sync path always re-executes (engine verdict). Structural
+        // validity is a superset of engine validity, so Valid(stored) vs
+        // Invalid(engine) is a legal disagreement on a byzantine payload — the
+        // decide anchor is what rejects such a block. Only the opposite
+        // direction (stored Invalid, engine Valid) still indicates a bug.
+        if existing.validity != validity {
+            warn!(
+                %height, %round, %block_hash,
+                "sync dedup validity disagreement: stored {:?} vs engine {validity:?} \
+                 (expected only under deferred exec on a byzantine payload)",
+                existing.validity,
+            );
+            debug_assert!(
+                !(existing.validity == Validity::Invalid && validity == Validity::Valid),
+                "stored Invalid but engine says Valid at height={height} — this is a bug"
+            );
+        }
         return Ok(Some(ProposedValue::from(&existing)));
     }
 
