@@ -154,6 +154,7 @@ async fn fetch_and_process_pending_proposals(
         validator_set,
         proposer_selector,
         signing_provider,
+        payment_engine,
         metrics,
     )
     .await
@@ -189,6 +190,7 @@ async fn process_pending_proposal_parts(
     validator_set: &ValidatorSet,
     proposer_selector: &dyn ProposerSelector,
     signing_provider: &ArcSigningProvider,
+    payment_engine: Option<&Engine>,
     metrics: &AppMetrics,
 ) -> eyre::Result<()> {
     for parts in pending_parts {
@@ -212,7 +214,7 @@ async fn process_pending_proposal_parts(
         // This temporary inconsistency is acceptable here because all blocks
         // in the undecided table are immediately validated by the subsequent
         // `validate_undecided_blocks` in `AppMsg::StartedRound` handler.
-        match assemble_block_from_parts(&parts) {
+        match assemble_block_from_parts(&parts, payment_engine).await {
             Ok(block) => {
                 info!(%height, %round, %proposer, "Added pending block to undecided");
 
@@ -633,6 +635,7 @@ mod tests {
             &validator_set,
             &selector,
             &provider,
+            None,
             &metrics,
         )
         .await

@@ -283,6 +283,7 @@ async fn validate_block(
 }
 
 struct ProcessingContext<'a> {
+    payment_engine: Option<&'a Engine>,
     store: &'a Store,
     metrics: &'a AppMetrics,
     signing_provider: &'a ArcSigningProvider,
@@ -296,6 +297,7 @@ struct ProcessingContext<'a> {
 impl<'a> From<&'a HandlerContext<'_, '_>> for ProcessingContext<'a> {
     fn from(handler_ctx: &'a HandlerContext<'_, '_>) -> Self {
         Self {
+            payment_engine: handler_ctx.payment_engine,
             store: &handler_ctx.store,
             metrics: &handler_ctx.metrics,
             signing_provider: &handler_ctx.signing_provider,
@@ -363,7 +365,7 @@ async fn process_proposal_parts(
     }
 
     // Assemble the block
-    let block = match assemble_block_from_parts(&parts) {
+    let block = match assemble_block_from_parts(&parts, ctx.payment_engine).await {
         Ok(block) => block,
         Err(e) => {
             warn!(
@@ -482,6 +484,7 @@ mod tests {
         let metrics = AppMetrics::default();
 
         let ctx = ProcessingContext {
+            payment_engine: None,
             store: &store,
             metrics: &metrics,
             signing_provider: &provider,

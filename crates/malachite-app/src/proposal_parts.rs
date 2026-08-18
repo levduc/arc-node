@@ -34,6 +34,8 @@ use arc_consensus_types::{
 };
 
 use crate::block::{frame_lanes, unframe_lanes, ConsensusBlock};
+use arc_consensus_types::block::{unframe_lanes_any, LaneFrame};
+use arc_eth_engine::engine::Engine;
 
 #[cfg_attr(test, mockall::automock(type Error = std::io::Error;))]
 pub trait PublishProposalPart {
@@ -265,7 +267,16 @@ pub fn resolve_expected_proposer<'a>(
 }
 
 /// Re-assemble a [`ConsensusBlock`] from its [`ProposalParts`].
-pub fn assemble_block_from_parts(parts: &ProposalParts) -> eyre::Result<ConsensusBlock> {
+///
+/// Handles BOTH wire formats unconditionally (full and compact — mixed
+/// new-binary fleets interoperate regardless of per-node emission flags).
+/// Compact frames need the payment EL to reconstruct the tx list, hence the
+/// async signature and the engine handle; callers on full-only paths may pass
+/// `None` (a compact frame then errors out loudly).
+pub async fn assemble_block_from_parts(
+    parts: &ProposalParts,
+    payment_engine: Option<&Engine>,
+) -> eyre::Result<ConsensusBlock> {
     // Calculate total size and allocate buffer
     let total_size = parts.data_size();
     let mut block_bytes = Vec::with_capacity(total_size);
@@ -275,8 +286,24 @@ pub fn assemble_block_from_parts(parts: &ProposalParts) -> eyre::Result<Consensu
         block_bytes.extend_from_slice(&part.bytes);
     }
 
-    // Framed: [u64-LE len(evm)] [evm SSZ] [payment SSZ (optional)].
-    let (execution_payload, payment_payload) = unframe_lanes(&block_bytes)?;
+    let (execution_payload, payment_payload) = match unframe_lanes_any(&block_bytes)? {
+        LaneFrame::Full(evm, pay) => (evm, pay),
+        LaneFrame::CompactPayment {
+            execution_payload,
+            payment_header,
+            tx_hashes,
+        } => {
+            let engine = payment_engine.ok_or_else(|| {
+                eyre::eyre!(
+                    "compact payment proposal received but no payment engine available \
+                     to reconstruct it"
+                )
+            })?;
+            let payment =
+                reconstruct_compact_payment(engine, payment_header, &tx_hashes).await?;
+            (execution_payload, Some(payment))
+        }
+    };
 
     let consensus_block = ConsensusBlock {
         height: parts.height(),
@@ -292,6 +319,62 @@ pub fn assemble_block_from_parts(parts: &ProposalParts) -> eyre::Result<Consensu
     Ok(consensus_block)
 }
 
+/// Rebuilds a full payment payload from a compact frame: batch-fetch the raw
+/// tx bytes from the local payment EL (pool first, then DB), verify each
+/// fetched tx hashes to the requested hash (guards EL bugs — µs-cheap), and
+/// re-attach the tx list to the header. Any miss is an assembly failure: the
+/// caller's existing failure path yields no proposed value, the round times
+/// out and rotates. Downstream, the structural/newPayload block-hash check
+/// verifies the reconstruction byte-exactly (tx root → header hash), so a
+/// wrong reconstruction can never be voted Valid.
+async fn reconstruct_compact_payment(
+    payment_engine: &Engine,
+    mut payment_header: alloy_rpc_types_engine::ExecutionPayloadV3,
+    tx_hashes: &[arc_consensus_types::BlockHash],
+) -> eyre::Result<alloy_rpc_types_engine::ExecutionPayloadV3> {
+    use sha3::{Digest, Keccak256};
+
+    let fetched = payment_engine
+        .eth
+        .get_raw_transactions_by_hash(tx_hashes)
+        .await
+        .wrap_err("compact reconstruction: raw-tx batch fetch failed")?;
+    if fetched.len() != tx_hashes.len() {
+        return Err(eyre::eyre!(
+            "compact reconstruction: EL returned {} entries for {} hashes",
+            fetched.len(),
+            tx_hashes.len()
+        ));
+    }
+
+    let mut txs = Vec::with_capacity(tx_hashes.len());
+    let mut missing = 0usize;
+    for (i, (raw, want)) in fetched.into_iter().zip(tx_hashes).enumerate() {
+        match raw {
+            Some(bytes) => {
+                let mut hasher = Keccak256::new();
+                hasher.update(bytes.as_ref());
+                if hasher.finalize().as_slice() != want.as_slice() {
+                    return Err(eyre::eyre!(
+                        "compact reconstruction: EL returned bytes not matching hash {want} at index {i}"
+                    ));
+                }
+                txs.push(bytes);
+            }
+            None => missing += 1,
+        }
+    }
+    if missing > 0 {
+        return Err(eyre::eyre!(
+            "compact reconstruction: {missing}/{} txs not found in local payment EL",
+            tx_hashes.len()
+        ));
+    }
+
+    payment_header.payload_inner.payload_inner.transactions = txs;
+    Ok(payment_header)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +383,62 @@ mod tests {
     use arc_consensus_types::signing::SigningProvider;
     use arc_consensus_types::{Address, ProposalFin, ProposalInit, ValidatorSet};
     use arc_signer::local::{LocalSigningProvider, PrivateKey, PublicKey};
+
+    use arc_eth_engine::engine::{MockEngineAPI, MockEthereumAPI};
+    use sha3::{Digest as _, Keccak256};
+
+    fn engine_with_pool(pool: Vec<alloy_primitives::Bytes>) -> Engine {
+        let mut eth = MockEthereumAPI::new();
+        eth.expect_get_raw_transactions_by_hash().returning(move |hashes| {
+            let pool = pool.clone();
+            let out = hashes
+                .iter()
+                .map(|want| {
+                    pool.iter()
+                        .find(|b| {
+                            let mut h = Keccak256::new();
+                            h.update(b.as_ref());
+                            h.finalize().as_slice() == want.as_slice()
+                        })
+                        .cloned()
+                })
+                .collect();
+            Ok(out)
+        });
+        Engine::new(Box::new(MockEngineAPI::new()), Box::new(eth))
+    }
+
+    #[tokio::test]
+    async fn compact_reconstruction_round_trip_and_misses() {
+        use arc_consensus_types::block::{frame_lanes_compact, unframe_lanes_any, LaneFrame};
+
+        let txs = vec![
+            alloy_primitives::Bytes::from(vec![0x02, 0xaa, 0xbb]),
+            alloy_primitives::Bytes::from(vec![0x02, 0xcc]),
+        ];
+        let evm = crate::block::tests_payload_helper(0x10, vec![]);
+        let pay = crate::block::tests_payload_helper(0x20, txs.clone());
+        let framed = frame_lanes_compact(&evm, &pay);
+        let LaneFrame::CompactPayment { payment_header, tx_hashes, .. } =
+            unframe_lanes_any(&framed).unwrap()
+        else {
+            panic!("expected compact frame")
+        };
+
+        // happy path: full pool -> byte-identical payload
+        let engine = engine_with_pool(txs.clone());
+        let rebuilt = reconstruct_compact_payment(&engine, payment_header.clone(), &tx_hashes)
+            .await
+            .unwrap();
+        assert_eq!(rebuilt, pay);
+
+        // missing tx -> loud error naming the miss count
+        let engine = engine_with_pool(txs[..1].to_vec());
+        let err = reconstruct_compact_payment(&engine, payment_header, &tx_hashes)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("1/2"), "err: {err:#}");
+    }
 
     fn make_validator_set(n: usize) -> (Vec<PrivateKey>, ValidatorSet) {
         let mut rng = rand::thread_rng();
@@ -497,7 +636,7 @@ mod tests {
         // Sanity: Init carries the pol_round we set
         assert_eq!(parts.init().pol_round, pol_round);
 
-        let assembled = assemble_block_from_parts(&parts).unwrap();
+        let assembled = assemble_block_from_parts(&parts, None).await.unwrap();
         assert_eq!(
             assembled.valid_round, pol_round,
             "assemble_block_from_parts must propagate pol_round as valid_round"
@@ -533,7 +672,7 @@ mod tests {
 
         assert_eq!(parts.init().pol_round, Round::Nil);
 
-        let assembled = assemble_block_from_parts(&parts).unwrap();
+        let assembled = assemble_block_from_parts(&parts, None).await.unwrap();
         assert_eq!(assembled.valid_round, Round::Nil);
     }
 
@@ -574,7 +713,7 @@ mod tests {
         let (raw_parts, _sig) = make_proposal_parts(&provider, &block).await.unwrap();
         let parts = ProposalParts::new(raw_parts).unwrap();
 
-        let assembled = assemble_block_from_parts(&parts).unwrap();
+        let assembled = assemble_block_from_parts(&parts, None).await.unwrap();
         assert_eq!(
             assembled.execution_payload, evm_payload,
             "EVM lane must survive streaming"
