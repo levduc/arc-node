@@ -124,6 +124,31 @@ builder slice alone.
 
 ## Phase-1 RESULTS (2026-08-17/18, fleet, paired same-chain arms)
 
+### Compact payment proposals (ARC_COMPACT_PAYMENT_PROPOSALS) — BUILT, LOCAL GATE PASSED, FLEET A/B PENDING (2026-08-18)
+
+Live payment proposals stream the payment lane as 32B tx hashes (COMPACT_LANE_BIT marker in the
+lane-frame length prefix; ~74% smaller payment section, 2.9MB -> 0.77MB at 24k txs). Receivers
+rebuild the exact payload from their local payment EL (batched eth_getRawTransactionByHash,
+hash-verified per tx) BEFORE validation/storage — stores, decide, restream and value-sync all
+still carry full payloads; sync stays full-format by design (decided txs leave the pools).
+Decode is unconditional, only emission is flag-gated (mixed new-binary fleets interop; old
+binaries fail closed naming the flag). The deferred-exec structural check doubles as the
+byte-exact reconstruction gate (tx root -> block hash). Restream frames by own flag: uniform
+fleets correct; cross-format restream in mixed-flag fleets fails signature verification safely.
+
+Found en route: **reth's JSON-RPC batch limit is 100 requests** and oversized batches get a
+SINGLE error object, not an array (first live run stalled at h82 on it) — the fetch sub-batches
+at 100, concurrent over HTTP, sequential over IPC.
+
+Local live gate (4 validators, deferred+compact stacked, congest load): 120-height dual-lane
+agreement, ZERO reconstruction errors / assembly failures on all 4 CLs, restart leg OK.
+Commits 521ca79, 1b3b6d5, 063b67b, 2fcc813 + sub-batch fix. 267 lib tests.
+
+PENDING: fleet paired drains (deferred-only vs deferred+compact) to price the ~18µs/tx
+transport+decode term — blocked on tailscale re-auth at time of writing. RISK to watch on the
+fleet: pool-gossip lag on live ingress (a tx in the proposer's pool but not yet in a remote
+pool = reconstruction miss = Nil round); zero misses locally, but fleet gossip is cross-machine.
+
 ### Vote-on-hash increment 1 (ARC_PAYMENT_DEFERRED_EXEC) — MEASURED POSITIVE (2026-08-18)
 
 First rung of consensus-on-hash: validators vote on the payment lane after STRUCTURAL validation
