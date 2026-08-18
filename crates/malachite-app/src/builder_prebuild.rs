@@ -37,5 +37,7 @@ pub struct PrebuiltPayment {
     pub payload: ExecutionPayloadV3,
 }
 
-/// Shared single-slot stash: at most one prebuilt payload (for our next proposer turn).
-pub type PrebuiltSlot = Arc<Mutex<Option<PrebuiltPayment>>>;
+/// Shared stash: the prebuilt candidates for our next proposer turn. Two entries in
+/// practice — timestamps t0 and t0+1 (the dual-timestamp trick that kills the
+/// second-rollover miss class by construction).
+pub type PrebuiltSlot = Arc<Mutex<Vec<PrebuiltPayment>>>;

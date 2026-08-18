@@ -141,7 +141,7 @@ pub async fn handle(
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
-                    let timestamp = evm_timestamp.max(now);
+                    let t0 = evm_timestamp.max(now);
                     let head = match be.eth.get_block_by_number("latest").await {
                         Ok(Some(h)) if h.block_hash == hash => h,
                         _ => {
@@ -149,17 +149,29 @@ pub async fn handle(
                             return;
                         }
                     };
-                    match be.generate_block(&head, timestamp, &fee_recipient).await {
-                        Ok(payload) => {
-                            debug!("🏗️ prebuilt next payment payload on the builder (ts={timestamp})");
-                            *slot.lock().await = Some(crate::builder_prebuild::PrebuiltPayment {
-                                parent: hash,
-                                timestamp,
-                                fee_recipient,
-                                payload,
-                            });
+                    // Dual-timestamp: the decide->get_value gap crosses a second boundary
+                    // often enough that a single predicted timestamp missed ~70% of turns.
+                    // Build t0 and t0+1 concurrently (distinct payload jobs on the builder);
+                    // get_value serves whichever matches.
+                    slot.lock().await.clear();
+                    let (r0, r1) = tokio::join!(
+                        be.generate_block(&head, t0, &fee_recipient),
+                        be.generate_block(&head, t0 + 1, &fee_recipient),
+                    );
+                    let mut stash = slot.lock().await;
+                    for (ts, r) in [(t0, r0), (t0 + 1, r1)] {
+                        match r {
+                            Ok(payload) => {
+                                debug!("🏗️ prebuilt next payment payload (ts={ts})");
+                                stash.push(crate::builder_prebuild::PrebuiltPayment {
+                                    parent: hash,
+                                    timestamp: ts,
+                                    fee_recipient,
+                                    payload,
+                                });
+                            }
+                            Err(e) => debug!("builder prebuild(ts={ts}): build failed: {e:#}"),
                         }
-                        Err(e) => debug!("builder prebuild: build failed: {e:#}"),
                     }
                 });
             }

@@ -332,22 +332,26 @@ pub async fn build_block(
             // Validation of the payload stays on the LOCAL engine either way.
             let mut prebuilt = None;
             if payment_builder_engine.is_some() {
-                if let Some(p) = prebuilt_slot.lock().await.take() {
+                let mut stash = prebuilt_slot.lock().await;
+                let candidates = std::mem::take(&mut *stash);
+                drop(stash);
+                let n = candidates.len();
+                let ts_seen: Vec<u64> = candidates.iter().map(|p| p.timestamp).collect();
+                for p in candidates {
                     if p.parent == payment_parent.block_hash
                         && p.timestamp == timestamp
                         && p.fee_recipient == *fee_recipient
                     {
                         info!("🏗️ prebuilt payment payload HIT (builder-served, zero build on path)");
                         prebuilt = Some(p.payload);
-                    } else {
-                        warn!(
-                            parent_ok = %(p.parent == payment_parent.block_hash),
-                            ts_prebuilt = p.timestamp, ts_needed = timestamp,
-                            "builder prebuilt MISS; building locally"
-                        );
+                        break;
                     }
-                } else {
-                    warn!("builder prebuilt slot empty (MISS); building locally");
+                }
+                if prebuilt.is_none() {
+                    warn!(
+                        candidates = n, ts_prebuilt = ?ts_seen, ts_needed = timestamp,
+                        "builder prebuilt MISS; building locally"
+                    );
                 }
             }
 
