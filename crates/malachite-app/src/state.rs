@@ -134,6 +134,10 @@ pub struct State {
     /// Monitor for tracking round-0 proposal timing and success
     pub proposal_monitor: Option<ProposalMonitor>,
 
+    /// Phase-1 builder separation v1: payment payload the remote builder pre-built for
+    /// this node's next proposer turn (kicked at decide, consumed by get_value on match).
+    pub builder_prebuilt: crate::builder_prebuild::PrebuiltSlot,
+
     /// Timestamps of heights that received a synced value via ProcessSyncedValue.
     synced_heights: HashMap<Height, SystemTime>,
 
@@ -188,6 +192,7 @@ impl State {
             current_height: initial_height, // will be updated from reth
             current_round: Round::Nil,
             current_proposer: None,
+            builder_prebuilt: Default::default(),
             validator_set: ValidatorSet::default(), // initially empty, will be updated from reth
             store,
             stream_nonce: 0,

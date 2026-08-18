@@ -74,11 +74,13 @@ pub async fn handle(
     let previous_block = state.previous_block.as_ref();
     let signing_provider = state.signing_provider();
 
+    let prebuilt_slot = state.builder_prebuilt.clone();
     let proposed_value = on_get_value(
         network,
         engine,
         payment_engine,
         payment_builder_engine,
+        prebuilt_slot,
         metrics,
         store,
         height,
@@ -127,6 +129,7 @@ async fn on_get_value(
     engine: &Engine,
     payment_engine: Option<&Engine>,
     payment_builder_engine: Option<&Engine>,
+    prebuilt_slot: crate::builder_prebuild::PrebuiltSlot,
     metrics: AppMetrics,
     store: Store,
     height: Height,
@@ -163,6 +166,7 @@ async fn on_get_value(
                 engine,
                 payment_engine,
                 payment_builder_engine,
+                prebuilt_slot,
                 &metrics,
                 &store,
                 height,
@@ -234,6 +238,7 @@ async fn build_and_validate_block(
     engine: &Engine,
     payment_engine: Option<&Engine>,
     payment_builder_engine: Option<&Engine>,
+    prebuilt_slot: crate::builder_prebuild::PrebuiltSlot,
     metrics: &AppMetrics,
     store: &Store,
     height: Height,
@@ -248,6 +253,7 @@ async fn build_and_validate_block(
         engine,
         payment_engine,
         payment_builder_engine,
+        prebuilt_slot,
         metrics,
         height,
         round,
@@ -288,6 +294,7 @@ pub async fn build_block(
     engine: &Engine,
     payment_engine: Option<&Engine>,
     payment_builder_engine: Option<&Engine>,
+    prebuilt_slot: crate::builder_prebuild::PrebuiltSlot,
     metrics: &AppMetrics,
     height: Height,
     round: Round,
@@ -317,19 +324,34 @@ pub async fn build_block(
                 .ok_or_else(|| eyre!("payment lane: EL2 has no latest block"))?;
             let timestamp = execution_payload.timestamp();
 
-            // Phase-1 builder separation (docs/deferred-exec-100k.md): when a remote
-            // builder is configured AND its head matches the local lane head (the decide
-            // path keeps them in lockstep), build the payment payload on the builder.
-            // Any mismatch or error falls back to the local build — stock behavior.
-            // Validation of the built payload stays on the LOCAL engine either way.
-            let built_remotely = match payment_builder_engine {
-                Some(be) => {
-                    builder_payment_payload(be, &payment_parent, timestamp, fee_recipient).await
+            // Phase-1 builder separation v1 (docs/deferred-exec-100k.md): consume the
+            // payload the remote builder PRE-BUILT for this turn (kicked at decide time).
+            // Serve it only on an exact attribute match; any miss falls back to the local
+            // build — v0's on-demand remote build is gone (it measured -5..-10% because it
+            // put the build AND the builder's catch-up execution on the critical path).
+            // Validation of the payload stays on the LOCAL engine either way.
+            let mut prebuilt = None;
+            if payment_builder_engine.is_some() {
+                if let Some(p) = prebuilt_slot.lock().await.take() {
+                    if p.parent == payment_parent.block_hash
+                        && p.timestamp == timestamp
+                        && p.fee_recipient == *fee_recipient
+                    {
+                        info!("🏗️ prebuilt payment payload HIT (builder-served, zero build on path)");
+                        prebuilt = Some(p.payload);
+                    } else {
+                        warn!(
+                            parent_ok = %(p.parent == payment_parent.block_hash),
+                            ts_prebuilt = p.timestamp, ts_needed = timestamp,
+                            "builder prebuilt MISS; building locally"
+                        );
+                    }
+                } else {
+                    warn!("builder prebuilt slot empty (MISS); building locally");
                 }
-                None => None,
-            };
+            }
 
-            let payment_payload = match built_remotely {
+            let payment_payload = match prebuilt {
                 Some(p) => p,
                 None => pe
                     .generate_block(&payment_parent, timestamp, fee_recipient)
@@ -373,50 +395,4 @@ async fn get_previously_built_block(
     let blocks = undecided_blocks.get_by_round(height, round).await?;
     let block = blocks.into_iter().find(|p| p.proposer == proposer);
     Ok(block)
-}
-
-/// Phase-1 builder separation: attempt to build the payment payload on the REMOTE
-/// builder engine. Returns `None` on any problem — stale builder head, RPC error,
-/// build failure — so the caller falls back to the local build path. Fail-safe by
-/// construction: this function can slow a height, never break one.
-async fn builder_payment_payload(
-    builder: &Engine,
-    local_parent: &ExecutionBlock,
-    timestamp: u64,
-    fee_recipient: &Address,
-) -> Option<alloy_rpc_types_engine::ExecutionPayloadV3> {
-    let builder_head = match builder.eth.get_block_by_number("latest").await {
-        Ok(Some(head)) => head,
-        Ok(None) => {
-            warn!("builder: no latest block; falling back to local build");
-            return None;
-        }
-        Err(e) => {
-            warn!("builder: head fetch failed; falling back to local build: {e:#}");
-            return None;
-        }
-    };
-
-    // The builder must sit exactly on the local lane head (the decide path forwards
-    // every decided payment block to it). A lagging builder would produce a payload
-    // whose parent the validators reject — cheaper to detect here and fall back.
-    if builder_head.block_hash != local_parent.block_hash {
-        warn!(
-            builder_head = %builder_head.block_hash,
-            local_head = %local_parent.block_hash,
-            "builder: head mismatch; falling back to local build"
-        );
-        return None;
-    }
-
-    match builder.generate_block(&builder_head, timestamp, fee_recipient).await {
-        Ok(payload) => {
-            debug!("🏗️ Payment payload built via remote builder");
-            Some(payload)
-        }
-        Err(e) => {
-            warn!("builder: build failed; falling back to local build: {e:#}");
-            None
-        }
-    }
 }

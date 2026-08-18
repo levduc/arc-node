@@ -21,6 +21,7 @@
 
 mod app;
 mod block;
+mod builder_prebuild;
 mod config;
 mod env_config;
 mod finalize;

@@ -18,7 +18,7 @@ use eyre::{eyre, Context};
 use tracing::{debug, error, info, warn};
 
 use malachitebft_app_channel::Reply;
-use malachitebft_core_types::CommitCertificate;
+use malachitebft_core_types::{CommitCertificate, Context as _, Round};
 
 use arc_consensus_types::{ArcContext, Height};
 use arc_eth_engine::engine::Engine;
@@ -74,7 +74,6 @@ pub async fn handle(
     let block = decide(
         block_finalizer,
         payment_engine,
-        payment_builder_engine,
         store, // undecided blocks repository
         store, // decided blocks repository
         pruning_service,
@@ -86,7 +85,7 @@ pub async fn handle(
     .await;
 
     match block {
-        Ok(block) => {
+        Ok((block, payment_payload)) => {
             info!("🟢 Successfully committed the decided value");
 
             let catch_up_threshold = state.env_config().sync_catch_up_threshold;
@@ -99,8 +98,71 @@ pub async fn handle(
 
             state.sync_state = new_sync_state;
 
+            let evm_timestamp = block.timestamp;
             let next_height_info =
                 prepare_next_height(decided_height, block, new_sync_state, engine).await?;
+
+            // Phase-1 builder separation: keep the remote builder following the canonical
+            // payment head (newPayload + forkchoice), and — when WE are the next proposer
+            // (RoundRobin is deterministic) — chain a speculative build of our next payment
+            // payload behind the feed so get_value can serve it from the stash. Everything
+            // here is fire-and-forget: failures only mean get_value falls back to a local
+            // build. A miss can slow a height, never break one.
+            if let (Some(be), Some(pp)) = (payment_builder_engine, payment_payload) {
+                let im_next = state
+                    .ctx
+                    .select_proposer(
+                        &next_height_info.validator_set,
+                        next_height_info.next_height,
+                        Round::new(0),
+                    )
+                    .address
+                    == state.address();
+                let be = be.clone();
+                let slot = state.builder_prebuilt.clone();
+                let fee_recipient = state.fee_recipient();
+                tokio::spawn(async move {
+                    let hash = pp.payload_inner.payload_inner.block_hash;
+                    if let Err(e) = be.notify_new_block(&pp, Vec::new()).await {
+                        debug!("builder follow: newPayload({hash}) failed: {e:#}");
+                        return;
+                    }
+                    if let Err(e) = be.set_latest_forkchoice_state(hash).await {
+                        debug!("builder follow: forkchoice({hash}) failed: {e:#}");
+                        return;
+                    }
+                    if !im_next {
+                        return;
+                    }
+                    // Predict the payment payload's attrs for our turn: parent = the block
+                    // we just fed (exact), fee_recipient = ours (exact), timestamp = the
+                    // EVM lane's formula max(parent_ts, now) — the only miss class.
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let timestamp = evm_timestamp.max(now);
+                    let head = match be.eth.get_block_by_number("latest").await {
+                        Ok(Some(h)) if h.block_hash == hash => h,
+                        _ => {
+                            debug!("builder prebuild: head not at {hash}; skipping");
+                            return;
+                        }
+                    };
+                    match be.generate_block(&head, timestamp, &fee_recipient).await {
+                        Ok(payload) => {
+                            debug!("🏗️ prebuilt next payment payload on the builder (ts={timestamp})");
+                            *slot.lock().await = Some(crate::builder_prebuild::PrebuiltPayment {
+                                parent: hash,
+                                timestamp,
+                                fee_recipient,
+                                payload,
+                            });
+                        }
+                        Err(e) => debug!("builder prebuild: build failed: {e:#}"),
+                    }
+                });
+            }
 
             state.decision = Some(Decision::Success(Box::new(next_height_info)));
         }
@@ -147,7 +209,6 @@ async fn store_proposal_monitor_on_decision(
 async fn decide(
     block_finalizer: impl BlockFinalizer,
     payment_engine: Option<&Engine>,
-    payment_builder_engine: Option<&Engine>,
     undecided_blocks: impl UndecidedBlocksRepository,
     decided_blocks: impl DecidedBlocksRepository,
     pruning_service: impl PruningService,
@@ -155,7 +216,7 @@ async fn decide(
     stats: &Stats,
     metrics: &AppMetrics,
     commit_ack: Reply<()>,
-) -> eyre::Result<ExecutionBlock> {
+) -> eyre::Result<(ExecutionBlock, Option<alloy_rpc_types_engine::ExecutionPayloadV3>)> {
     let height = certificate.height;
     let round = certificate.round;
     let value_id = certificate.value_id;
@@ -211,26 +272,6 @@ async fn decide(
                 format!("payment lane: failed to advance EL2 head to {payment_hash} at height={height}")
             })?;
         debug!("🪙 Payment lane forkchoice updated to {payment_hash} at height {height}");
-
-        // Phase-1 builder separation: keep the remote builder following the canonical
-        // payment head by forwarding every decided payment block to it (newPayload +
-        // forkchoice). Fire-and-forget: a lagging or dead builder only causes the
-        // build path's head-mismatch guard to fall back to local builds — never an
-        // error on the decide path. Reth p2p backfill heals larger gaps.
-        if let Some(be) = payment_builder_engine {
-            let be = be.clone();
-            let payload = payment_payload.clone();
-            tokio::spawn(async move {
-                let hash = payload.payload_inner.payload_inner.block_hash;
-                if let Err(e) = be.notify_new_block(&payload, Vec::new()).await {
-                    debug!("builder follow: newPayload({hash}) failed: {e:#}");
-                    return;
-                }
-                if let Err(e) = be.set_latest_forkchoice_state(hash).await {
-                    debug!("builder follow: forkchoice({hash}) failed: {e:#}");
-                }
-            });
-        }
     }
 
     // Update the latest block
@@ -242,7 +283,7 @@ async fn decide(
     // Update block finalize time metric
     metrics.observe_block_finalize_time(stats.height_started().elapsed().as_secs_f64());
 
-    Ok(new_latest_block)
+    Ok((new_latest_block, block.payment_payload.clone()))
 }
 
 /// Commits a value with the given certificate, cleanup stale consensus data and prune historical data.
@@ -531,7 +572,6 @@ mod tests {
         let result = decide(
             block_finalizer,
             None,
-            None,
             undecided_blocks,
             decided_blocks,
             pruning_service,
@@ -542,7 +582,7 @@ mod tests {
         )
         .await;
 
-        let block = result.unwrap();
+        let (block, _payment) = result.unwrap();
         assert_eq!(block.block_number, height);
         assert_eq!(block.timestamp, timestamp);
     }
@@ -569,7 +609,6 @@ mod tests {
 
         let result = decide(
             block_finalizer,
-            None,
             None,
             undecided_blocks,
             decided_blocks,
@@ -607,7 +646,6 @@ mod tests {
 
         let result = decide(
             block_finalizer,
-            None,
             None,
             undecided_blocks,
             decided_blocks,
@@ -651,7 +689,6 @@ mod tests {
 
         let result = decide(
             block_finalizer,
-            None,
             None,
             undecided_blocks,
             decided_blocks,
