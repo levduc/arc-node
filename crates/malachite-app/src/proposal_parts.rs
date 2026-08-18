@@ -100,8 +100,9 @@ pub async fn prepare_stream(
     stream_id: StreamId,
     signing_provider: &impl SigningProvider<ArcContext>,
     consensus_block: &ConsensusBlock,
+    compact_payment: bool,
 ) -> eyre::Result<(Vec<StreamMessage<ProposalPart>>, Signature)> {
-    let (parts, signature) = make_proposal_parts(signing_provider, consensus_block)
+    let (parts, signature) = make_proposal_parts(signing_provider, consensus_block, compact_payment)
         .await
         .wrap_err("Failed to construct proposal parts")?;
 
@@ -130,13 +131,19 @@ pub async fn prepare_stream(
 pub async fn make_proposal_parts(
     signing_provider: &impl SigningProvider<ArcContext>,
     block: &ConsensusBlock,
+    compact_payment: bool,
 ) -> Result<(Vec<ProposalPart>, Signature), SigningError> {
     let mut hasher = sha3::Keccak256::new();
     let mut parts = Vec::new();
 
     // Framed payload bytes: [u64-LE len(evm)] [evm SSZ] [payment SSZ (optional)].
     // The length prefix lets the decoder split the two lanes; absent payment lane => no trailer.
-    let data = frame_lanes(&block.execution_payload, block.payment_payload.as_ref());
+    let data = match (compact_payment, block.payment_payload.as_ref()) {
+        (true, Some(payment)) => {
+            arc_consensus_types::block::frame_lanes_compact(&block.execution_payload, payment)
+        }
+        _ => frame_lanes(&block.execution_payload, block.payment_payload.as_ref()),
+    };
 
     // Init
     {
@@ -630,7 +637,7 @@ mod tests {
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());
-        let (raw_parts, _sig) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (raw_parts, _sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
         let parts = ProposalParts::new(raw_parts).unwrap();
 
         // Sanity: Init carries the pol_round we set
@@ -667,7 +674,7 @@ mod tests {
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());
-        let (raw_parts, _sig) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (raw_parts, _sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
         let parts = ProposalParts::new(raw_parts).unwrap();
 
         assert_eq!(parts.init().pol_round, Round::Nil);
@@ -677,6 +684,46 @@ mod tests {
     }
 
     /// Dual-EL: a block carrying BOTH an EVM and a payment payload must round-trip
+    /// COMPACT wire round-trip: make_proposal_parts(compact) -> assemble with a
+    /// mock EL pool holding the txs -> byte-identical ConsensusBlock.
+    #[tokio::test]
+    async fn assemble_block_round_trips_compact_payment() {
+        let txs = vec![
+            alloy_primitives::Bytes::from(vec![0x02, 0x0a, 0x0b, 0x0c]),
+            alloy_primitives::Bytes::from(vec![0x01, 0x0d]),
+            alloy_primitives::Bytes::from(vec![0x02, 0x0e, 0x0f]),
+        ];
+        let evm_payload = crate::block::tests_payload_helper(0x11, vec![]);
+        let pay_payload = crate::block::tests_payload_helper(0x22, txs.clone());
+
+        let (keys, _) = make_validator_set(1);
+        let signing_key = &keys[0];
+        let proposer = Address::from_public_key(&signing_key.public_key());
+
+        let block = ConsensusBlock {
+            height: Height::new(7),
+            round: Round::new(0),
+            valid_round: Round::Nil,
+            proposer,
+            validity: Validity::Valid,
+            execution_payload: evm_payload.clone(),
+            signature: None,
+            payment_payload: Some(pay_payload.clone()),
+        };
+
+        let provider = LocalSigningProvider::new(signing_key.clone());
+        let (raw_parts, _sig) = make_proposal_parts(&provider, &block, true).await.unwrap();
+        let parts = ProposalParts::new(raw_parts).unwrap();
+
+        // without an engine the compact frame must fail loudly, not silently degrade
+        assert!(assemble_block_from_parts(&parts, None).await.is_err());
+
+        let engine = engine_with_pool(txs);
+        let assembled = assemble_block_from_parts(&parts, Some(&engine)).await.unwrap();
+        assert_eq!(assembled.execution_payload, evm_payload);
+        assert_eq!(assembled.payment_payload, Some(pay_payload));
+    }
+
     /// through make_proposal_parts -> assemble_block_from_parts with both lanes intact.
     #[tokio::test]
     async fn assemble_block_round_trips_payment_payload() {
@@ -710,7 +757,7 @@ mod tests {
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());
-        let (raw_parts, _sig) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (raw_parts, _sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
         let parts = ProposalParts::new(raw_parts).unwrap();
 
         let assembled = assemble_block_from_parts(&parts, None).await.unwrap();

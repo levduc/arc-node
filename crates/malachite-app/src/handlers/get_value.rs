@@ -79,6 +79,7 @@ pub async fn handle(
     } else {
         PaymentExecMode::Gated
     };
+    let compact_payment = state.env_config().compact_payment_proposals;
     let proposed_value = on_get_value(
         network,
         engine,
@@ -86,6 +87,7 @@ pub async fn handle(
         payment_builder_engine,
         prebuilt_slot,
         payment_exec_mode,
+        compact_payment,
         metrics,
         store,
         height,
@@ -136,6 +138,7 @@ async fn on_get_value(
     payment_builder_engine: Option<&Engine>,
     prebuilt_slot: crate::builder_prebuild::PrebuiltSlot,
     payment_exec_mode: PaymentExecMode,
+    compact_payment: bool,
     metrics: AppMetrics,
     store: Store,
     height: Height,
@@ -208,7 +211,8 @@ async fn on_get_value(
 
     let block_hash = block.block_hash();
 
-    let (stream_messages, signature) = prepare_stream(stream_id, signing_provider, &block)
+    let (stream_messages, signature) =
+        prepare_stream(stream_id, signing_provider, &block, compact_payment)
         .await
         .wrap_err_with(|| {
             format!(

@@ -25,6 +25,7 @@ const ARC_SYNC_STATUS_UPDATE_INTERVAL: &str = "ARC_SYNC_STATUS_UPDATE_INTERVAL";
 const ARC_SYNC_CATCH_UP_THRESHOLD: &str = "ARC_SYNC_CATCH_UP_THRESHOLD";
 const ARC_GENESIS_FILE_PATH: &str = "ARC_GENESIS_FILE_PATH";
 const ARC_PAYMENT_DEFERRED_EXEC: &str = "ARC_PAYMENT_DEFERRED_EXEC";
+const ARC_COMPACT_PAYMENT_PROPOSALS: &str = "ARC_COMPACT_PAYMENT_PROPOSALS";
 
 /// Default cache size for the database (1 GiB).
 const DEFAULT_DB_CACHE_SIZE: ByteSize = ByteSize::gib(1);
@@ -54,6 +55,13 @@ pub struct EnvConfig {
     /// Safe only while every proposer is honest w.r.t. executability (total STF not yet
     /// in the EL) — experiment fleets only. Default off = current behavior byte-for-byte.
     pub payment_deferred_exec: bool,
+    /// EXPERIMENTAL (`ARC_COMPACT_PAYMENT_PROPOSALS=1`): stream live payment-lane
+    /// proposals as tx hashes (32B) instead of full tx bytes; receivers rebuild
+    /// the payload from their local payment EL pool. EMISSION only — decoding
+    /// compact frames is unconditional in this binary, so mixed flags interop;
+    /// OLD binaries cannot decode compact frames (fail-closed decode error).
+    /// Stores and value-sync always carry full payloads.
+    pub compact_payment_proposals: bool,
 }
 
 impl EnvConfig {
@@ -91,6 +99,10 @@ impl EnvConfig {
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let compact_payment_proposals = std::env::var(ARC_COMPACT_PAYMENT_PROPOSALS)
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         Self {
             halt_height,
             db_cache_size,
@@ -98,6 +110,7 @@ impl EnvConfig {
             sync_catch_up_threshold,
             genesis_file_path,
             payment_deferred_exec,
+            compact_payment_proposals,
         }
     }
 }
@@ -111,6 +124,7 @@ impl Default for EnvConfig {
             sync_catch_up_threshold: DEFAULT_SYNC_CATCH_UP_THRESHOLD,
             genesis_file_path: None,
             payment_deferred_exec: false,
+            compact_payment_proposals: false,
         }
     }
 }

@@ -55,7 +55,13 @@ pub async fn handle(
         let stream_id = state.next_stream_id(block.height, block.round);
         let signing_provider = state.signing_provider();
 
-        restream_proposal(&channels.network, stream_id, signing_provider, &block).await
+        // Restream framing MUST match the ORIGINAL stream: the stored Fin
+        // signature covers the originally framed bytes. With a uniform fleet
+        // flag this holds (proposer's flag == ours). In a mixed-flag fleet a
+        // cross-format restream fails signature verification at receivers —
+        // fail-safe (proposal dropped, round times out), documented limitation.
+        let compact = state.env_config().compact_payment_proposals;
+        restream_proposal(&channels.network, stream_id, signing_provider, &block, compact).await
     } else {
         error!(%height, %round, %valid_round, "No block found to restream");
 
@@ -68,6 +74,7 @@ pub async fn restream_proposal(
     stream_id: StreamId,
     signing_provider: &impl SigningProvider<ArcContext>,
     block: &ConsensusBlock,
+    compact_payment: bool,
 ) -> eyre::Result<()> {
     let (height, round) = (block.height, block.round);
 
@@ -77,7 +84,8 @@ pub async fn restream_proposal(
         block.size_bytes(), block.payload_size()
     );
 
-    let (stream_messages, _signature) = prepare_stream(stream_id, signing_provider, block)
+    let (stream_messages, _signature) =
+        prepare_stream(stream_id, signing_provider, block, compact_payment)
         .await
         .wrap_err_with(|| {
             format!(
@@ -225,7 +233,7 @@ mod tests {
 
         mock.expect_publish_proposal_part().returning(|_| Ok(()));
 
-        let result = restream_proposal(mock, stream_id, &signing_provider, &block).await;
+        let result = restream_proposal(mock, stream_id, &signing_provider, &block, false).await;
 
         assert!(result.is_ok());
     }
@@ -263,7 +271,7 @@ mod tests {
         payment_payload: None,
         };
 
-        let (raw_first, first_sig) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (raw_first, first_sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
         let first_parts = ProposalParts::new(raw_first).unwrap();
         let expected_first = resolve_expected_proposer(&selector, &validator_set, &first_parts);
         assert!(validate_proposal_parts(&first_parts, expected_first, &provider).await);
@@ -286,7 +294,7 @@ mod tests {
 
         assert_eq!(block_to_restream.signature, Some(first_sig));
 
-        let (raw_restream, _) = make_proposal_parts(&provider, &block_to_restream)
+        let (raw_restream, _) = make_proposal_parts(&provider, &block_to_restream, false)
             .await
             .unwrap();
         let restream_parts = ProposalParts::new(raw_restream).unwrap();
