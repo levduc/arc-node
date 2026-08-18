@@ -64,8 +64,13 @@ for n in (2, 3, 4):
 
 import json as _json, os as _os
 _extra = _os.environ.get("CL_EXTRA_ENV")
-if _extra and "validator1_cl" in c["services"]:
-    c["services"]["validator1_cl"].setdefault("environment", {}).update(_json.loads(_extra))
+if "validator1_cl" in c["services"]:
+    _env = c["services"]["validator1_cl"].setdefault("environment", {})
+    # the value-sync livelock fix must apply to the LOCAL validator too (it was
+    # remote-only until 2026-08-18 — val1 re-wedged on every fall-behind because of it)
+    _env.update({"ARC_VALUE_SYNC_BATCH_SIZE": "3", "ARC_VALUE_SYNC_TIMEOUT_SECS": "15"})
+    if _extra:
+        _env.update(_json.loads(_extra))
 
 open(COMPOSE + ".prefleet", "w").write(yaml.dump(orig, sort_keys=False))
 open(COMPOSE, "w").write(yaml.dump(c, sort_keys=False))
