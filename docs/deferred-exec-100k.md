@@ -124,6 +124,34 @@ builder slice alone.
 
 ## Phase-1 RESULTS (2026-08-17/18, fleet, paired same-chain arms)
 
+### v1.2 (feed+kick at validation time) — MEASURED NEGATIVE, REVERTED (2026-08-17)
+
+Hypothesis: kick the builder when the block is *validated* (received_proposal_part) instead of at
+decide, so the builder executes N in parallel with the vote and has the whole gap for 3 timestamp
+candidates (t0..t0+2). Paired same-day fleet drains (fresh chain, control first, FILL_TARGET=190k):
+
+| gas | control | v1.2 | delta |
+|-----|---------|------|-------|
+| 150M | 467ms / 15,296 tps | 491ms / 14,549 | **-5%** |
+| 300M | 848ms / 16,855 | 918ms / 15,560 | **-8%** |
+| 500M | 1,349ms / 17,645 | 1,477ms / 16,071 | **-9%** |
+
+Hit rates: val1 47%, val2 82%, val3 (builder-co-located) 31%. Miss class = candidates=0.
+
+Why it failed (three structural mechanisms, from live logs):
+1. At capacity cadence the builder must EXECUTE the fed block (~300-700ms at these sizes) before
+   the head-check passes and speculative builds start; get_value often arrives first → empty stash.
+   Decide-time (v1.1) is actually better-positioned in time.
+2. Stretched rounds blow even the 3-timestamp window (observed ts_needed = ts_prebuilt+4..6s).
+3. The regression itself: ALL FOUR validators serialize + ship the full multi-MB payload to the
+   builder at validation time, plus the decide reconciliation feed = 8 full-payload feeds/height —
+   builder contention + CL-side serialization on the critical path. val3 (same machine as the
+   builder EL) had the worst hit rate.
+
+Reverted (ea6e92c); v1.1 (decide-time kick, dual timestamp) stands as the rung's result:
++7% @150M / parity @300M / +11% @500M, 54-82% hit rate. Further prebuild gains are gated on a
+pending-visibility redesign, not on kick timing — parked. Next rung: vote-on-hash.
+
 - **v0 (on-demand remote build): -5..-10% capacity.** The build never left the critical
   path (proposer waits for the remote build), and the builder's follow-feed catch-up
   execution + 2 head-check RTTs landed ON the path. Withdrawn, replaced by v1.
