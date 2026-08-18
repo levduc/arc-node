@@ -293,6 +293,23 @@ async fn build_and_validate_block(
         return Err(eyre!("Self-built block {} is invalid", block.block_hash()));
     }
 
+    // Deferred mode: in Gated mode the validate above already newPayload'd the
+    // payment payload into EL2's tree; in Deferred mode it did not, and a
+    // getPayload-built payload is not yet an inserted block — feed it now,
+    // concurrently with streaming/voting, so decide's anchor finds it warm.
+    if payment_exec_mode == PaymentExecMode::Deferred {
+        if let (Some(pe), Some(pp)) = (payment_engine, block.payment_payload.as_ref()) {
+            let pe = pe.clone();
+            let pp = pp.clone();
+            tokio::spawn(async move {
+                let hash = pp.payload_inner.payload_inner.block_hash;
+                if let Err(e) = pe.notify_new_block(&pp, Vec::new()).await {
+                    debug!("deferred proposer-side execution of {hash} failed (decide will retry): {e:#}");
+                }
+            });
+        }
+    }
+
     debug!(
         "✅ Proposer validated self-built block {}",
         block.block_hash()

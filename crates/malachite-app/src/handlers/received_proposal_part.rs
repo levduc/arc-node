@@ -201,6 +201,26 @@ async fn on_received_proposal_part(
     )
     .await?;
 
+    // Deferred payment execution: the vote above was gated on structural
+    // validity only, so start the real EL2 execution NOW, concurrently with
+    // the vote rounds (the 350-900ms vote gap). Fire-and-forget: decide()
+    // re-sends newPayload inline (idempotent) and is the authoritative anchor;
+    // a failure here only means decide waits instead of finding the block warm.
+    if context.payment_exec_mode == PaymentExecMode::Deferred
+        && block.validity == Validity::Valid
+    {
+        if let (Some(pe), Some(pp)) = (context.payment_engine, block.payment_payload.as_ref()) {
+            let pe = pe.clone();
+            let pp = pp.clone();
+            tokio::spawn(async move {
+                let hash = pp.payload_inner.payload_inner.block_hash;
+                if let Err(e) = pe.notify_new_block(&pp, Vec::new()).await {
+                    debug!("deferred vote-gap execution of {hash} failed (decide will retry): {e:#}");
+                }
+            });
+        }
+    }
+
     let proposed_value = ProposedValue::from(&block);
 
     debug!(
