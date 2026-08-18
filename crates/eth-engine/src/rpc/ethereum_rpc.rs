@@ -325,46 +325,71 @@ impl EthereumRPC {
         if hashes.is_empty() {
             return Ok(vec![]);
         }
-        let batch_requests = hashes
-            .iter()
-            .enumerate()
-            .map(|(id, h)| {
-                json!({
-                    "jsonrpc": "2.0",
-                    "method": "eth_getRawTransactionByHash",
-                    "params": [format!("{h:#x}")],
-                    "id": id
+        // reth's JSON-RPC server rejects batches over 100 requests with a
+        // SINGLE error object ("batch size N exceeds limit of 100"), so we
+        // sub-batch at 100 and run sub-batches concurrently — a 47k-tx block
+        // is ~476 chunks; sequential round-trips would put ~0.5s on the
+        // assembly path, concurrent keeps it ~a few ms on localhost.
+        const RETH_MAX_BATCH: usize = 100;
+        let mut tasks = Vec::with_capacity(hashes.len().div_ceil(RETH_MAX_BATCH));
+        for (chunk_idx, chunk) in hashes.chunks(RETH_MAX_BATCH).enumerate() {
+            let batch_requests = chunk
+                .iter()
+                .enumerate()
+                .map(|(id, h)| {
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "eth_getRawTransactionByHash",
+                        "params": [format!("{h:#x}")],
+                        "id": id
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
-
-        let response = self
-            .client
-            .post(self.url.clone())
-            .json(&batch_requests)
-            .timeout(self.batch_request_timeout)
-            .send()
-            .await
-            .wrap_err("Failed to send raw-tx batch request")?;
-        let batch_responses: Vec<Value> = response
-            .json()
-            .await
-            .wrap_err("Failed to parse raw-tx batch response")?;
+                .collect::<Vec<_>>();
+            let client = self.client.clone();
+            let url = self.url.clone();
+            let timeout = self.batch_request_timeout;
+            let chunk_len = chunk.len();
+            tasks.push(tokio::spawn(async move {
+                let response = client
+                    .post(url)
+                    .json(&batch_requests)
+                    .timeout(timeout)
+                    .send()
+                    .await
+                    .wrap_err("Failed to send raw-tx batch request")?;
+                let batch_responses: Vec<Value> = response
+                    .json()
+                    .await
+                    .wrap_err("Failed to parse raw-tx batch response")?;
+                let mut chunk_results: Vec<Option<alloy_primitives::Bytes>> =
+                    vec![None; chunk_len];
+                for resp in batch_responses {
+                    let (Some(id), Some(result)) = (
+                        resp.get("id").and_then(|v| v.as_u64()),
+                        resp.get("result"),
+                    ) else {
+                        continue;
+                    };
+                    let id = id as usize;
+                    if id >= chunk_len || result.is_null() {
+                        continue;
+                    }
+                    if let Ok(bytes) = from_value::<alloy_primitives::Bytes>(result.clone()) {
+                        chunk_results[id] = Some(bytes);
+                    }
+                }
+                Ok::<_, eyre::Report>((chunk_idx, chunk_results))
+            }));
+        }
 
         let mut results: Vec<Option<alloy_primitives::Bytes>> = vec![None; hashes.len()];
-        for resp in batch_responses {
-            let (Some(id), Some(result)) = (
-                resp.get("id").and_then(|v| v.as_u64()),
-                resp.get("result"),
-            ) else {
-                continue;
-            };
-            let id = id as usize;
-            if id >= hashes.len() || result.is_null() {
-                continue;
-            }
-            if let Ok(bytes) = from_value::<alloy_primitives::Bytes>(result.clone()) {
-                results[id] = Some(bytes);
+        for task in tasks {
+            let (chunk_idx, chunk_results) = task
+                .await
+                .wrap_err("raw-tx sub-batch task panicked")??;
+            let base = chunk_idx * RETH_MAX_BATCH;
+            for (i, r) in chunk_results.into_iter().enumerate() {
+                results[base + i] = r;
             }
         }
         Ok(results)

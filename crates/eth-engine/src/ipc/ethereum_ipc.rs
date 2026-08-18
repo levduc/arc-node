@@ -261,20 +261,28 @@ impl EthereumIPC {
         if hashes.is_empty() {
             return Ok(vec![]);
         }
-        let params_list = hashes
-            .iter()
-            .map(|h| rpc_params![format!("{h:#x}")])
-            .collect::<Vec<_>>();
-        let batch: Vec<Option<Option<alloy_primitives::Bytes>>> = self
-            .ipc
-            .batch_request(
-                "eth_getRawTransactionByHash",
-                &params_list,
-                ETH_BATCH_REQUEST_TIMEOUT,
-            )
-            .await
-            .wrap_err("Failed to send raw-tx IPC batch request")?;
-        Ok(batch.into_iter().map(|b| b.flatten()).collect())
+        // reth rejects batches over 100 requests (single error object), so
+        // sub-batch at 100. IPC round-trips are ~localhost-cheap; sequential
+        // chunks keep this simple.
+        const RETH_MAX_BATCH: usize = 100;
+        let mut results = Vec::with_capacity(hashes.len());
+        for chunk in hashes.chunks(RETH_MAX_BATCH) {
+            let params_list = chunk
+                .iter()
+                .map(|h| rpc_params![format!("{h:#x}")])
+                .collect::<Vec<_>>();
+            let batch: Vec<Option<Option<alloy_primitives::Bytes>>> = self
+                .ipc
+                .batch_request(
+                    "eth_getRawTransactionByHash",
+                    &params_list,
+                    ETH_BATCH_REQUEST_TIMEOUT,
+                )
+                .await
+                .wrap_err("Failed to send raw-tx IPC batch request")?;
+            results.extend(batch.into_iter().map(|b| b.flatten()));
+        }
+        Ok(results)
     }
 
     /// Get the status of the transaction pool.
