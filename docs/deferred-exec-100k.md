@@ -124,6 +124,24 @@ builder slice alone.
 
 ## Phase-1 RESULTS (2026-08-17/18, fleet, paired same-chain arms)
 
+### Deferred exec SOLIDIFIED at 1G — ~29k tps with zero reth modifications (2026-08-18, n=2)
+
+Two fresh fleet chains, deferred on all 4 CLs (env-verified), drain ladder incl. 1G, 50-height
+agreement checks both campaigns, sync-assert audit fixed (structural-Valid vs engine-Invalid is
+the legal byzantine disagreement; assert kept for the bug direction only):
+
+| gas | campaign 1 | campaign 2 |
+|-----|-----------|-----------|
+| 150M | 451ms / 15,832 | 439ms / 16,284 |
+| 300M | 844ms / 16,924 | 673ms / 21,217 |
+| 500M | 1,082ms / 22,001 | 1,082ms / 22,014 (identical!) |
+| 1G | 1,620ms / **29,390** | 1,639ms / **29,055** |
+
+New height law under deferred ≈ **290ms + 28µs/tx** (was 70ms + 49µs/tx gated). 1G rows are
+3 full 47,618-tx blocks each (pool 190k = 4 blocks, resolution-limited). 300M has spread.
+The 30k-without-reth-mods target is effectively met; past it = persistence/dissemination/
+admission work (see the caveats above).
+
 ### Compact payment proposals (ARC_COMPACT_PAYMENT_PROPOSALS) — BUILT, LOCAL GATE PASSED, FLEET A/B PENDING (2026-08-18)
 
 Live payment proposals stream the payment lane as 32B tx hashes (COMPACT_LANE_BIT marker in the
