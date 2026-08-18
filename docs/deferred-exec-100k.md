@@ -124,6 +124,46 @@ builder slice alone.
 
 ## Phase-1 RESULTS (2026-08-17/18, fleet, paired same-chain arms)
 
+### Vote-on-hash increment 1 (ARC_PAYMENT_DEFERRED_EXEC) — MEASURED POSITIVE (2026-08-18)
+
+First rung of consensus-on-hash: validators vote on the payment lane after STRUCTURAL validation
+only (block-hash consistency with recomputed tx root + Arc pbbr/requests-hash conventions, lane
+lockstep, parent link); real EL2 execution runs concurrently in the vote gap (fire-and-forget at
+validation) and is anchored at decide BEFORE commit (idempotent newPayload; INVALID => loud
+deterministic halt before anything persists). Sync path still fully re-executes. Commits 7d081ce,
+bc6c1e4, 2a2e06d + requests-hash fix.
+
+Paired same-day fleet drains (fresh chain, control first, deferred arm on the OLDER chain =
+anti-deferred bias; FILL_TARGET=190k, n=1/size/arm):
+
+| gas | control | deferred | delta |
+|-----|---------|----------|-------|
+| 150M | 486ms / 14,690 tps | 420ms / 16,987 | **+15.6%** |
+| 300M | 912ms / 15,671 | 845ms / 16,915 | **+7.9%** |
+| 500M | 1,284ms / 18,547 | 1,013ms / 23,510 | **+26.8%** |
+
+**23.5k tps @ 500M breaks the ~20k fitted asymptote of the old law.** Per-tx saving ≈ 5-11µs
+(about half the ~20µs/tx slowest-peer re-exec term: the gap-hidden execution still has to fit,
+and transport/decode is untouched). Decide-anchor wait measured 1.3-1.8ms/height on the local
+demo (execution always finished within the vote gap). Live gates passed: 120-height agreement
+both lanes x4 validators + CL restart leg; the first (buggy) build also demonstrated the loud
+no-fork halt when the structural check rejects (all validators vote Nil, chain stalls, zero
+divergence — recovered by fixing + restarting CLs on the same chain).
+
+Found en route: real Arc headers carry Prague requestsHash = sha256(empty); into_block_raw does
+not set it (nor pbbr) — both must be set explicitly during reconstruction or every real block is
+rejected. Unit tests alone were circular (same code built and checked the hash); the live gate
+caught it immediately.
+
+STATUS: experiment-fleet configuration, default OFF. Before any wider use: total STF in the EL
+(a byzantine proposer can craft a structurally-valid-but-unexecutable payload => today that is a
+synchronized halt at decide, attributable to the signed proposer, but still a halt); n>=2
+reproduction; sync-under-load leg; the undecided-store validity dedup assert audit (risk 6 of
+the implementation plan).
+
+NEXT RUNGS (same doc, in order of expected value): compact blocks / tx-hash proposals (the
+~18µs/tx transport+decode term), lagged state root, erasure-coded broadcast.
+
 ### v1.2 (feed+kick at validation time) — MEASURED NEGATIVE, REVERTED (2026-08-17)
 
 Hypothesis: kick the builder when the block is *validated* (received_proposal_part) instead of at

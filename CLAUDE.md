@@ -504,6 +504,22 @@ kick timing is NOT the lever; further prebuild gains need pending-visibility wor
 Full record: docs/deferred-exec-100k.md RESULTS. NEXT RUNG: vote-on-hash (consensus-on-hash +
 total STF + lagged state root, docs/deferred-exec-100k.md) — user-authorized CL work, this branch.
 
+**🎯 VOTE-ON-HASH INCREMENT 1 MEASURED POSITIVE (2026-08-18, branch `builder-separation`):
++16%/+8%/+27% tps @ 150/300/500M — 23.5k tps @ 500M breaks the old ~20k asymptote.**
+`ARC_PAYMENT_DEFERRED_EXEC=1` (default OFF): payment-lane vote gates on STRUCTURAL validity only
+(rebuild header via into_block_raw + Arc conventions pbbr=parent_hash AND Prague
+requestsHash=sha256(empty) — BOTH must be set explicitly or every real block is rejected, unit
+tests were circular, live gate caught it); EL2 exec runs in the vote gap (fire-and-forget spawn at
+validation + proposer post-build) and is anchored at decide BEFORE commit (idempotent; INVALID =
+loud deterministic halt before persist — measured live: all-Nil votes, stall, zero divergence).
+Sync path still fully re-executes (divergence alarm). Decide-anchor wait 1.3-1.8ms/height (exec
+always fits the gap). Paired fleet drains, deferred arm on OLDER chain: control 486/912/1,284ms
+vs deferred 420/845/1,013ms. Per-tx saving 5-11µs ≈ half the ~20µs slowest-peer re-exec term.
+Gates: 265 lib tests, 120-height dual-lane agreement x4, CL restart leg, structural-reject halt
+demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; total STF still NOT
+in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
+Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
+
 ## 🐛 BUG LEDGER (consolidated, 2026-08-10 — details in the dated entries + MISSION-EL.md)
 
 **Consensus-critical (all in the gated-off native-transfer fast path; all fixed; ONE root shape:
