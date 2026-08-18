@@ -25,6 +25,7 @@ use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
 
 use crate::block::ConsensusBlock;
+use crate::payload::PaymentExecMode;
 use crate::finalize::{BlockFinalizer, EngineBlockFinalizer};
 use crate::metrics::AppMetrics;
 use crate::state::{Decision, NextHeightInfo, State};
@@ -71,6 +72,11 @@ pub async fn handle(
     let block_finalizer = EngineBlockFinalizer::new(engine, stats, metrics);
     let pruning_service = ProdPruningService::new(store, &state.config().prune);
 
+    let payment_exec_mode = if state.env_config().payment_deferred_exec {
+        PaymentExecMode::Deferred
+    } else {
+        PaymentExecMode::Gated
+    };
     let block = decide(
         block_finalizer,
         payment_engine,
@@ -81,6 +87,7 @@ pub async fn handle(
         stats,
         metrics,
         commit_ack,
+        payment_exec_mode,
     )
     .await;
 
@@ -228,6 +235,7 @@ async fn decide(
     stats: &Stats,
     metrics: &AppMetrics,
     commit_ack: Reply<()>,
+    payment_exec_mode: PaymentExecMode,
 ) -> eyre::Result<(ExecutionBlock, Option<alloy_rpc_types_engine::ExecutionPayloadV3>)> {
     let height = certificate.height;
     let round = certificate.round;
@@ -257,6 +265,51 @@ async fn decide(
         block.size_bytes(),
         block.payload_size()
     );
+
+    // Deferred payment execution (ARC_PAYMENT_DEFERRED_EXEC=1): under Deferred
+    // mode validators voted on structural validity only, so the decided payment
+    // payload may not have been executed on EL2 yet. Anchor execution HERE,
+    // BEFORE commit(): the CL decided store persists EVM-only payloads and
+    // commit prunes the undecided copy, so executing after commit would open a
+    // crash window where a decided height's payment body exists nowhere locally.
+    // newPayload is idempotent (VALID for already-known blocks), so this is a
+    // no-op when a background/vote-gap execution already completed.
+    // An INVALID verdict here fails the height loudly (Decision::Failure ->
+    // restart_height) — deterministic on every honest node, so no fork.
+    if payment_exec_mode == PaymentExecMode::Deferred {
+        if let (Some(pe), Some(payment_payload)) = (payment_engine, block.payment_payload.as_ref())
+        {
+            let wait_start = std::time::Instant::now();
+            let payment_hash = payment_payload.payload_inner.payload_inner.block_hash;
+            let status = pe
+                .notify_new_block(payment_payload, Vec::new())
+                .await
+                .wrap_err_with(|| {
+                    format!(
+                        "payment lane (deferred): newPayload({payment_hash}) failed at height={height}"
+                    )
+                })?;
+            match status.status {
+                alloy_rpc_types_engine::PayloadStatusEnum::Valid => {}
+                alloy_rpc_types_engine::PayloadStatusEnum::Invalid { validation_error } => {
+                    return Err(eyre!(
+                        "payment lane (deferred): decided payment block {payment_hash} at height={height} \
+                         REJECTED by EL2: {validation_error} — halting height (no commit, no FCU)"
+                    ));
+                }
+                other => {
+                    return Err(eyre!(
+                        "payment lane (deferred): unexpected status {other:?} for decided payment \
+                         block {payment_hash} at height={height}"
+                    ));
+                }
+            }
+            debug!(
+                "🪙 Deferred payment execution anchored at decide in {:?} (height {height})",
+                wait_start.elapsed()
+            );
+        }
+    }
 
     // Commit the decision to the store before finalizing the block.
     // This way we ensure that latest decided height >= latest finalized block.
@@ -441,6 +494,8 @@ mod tests {
     };
     use crate::store::services::mocks::MockPruningService;
 
+    use arc_eth_engine::engine::{MockEngineAPI, MockEthereumAPI};
+
     use super::*;
 
     // Helper functions for creating test fixtures
@@ -531,6 +586,85 @@ mod tests {
 
     // Tests for decide() function
 
+    /// Deferred mode: a decided payment block that EL2 REJECTS must fail the
+    /// height BEFORE anything is committed (the payment body's only local copy
+    /// is the undecided store, which commit prunes).
+    #[tokio::test]
+    async fn test_decide_deferred_reject_fails_before_commit() {
+        let height = 5u64;
+        let round = 2u32;
+        let timestamp = 1000u64;
+
+        let mut consensus_block = test_consensus_block(height, round, timestamp);
+        consensus_block.payment_payload = Some(test_execution_payload(height, timestamp));
+        // certificate must commit to BOTH lanes now that a payment payload exists
+        let certificate =
+            test_commit_certificate_for_block(&consensus_block, height, round);
+
+        let cb = consensus_block.clone();
+        let mut undecided_blocks = MockUndecidedBlocksRepository::new();
+        undecided_blocks
+            .expect_get_by_hash()
+            .return_once(move |_, _| Ok(Some(cb)));
+
+        // EL2 rejects the deferred newPayload
+        let mut mock_engine = MockEngineAPI::new();
+        mock_engine.expect_new_payload().return_once(|_, _, _| {
+            Ok(alloy_rpc_types_engine::PayloadStatus {
+                status: alloy_rpc_types_engine::PayloadStatusEnum::Invalid {
+                    validation_error: "bad state root".to_string(),
+                },
+                latest_valid_hash: None,
+            })
+        });
+        let payment_engine = Engine::new(Box::new(mock_engine), Box::new(MockEthereumAPI::new()));
+
+        // NOTHING may be committed/finalized/pruned: times(0) on all of them.
+        let mut decided_blocks = MockDecidedBlocksRepository::new();
+        decided_blocks.expect_store().times(0);
+        let mut block_finalizer = MockBlockFinalizer::new();
+        block_finalizer.expect_finalize_decided_block().times(0);
+        let mut pruning_service = MockPruningService::new();
+        pruning_service.expect_clean_stale_consensus_data().times(0);
+        pruning_service.expect_prune_historical_certs().times(0);
+        pruning_service.expect_prune_decided_blocks().times(0);
+
+        let metrics = test_metrics();
+        let stats = test_stats();
+
+        let result = decide(
+            block_finalizer,
+            Some(&payment_engine),
+            undecided_blocks,
+            decided_blocks,
+            pruning_service,
+            certificate,
+            &stats,
+            &metrics,
+            dummy_commit_ack(),
+            PaymentExecMode::Deferred,
+        )
+        .await;
+
+        let err = result.expect_err("EL2 rejection must fail the height");
+        assert!(err.to_string().contains("REJECTED"), "unexpected error: {err:#}");
+    }
+
+    /// Certificate whose value_id commits to the block's actual lanes.
+    fn test_commit_certificate_for_block(
+        block: &ConsensusBlock,
+        height: u64,
+        round: u32,
+    ) -> CommitCertificate<ArcContext> {
+        CommitCertificate {
+            height: Height::new(height),
+            round: Round::new(round),
+            value_id: ValueId::new(block.value_id()),
+            commit_signatures: vec![CommitSignature::new(Address::default(), Signature::test())],
+        }
+    }
+
+
     // Successful decision with valid block found
     #[tokio::test]
     async fn test_decide_success() {
@@ -591,6 +725,7 @@ mod tests {
             &stats,
             &metrics,
             dummy_commit_ack(),
+            PaymentExecMode::Gated,
         )
         .await;
 
@@ -629,6 +764,7 @@ mod tests {
             &stats,
             &metrics,
             dummy_commit_ack(),
+            PaymentExecMode::Gated,
         )
         .await;
 
@@ -666,6 +802,7 @@ mod tests {
             &stats,
             &metrics,
             dummy_commit_ack(),
+            PaymentExecMode::Gated,
         )
         .await;
 
@@ -709,6 +846,7 @@ mod tests {
             &stats,
             &metrics,
             dummy_commit_ack(),
+            PaymentExecMode::Gated,
         )
         .await;
 
