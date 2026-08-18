@@ -285,6 +285,95 @@ async fn validate_payload(
     }
 }
 
+/// How the payment lane is validated during the consensus round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaymentExecMode {
+    /// Current behavior: the payment payload is re-executed (engine newPayload)
+    /// and the vote is gated on the engine verdict.
+    Gated,
+    /// EXPERIMENTAL (`ARC_PAYMENT_DEFERRED_EXEC=1`): the vote is gated only on
+    /// structural validity (block-hash consistency, lane lockstep, parent link);
+    /// execution happens off the vote path and is anchored at decide.
+    Deferred,
+}
+
+/// Structural validation of a payment payload — no engine call, no execution.
+///
+/// Checks, in order:
+/// 1. **Block-hash consistency**: rebuild the header from the payload
+///    (`into_block_raw` recomputes the transactions root from the raw tx bytes,
+///    no signature recovery) with Arc's `parent_beacon_block_root = parent_hash`
+///    convention, and require `header.hash_slow() == payload.block_hash`. This
+///    transitively commits the tx list, parent hash, timestamp, gas fields and
+///    the claimed state root — the body voted on is the body the hash names.
+/// 2. **Lane lockstep**: payment block_number/timestamp equal the EVM lane's
+///    (build invariant of `build_block`).
+/// 3. **Parent link** (best-effort): payment parent_hash matches the previous
+///    decided payment block hash when the caller knows it; skipped when `None`
+///    (first height after boot/restart).
+pub fn validate_payment_payload_structurally(
+    payment: &ExecutionPayloadV3,
+    evm: &ExecutionPayloadV3,
+    expected_parent: Option<alloy_primitives::B256>,
+) -> PayloadValidationResult {
+    let inner = &payment.payload_inner.payload_inner;
+    let claimed_hash = inner.block_hash;
+    let parent_hash = inner.parent_hash;
+
+    // 2) lane lockstep (cheap; check first to fail fast on garbage)
+    let evm_inner = &evm.payload_inner.payload_inner;
+    if inner.block_number != evm_inner.block_number {
+        return PayloadValidationResult::Invalid {
+            reason: format!(
+                "payment lane block_number {} != evm lane {}",
+                inner.block_number, evm_inner.block_number
+            ),
+        };
+    }
+    if inner.timestamp != evm_inner.timestamp {
+        return PayloadValidationResult::Invalid {
+            reason: format!(
+                "payment lane timestamp {} != evm lane {}",
+                inner.timestamp, evm_inner.timestamp
+            ),
+        };
+    }
+
+    // 3) parent link, when known
+    if let Some(expected) = expected_parent {
+        if parent_hash != expected {
+            return PayloadValidationResult::Invalid {
+                reason: format!(
+                    "payment lane parent {parent_hash} != expected {expected}"
+                ),
+            };
+        }
+    }
+
+    // 1) block-hash consistency
+    let mut block = match payment.clone().into_block_raw() {
+        Ok(b) => b,
+        Err(e) => {
+            return PayloadValidationResult::Invalid {
+                reason: format!("payment payload malformed: {e}"),
+            }
+        }
+    };
+    // Arc convention: parent_beacon_block_root = parent execution block hash
+    // (see eth-engine notify_new_block / payload attributes).
+    block.header.parent_beacon_block_root = Some(parent_hash);
+    let computed = block.header.hash_slow();
+    if computed != claimed_hash {
+        return PayloadValidationResult::Invalid {
+            reason: format!(
+                "payment block hash mismatch: computed {computed}, claimed {claimed_hash}"
+            ),
+        };
+    }
+
+    PayloadValidationResult::Valid
+}
+
 /// Validates a consensus block's payload and stores it in the database
 /// if the engine rejects it.
 ///
@@ -311,6 +400,8 @@ pub async fn validate_consensus_block(
     block: &ConsensusBlock,
     store: &impl InvalidPayloadsRepository,
     metrics: &AppMetrics,
+    payment_exec_mode: PaymentExecMode,
+    expected_payment_parent: Option<alloy_primitives::B256>,
 ) -> eyre::Result<Validity> {
     // EVM lane (validated via the mockable validator).
     let result = payload_validator
@@ -326,8 +417,17 @@ pub async fn validate_consensus_block(
     // payload and a payment engine are present. A block is valid only if BOTH
     // lanes validate, so every validator computes identical roots for each lane.
     if let (Some(engine), Some(payment_payload)) = (payment_engine, block.payment_payload.as_ref()) {
-        let payment_validator = EnginePayloadValidator::new(engine, metrics);
-        let payment_result = payment_validator.validate_payload(payment_payload).await?;
+        let payment_result = match payment_exec_mode {
+            PaymentExecMode::Gated => {
+                let payment_validator = EnginePayloadValidator::new(engine, metrics);
+                payment_validator.validate_payload(payment_payload).await?
+            }
+            PaymentExecMode::Deferred => validate_payment_payload_structurally(
+                payment_payload,
+                &block.execution_payload,
+                expected_payment_parent,
+            ),
+        };
         if let PayloadValidationResult::Invalid { reason } = payment_result {
             let reason = format!("payment lane: {reason}");
             record_invalid_payload(block, &reason, store, metrics).await;
@@ -414,6 +514,109 @@ mod tests {
             blob_gas_used: 0,
             excess_blob_gas: 0,
         }
+    }
+
+    /// Builds a payment payload whose block_hash is CORRECT for its contents
+    /// under Arc's pbbr = parent_hash convention.
+    fn structurally_valid_payload(
+        parent: B256,
+        block_number: u64,
+        timestamp: u64,
+        transactions: Vec<AlloyBytes>,
+    ) -> ExecutionPayloadV3 {
+        let mut p = test_payload(timestamp);
+        p.payload_inner.payload_inner.parent_hash = parent;
+        p.payload_inner.payload_inner.block_number = block_number;
+        p.payload_inner.payload_inner.transactions = transactions;
+        let mut block = p
+            .clone()
+            .into_block_raw()
+            .expect("test payload must convert");
+        block.header.parent_beacon_block_root = Some(parent);
+        p.payload_inner.payload_inner.block_hash = block.header.hash_slow();
+        p
+    }
+
+    #[test]
+    fn structural_ok_and_hash_tamper_detected() {
+        let parent = B256::repeat_byte(0xaa);
+        let txs = vec![AlloyBytes::from(vec![0xde, 0xad, 0xbe, 0xef])];
+        let evm = structurally_valid_payload(B256::repeat_byte(0x11), 7, 1000, vec![]);
+        let pay = structurally_valid_payload(parent, 7, 1000, txs.clone());
+
+        // valid as built
+        assert_eq!(
+            validate_payment_payload_structurally(&pay, &evm, Some(parent)),
+            PayloadValidationResult::Valid
+        );
+
+        // tamper with the tx list without recomputing the hash -> must be Invalid
+        let mut tampered = pay.clone();
+        tampered.payload_inner.payload_inner.transactions =
+            vec![AlloyBytes::from(vec![0x01, 0x02])];
+        assert!(matches!(
+            validate_payment_payload_structurally(&tampered, &evm, Some(parent)),
+            PayloadValidationResult::Invalid { .. }
+        ));
+
+        // tamper with the claimed hash -> Invalid
+        let mut tampered = pay.clone();
+        tampered.payload_inner.payload_inner.block_hash = B256::repeat_byte(0x77);
+        assert!(matches!(
+            validate_payment_payload_structurally(&tampered, &evm, Some(parent)),
+            PayloadValidationResult::Invalid { .. }
+        ));
+
+        // tamper with a header claim (state_root) without recomputing -> Invalid
+        let mut tampered = pay.clone();
+        tampered.payload_inner.payload_inner.state_root = B256::repeat_byte(0x55);
+        assert!(matches!(
+            validate_payment_payload_structurally(&tampered, &evm, Some(parent)),
+            PayloadValidationResult::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn structural_lane_lockstep_enforced() {
+        let parent = B256::repeat_byte(0xaa);
+        let evm = structurally_valid_payload(B256::repeat_byte(0x11), 7, 1000, vec![]);
+
+        // block_number mismatch
+        let pay = structurally_valid_payload(parent, 8, 1000, vec![]);
+        assert!(matches!(
+            validate_payment_payload_structurally(&pay, &evm, Some(parent)),
+            PayloadValidationResult::Invalid { .. }
+        ));
+
+        // timestamp mismatch
+        let pay = structurally_valid_payload(parent, 7, 1001, vec![]);
+        assert!(matches!(
+            validate_payment_payload_structurally(&pay, &evm, Some(parent)),
+            PayloadValidationResult::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn structural_parent_link() {
+        let parent = B256::repeat_byte(0xaa);
+        let evm = structurally_valid_payload(B256::repeat_byte(0x11), 7, 1000, vec![]);
+        let pay = structurally_valid_payload(parent, 7, 1000, vec![]);
+
+        // wrong expected parent -> Invalid
+        assert!(matches!(
+            validate_payment_payload_structurally(
+                &pay,
+                &evm,
+                Some(B256::repeat_byte(0xbb))
+            ),
+            PayloadValidationResult::Invalid { .. }
+        ));
+
+        // unknown expected parent -> check skipped, Valid
+        assert_eq!(
+            validate_payment_payload_structurally(&pay, &evm, None),
+            PayloadValidationResult::Valid
+        );
     }
 
     #[tokio::test]
@@ -577,7 +780,15 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let result = validate_consensus_block(&validator, None, &block, &store, &metrics)
+        let result = validate_consensus_block(
+            &validator,
+            None,
+            &block,
+            &store,
+            &metrics,
+            PaymentExecMode::Gated,
+            None,
+        )
             .await
             .expect("should succeed");
 
@@ -609,7 +820,15 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let result = validate_consensus_block(&validator, None, &block, &store, &metrics)
+        let result = validate_consensus_block(
+            &validator,
+            None,
+            &block,
+            &store,
+            &metrics,
+            PaymentExecMode::Gated,
+            None,
+        )
             .await
             .expect("should succeed");
 
@@ -629,7 +848,15 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let err = validate_consensus_block(&validator, None, &block, &store, &metrics)
+        let err = validate_consensus_block(
+            &validator,
+            None,
+            &block,
+            &store,
+            &metrics,
+            PaymentExecMode::Gated,
+            None,
+        )
             .await
             .expect_err("should propagate error");
 
@@ -664,7 +891,15 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let validity = validate_consensus_block(&validator, None, &block, &store, &metrics)
+        let validity = validate_consensus_block(
+            &validator,
+            None,
+            &block,
+            &store,
+            &metrics,
+            PaymentExecMode::Gated,
+            None,
+        )
             .await
             .expect("verdict should be returned even when forensics persist fails");
 

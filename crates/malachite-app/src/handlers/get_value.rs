@@ -35,8 +35,7 @@ use crate::block::ConsensusBlock;
 use crate::metrics::AppMetrics;
 use crate::payload::{
     generate_payload_with_retry, validate_consensus_block, EnginePayloadGenerator,
-    EnginePayloadValidator,
-};
+    EnginePayloadValidator, PaymentExecMode};
 use crate::proposal_parts::{prepare_stream, stream_proposal};
 use crate::state::State;
 use crate::store::repositories::UndecidedBlocksRepository;
@@ -75,12 +74,18 @@ pub async fn handle(
     let signing_provider = state.signing_provider();
 
     let prebuilt_slot = state.builder_prebuilt.clone();
+    let payment_exec_mode = if state.env_config().payment_deferred_exec {
+        PaymentExecMode::Deferred
+    } else {
+        PaymentExecMode::Gated
+    };
     let proposed_value = on_get_value(
         network,
         engine,
         payment_engine,
         payment_builder_engine,
         prebuilt_slot,
+        payment_exec_mode,
         metrics,
         store,
         height,
@@ -130,6 +135,7 @@ async fn on_get_value(
     payment_engine: Option<&Engine>,
     payment_builder_engine: Option<&Engine>,
     prebuilt_slot: crate::builder_prebuild::PrebuiltSlot,
+    payment_exec_mode: PaymentExecMode,
     metrics: AppMetrics,
     store: Store,
     height: Height,
@@ -167,6 +173,7 @@ async fn on_get_value(
                 payment_engine,
                 payment_builder_engine,
                 prebuilt_slot,
+                payment_exec_mode,
                 &metrics,
                 &store,
                 height,
@@ -239,6 +246,7 @@ async fn build_and_validate_block(
     payment_engine: Option<&Engine>,
     payment_builder_engine: Option<&Engine>,
     prebuilt_slot: crate::builder_prebuild::PrebuiltSlot,
+    payment_exec_mode: PaymentExecMode,
     metrics: &AppMetrics,
     store: &Store,
     height: Height,
@@ -264,7 +272,15 @@ async fn build_and_validate_block(
     .await?;
 
     let validator = EnginePayloadValidator::new(engine, metrics);
-    let validity = validate_consensus_block(&validator, payment_engine, &block, store, metrics)
+    let validity = validate_consensus_block(
+        &validator,
+        payment_engine,
+        &block,
+        store,
+        metrics,
+        payment_exec_mode,
+        None,
+    )
         .await
         .wrap_err_with(|| {
             format!(

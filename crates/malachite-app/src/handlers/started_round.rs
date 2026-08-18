@@ -29,7 +29,7 @@ use arc_signer::ArcSigningProvider;
 
 use crate::block::ConsensusBlock;
 use crate::metrics::{AppMetrics, InvalidPayloadSource};
-use crate::payload::{validate_consensus_block, EnginePayloadValidator, PayloadValidator};
+use crate::payload::{validate_consensus_block, EnginePayloadValidator, PaymentExecMode, PayloadValidator};
 use crate::proposal_parts::{
     assemble_block_from_parts, resolve_expected_proposer, validate_proposal_parts,
 };
@@ -103,6 +103,11 @@ async fn on_started_round(
     state.current_round = round;
     state.current_proposer = Some(proposer);
 
+    let payment_exec_mode = if state.env_config().payment_deferred_exec {
+        PaymentExecMode::Deferred
+    } else {
+        PaymentExecMode::Gated
+    };
     fetch_and_process_pending_proposals(
         height,
         round,
@@ -111,6 +116,7 @@ async fn on_started_round(
         state.store(),
         engine,
         payment_engine,
+        payment_exec_mode,
         state.signing_provider(),
         state.metrics(),
     )
@@ -127,6 +133,7 @@ async fn fetch_and_process_pending_proposals(
     store: &Store,
     engine: &Engine,
     payment_engine: Option<&Engine>,
+    payment_exec_mode: PaymentExecMode,
     signing_provider: &ArcSigningProvider,
     metrics: &AppMetrics,
 ) -> eyre::Result<Vec<ProposedValue<ArcContext>>> {
@@ -158,6 +165,7 @@ async fn fetch_and_process_pending_proposals(
         store,
         &EnginePayloadValidator::new(engine, metrics),
         payment_engine,
+        payment_exec_mode,
         store,
         metrics,
     )
@@ -247,6 +255,7 @@ async fn validate_undecided_blocks(
     undecided_blocks: &impl UndecidedBlocksRepository,
     payload_validator: &impl PayloadValidator,
     payment_engine: Option<&Engine>,
+    payment_exec_mode: PaymentExecMode,
     invalid_payloads: &impl InvalidPayloadsRepository,
     metrics: &AppMetrics,
 ) -> eyre::Result<Vec<ConsensusBlock>> {
@@ -274,6 +283,8 @@ async fn validate_undecided_blocks(
             &block,
             invalid_payloads,
             metrics,
+            payment_exec_mode,
+            None,
         )
         .await
         {
@@ -413,7 +424,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let result =
-            validate_undecided_blocks(height, round, &undecided, &validator, None, &invalid, &metrics)
+            validate_undecided_blocks(height, round, &undecided, &validator, None, PaymentExecMode::Gated, &invalid, &metrics)
                 .await
                 .expect("should succeed");
 
@@ -468,7 +479,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let result =
-            validate_undecided_blocks(height, round, &undecided, &validator, None, &invalid, &metrics)
+            validate_undecided_blocks(height, round, &undecided, &validator, None, PaymentExecMode::Gated, &invalid, &metrics)
                 .await
                 .expect("should succeed");
 
@@ -496,7 +507,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let result =
-            validate_undecided_blocks(height, round, &undecided, &validator, None, &invalid, &metrics)
+            validate_undecided_blocks(height, round, &undecided, &validator, None, PaymentExecMode::Gated, &invalid, &metrics)
                 .await
                 .expect("should succeed");
 
@@ -519,7 +530,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let err =
-            validate_undecided_blocks(height, round, &undecided, &validator, None, &invalid, &metrics)
+            validate_undecided_blocks(height, round, &undecided, &validator, None, PaymentExecMode::Gated, &invalid, &metrics)
                 .await
                 .expect_err("should propagate repository error");
 
@@ -581,7 +592,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let result =
-            validate_undecided_blocks(height, round, &undecided, &validator, None, &invalid, &metrics)
+            validate_undecided_blocks(height, round, &undecided, &validator, None, PaymentExecMode::Gated, &invalid, &metrics)
                 .await
                 .expect("should succeed despite one block erroring");
 
@@ -657,7 +668,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let err =
-            validate_undecided_blocks(height, round, &undecided, &validator, None, &invalid, &metrics)
+            validate_undecided_blocks(height, round, &undecided, &validator, None, PaymentExecMode::Gated, &invalid, &metrics)
                 .await
                 .expect_err("persist error should propagate");
 

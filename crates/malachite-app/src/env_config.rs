@@ -24,6 +24,7 @@ const ARC_CONSENSUS_DB_CACHE_SIZE_BYTES: &str = "ARC_CONSENSUS_DB_CACHE_SIZE_BYT
 const ARC_SYNC_STATUS_UPDATE_INTERVAL: &str = "ARC_SYNC_STATUS_UPDATE_INTERVAL";
 const ARC_SYNC_CATCH_UP_THRESHOLD: &str = "ARC_SYNC_CATCH_UP_THRESHOLD";
 const ARC_GENESIS_FILE_PATH: &str = "ARC_GENESIS_FILE_PATH";
+const ARC_PAYMENT_DEFERRED_EXEC: &str = "ARC_PAYMENT_DEFERRED_EXEC";
 
 /// Default cache size for the database (1 GiB).
 const DEFAULT_DB_CACHE_SIZE: ByteSize = ByteSize::gib(1);
@@ -47,6 +48,12 @@ pub struct EnvConfig {
     pub sync_catch_up_threshold: Duration,
     /// Path to the EL genesis.json file (for reading hardfork activation conditions).
     pub genesis_file_path: Option<String>,
+    /// EXPERIMENTAL (`ARC_PAYMENT_DEFERRED_EXEC=1`): vote on payment-lane blocks after
+    /// structural validation only (block-hash consistency, lane lockstep, parent link);
+    /// execution is deferred off the vote path and anchored at decide, before commit.
+    /// Safe only while every proposer is honest w.r.t. executability (total STF not yet
+    /// in the EL) — experiment fleets only. Default off = current behavior byte-for-byte.
+    pub payment_deferred_exec: bool,
 }
 
 impl EnvConfig {
@@ -80,12 +87,17 @@ impl EnvConfig {
             .ok()
             .filter(|s| !s.is_empty());
 
+        let payment_deferred_exec = std::env::var(ARC_PAYMENT_DEFERRED_EXEC)
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         Self {
             halt_height,
             db_cache_size,
             status_update_interval,
             sync_catch_up_threshold,
             genesis_file_path,
+            payment_deferred_exec,
         }
     }
 }
@@ -98,6 +110,7 @@ impl Default for EnvConfig {
             status_update_interval: None,
             sync_catch_up_threshold: DEFAULT_SYNC_CATCH_UP_THRESHOLD,
             genesis_file_path: None,
+            payment_deferred_exec: false,
         }
     }
 }

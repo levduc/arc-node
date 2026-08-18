@@ -159,8 +159,17 @@ async fn on_process_synced_value(
         payment_payload,
     };
 
+    // Sync path deliberately stays Gated (full re-execution): it is off the live
+    // round, keeps EL2 caught up as values arrive, and is the divergence alarm
+    // for decided history even when the round path defers execution.
     let validity = validate_consensus_block(
-        &engine, payment_engine, &block, &invalid_payloads_repo, metrics,
+        &engine,
+        payment_engine,
+        &block,
+        &invalid_payloads_repo,
+        metrics,
+        crate::payload::PaymentExecMode::Gated,
+        None,
     )
     .await
     .wrap_err_with(|| {
