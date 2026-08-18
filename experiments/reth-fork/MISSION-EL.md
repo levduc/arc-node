@@ -4,6 +4,19 @@
 streaming, SSZ framing, voting, or `crates/malachite-app`. Everything must land in the EL —
 `crates/evm`, `crates/execution-*`, `crates/evm-node`, or EL launch flags.
 
+## 2026-08-18 — builder separation phase-1 (branch builder-separation): v0 negative, v1.1 POSITIVE
+
+1 builder (papaduck NVMe) + 4 validators, CL vote/validation rules untouched. v0 on-demand
+remote getPayload = -5..-10% (build stayed on path + feed-exec + RTTs added). v1.1 = next
+proposer kicks dual-timestamp speculative builds on the builder at decide; get_value serves
+stash on exact match, local fallback on miss. PAIRED same-chain (control first, builder arm
+older = conservative): 150M 483->450ms (+7% tps 14.8k->15.9k) · 300M parity · 500M
+1,414->1,277ms (+11%, 18,649 tps). Hit rate under drain 54% (empty-stash class: kick vs
+loaded-builder race in the gap) -> per-hit win ~2x headline; hit-rate work = direct headroom.
+Fixes en route: builder engine V4/V5 fork config (-38005), value-sync env was remote-only
+(local val1 wedge), image-build silent-death → gated ship + image-ID verify. Details:
+docs/deferred-exec-100k.md.
+
 ## 2026-08-13b — slide-14 campaign REPRODUCED n=2 + independent sanity check (user-directed)
 
 Fresh fleet chain, SIZES largest-first, all fills healthy 191-200k (no tracker degradation in 5

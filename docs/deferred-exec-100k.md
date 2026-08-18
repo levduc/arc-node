@@ -122,6 +122,26 @@ val-behavior A/B is inherent (fallback path = stock).
 blocks — phase 1 keeps today's consensus rules exactly, so its number isolates the
 builder slice alone.
 
+## Phase-1 RESULTS (2026-08-17/18, fleet, paired same-chain arms)
+
+- **v0 (on-demand remote build): -5..-10% capacity.** The build never left the critical
+  path (proposer waits for the remote build), and the builder's follow-feed catch-up
+  execution + 2 head-check RTTs landed ON the path. Withdrawn, replaced by v1.
+- **v1.1 (prebuilt + dual-timestamp): +7% @150M (483->450ms), parity @300M, +11% @500M
+  (1,414->1,277ms, 18,649 tps)** — control-first ordering, builder arm at OLDER chain age
+  (conservative), fills all >=190k. Hit rate under drain load 54% (misses = empty stash:
+  the kick's two builds compete with the loaded builder inside the decide->get_value gap;
+  every miss falls back to stock) — so the per-hit win is ~2x the headline and hit-rate
+  work is direct headroom. The dual-timestamp trick killed the second-rollover miss class
+  outright (was 7/10 misses).
+- Mechanism validated end-to-end: builder follows via decide-feed, p2p-backfills itself
+  from genesis mid-chain, all-validator agreement throughout, fallback never broke a
+  height. Ops findings: builder needs the lane's Engine API V4/V5 fork config (-38005
+  otherwise); the value-sync livelock env fix had been remote-only (local val1 wedged on
+  every fall-behind until 7857704).
+- Ladder position: measured +7-11% at ~54% hits vs the rung's ~+10 us/tx prediction —
+  consistent. The big prize remains vote-on-hash (execution off the height entirely).
+
 ## Failure modes
 
 - Builder withholds body after header commit → availability rule blocks the vote; height
