@@ -41,3 +41,84 @@ pub struct PrebuiltPayment {
 /// practice — timestamps t0 and t0+1 (the dual-timestamp trick that kills the
 /// second-rollover miss class by construction).
 pub type PrebuiltSlot = Arc<Mutex<Vec<PrebuiltPayment>>>;
+
+/// Continuous builder refresher (v2 of the prebuild): instead of a one-shot kick
+/// at decide with a PREDICTED timestamp (whose staleness under stretched rounds
+/// was the dominant miss class — observed ts_needed up to prebuilt+6s), a loop
+/// keeps the stash tracking REALITY: whenever the builder's head moves or the
+/// wall clock drifts past the stashed candidates, rebuild (head, now) and
+/// (head, now+1). The proposer then finds a matching payload whenever the
+/// builder is current — no prediction involved. Fail-safe like everything in
+/// this module: any error just leaves the stash stale and get_value builds
+/// locally.
+pub async fn run_refresher(
+    builder: arc_eth_engine::engine::Engine,
+    slot: PrebuiltSlot,
+    fee_recipient: Address,
+) {
+    use tracing::{debug, info};
+    info!("🏗️ builder refresher: continuous prebuild loop starting");
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        // Current builder head (its canonical payment chain, kept current by the
+        // single-feeder decide feed).
+        let head = match builder.eth.get_block_by_number("latest").await {
+            Ok(Some(h)) => h,
+            _ => continue,
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let t0 = head.timestamp.max(now);
+        let wanted = [t0, t0 + 1];
+        // What's missing? (stash may hold them from the previous tick)
+        let missing: Vec<u64> = {
+            let stash = slot.lock().await;
+            wanted
+                .iter()
+                .copied()
+                .filter(|ts| {
+                    !stash.iter().any(|p| {
+                        p.parent == head.block_hash
+                            && p.timestamp == *ts
+                            && p.fee_recipient == fee_recipient
+                    })
+                })
+                .collect()
+        };
+        if missing.is_empty() {
+            continue;
+        }
+        let mut built: Vec<PrebuiltPayment> = Vec::new();
+        for ts in &missing {
+            match builder.generate_block(&head, *ts, &fee_recipient).await {
+                Ok(payload) => built.push(PrebuiltPayment {
+                    parent: head.block_hash,
+                    timestamp: *ts,
+                    fee_recipient,
+                    payload,
+                }),
+                Err(e) => {
+                    debug!("builder refresher: build for ts {ts} failed: {e:#}");
+                    break;
+                }
+            }
+        }
+        if built.is_empty() {
+            continue;
+        }
+        let mut stash = slot.lock().await;
+        // Drop stale candidates (other parents, or timestamps now in the past),
+        // keep still-valid ones, add the new builds.
+        stash.retain(|p| p.parent == head.block_hash && p.timestamp >= t0);
+        stash.extend(built);
+        debug!(
+            "builder refresher: stash now has {} candidates for head {}",
+            stash.len(),
+            head.block_hash
+        );
+    }
+}

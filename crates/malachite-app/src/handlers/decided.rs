@@ -105,7 +105,6 @@ pub async fn handle(
 
             state.sync_state = new_sync_state;
 
-            let evm_timestamp = block.timestamp;
             let next_height_info =
                 prepare_next_height(decided_height, block, new_sync_state, engine).await?;
 
@@ -126,8 +125,6 @@ pub async fn handle(
                     .address
                     == state.address();
                 let be = be.clone();
-                let slot = state.builder_prebuilt.clone();
-                let fee_recipient = state.fee_recipient();
                 tokio::spawn(async move {
                     // SINGLE-FEEDER: only the NEXT proposer feeds the builder.
                     // All four validators feeding the same ~6MB payload each
@@ -147,45 +144,8 @@ pub async fn handle(
                         debug!("builder follow: forkchoice({hash}) failed: {e:#}");
                         return;
                     }
-                    // Predict the payment payload's attrs for our turn: parent = the block
-                    // we just fed (exact), fee_recipient = ours (exact), timestamp = the
-                    // EVM lane's formula max(parent_ts, now) — the only miss class.
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    let t0 = evm_timestamp.max(now);
-                    let head = match be.eth.get_block_by_number("latest").await {
-                        Ok(Some(h)) if h.block_hash == hash => h,
-                        _ => {
-                            debug!("builder prebuild: head not at {hash}; skipping");
-                            return;
-                        }
-                    };
-                    // Dual-timestamp: the decide->get_value gap crosses a second boundary
-                    // often enough that a single predicted timestamp missed ~70% of turns.
-                    // Build t0 and t0+1 concurrently (distinct payload jobs on the builder);
-                    // get_value serves whichever matches.
-                    slot.lock().await.clear();
-                    let (r0, r1) = tokio::join!(
-                        be.generate_block(&head, t0, &fee_recipient),
-                        be.generate_block(&head, t0 + 1, &fee_recipient),
-                    );
-                    let mut stash = slot.lock().await;
-                    for (ts, r) in [(t0, r0), (t0 + 1, r1)] {
-                        match r {
-                            Ok(payload) => {
-                                debug!("🏗️ prebuilt next payment payload (ts={ts})");
-                                stash.push(crate::builder_prebuild::PrebuiltPayment {
-                                    parent: hash,
-                                    timestamp: ts,
-                                    fee_recipient,
-                                    payload,
-                                });
-                            }
-                            Err(e) => debug!("builder prebuild(ts={ts}): build failed: {e:#}"),
-                        }
-                    }
+                    // Building is owned by the continuous refresher
+                    // (builder_prebuild::run_refresher); decide only feeds.
                 });
             }
 

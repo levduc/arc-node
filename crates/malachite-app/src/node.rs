@@ -789,6 +789,16 @@ impl App {
         // Apply any state overrides from the start configuration (e.g. suggested fee recipient)
         self.apply_state_overrides(&mut state);
 
+        // Continuous builder prebuild: keep the stash tracking the builder's real
+        // head + wall clock instead of one-shot decide-time predictions (whose
+        // staleness under stretched rounds was the dominant miss class).
+        if let Some(ref be) = payment_builder_engine {
+            let be = be.clone();
+            let slot = state.builder_prebuilt.clone();
+            let fee_recipient = state.fee_recipient();
+            tokio::spawn(crate::builder_prebuild::run_refresher(be, slot, fee_recipient));
+        }
+
         // Spawn the metrics server
         self.spawn_metrics_server(process_metrics);
 
