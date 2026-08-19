@@ -41,6 +41,12 @@ gl(){ python3 -c "
 import json,urllib.request
 r=urllib.request.Request('$RPC',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_getBlockByNumber','params':['latest',False]}).encode(),headers={'content-type':'application/json'})
 print(int(json.load(urllib.request.urlopen(r,timeout=8))['result']['gasLimit'],16))" 2>/dev/null; }
+pend_only(){ python3 -c "
+import json,urllib.request
+r=urllib.request.Request('$RPC',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'txpool_status','params':[]}).encode(),headers={'content-type':'application/json'})
+s=json.load(urllib.request.urlopen(r,timeout=8))['result']
+f=lambda x:int(x,16) if isinstance(x,str) else int(x)
+print(f(s['pending']))" 2>/dev/null || echo -1; }
 pend(){ python3 -c "
 import json,urllib.request
 r=urllib.request.Request('$RPC',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'txpool_status','params':[]}).encode(),headers={'content-type':'application/json'})
@@ -86,21 +92,25 @@ run_one(){ # $1 = size in M; returns via $RUN/capacity.json
   local IDXF=${FILL_IDX_FILE:-/tmp/corpus-fill-idx}
   local RTS=("" "100.85.150.119" "100.70.62.92" "100.86.97.40")
   local RPORTS=(19545 19645 19745 19845)
+  # Cap-aware fill: one 48k machine-part at a time, PENDING-only target check.
+  # Overshooting the pending cap punches nonce holes (cap-rejected txs strand
+  # their successors in queued FOREVER) -> the empty-1G-block artifact.
   while :; do
-    p=$(pend); [ "$p" -gt "$FILL_TARGET" ] && break
+    p=$(pend_only); [ "$p" -gt "$FILL_TARGET" ] && break
     local FIDX=$(cat "$IDXF" 2>/dev/null || echo 0)
     [ -f "/tmp/corpus-f${FIDX}-m0.txt" ] || { echo "corpus exhausted at fill $FIDX"; break; }
-    echo "   replaying corpus fill $FIDX (pool at $p)"
-    python3 "$DIR/replay-corpus.py" /tmp/corpus-f${FIDX}-m0.txt http://127.0.0.1:19545 8 &
-    local RPIDS=($!)
-    for m in 1 2 3; do
-      timeout -k 10 120 tailscale ssh papaduck@${RTS[$m]}         "python3 /tmp/replay-corpus.py /tmp/corpus-f${FIDX}-m${m}.txt http://127.0.0.1:${RPORTS[$m]} 1" </dev/null >/dev/null 2>&1 &
-      RPIDS+=($!)
+    echo "   replaying corpus fill $FIDX quarter-wise (pending at $p)"
+    for m in 0 1 2 3; do
+      p=$(pend_only); [ "$p" -gt "$FILL_TARGET" ] && break
+      if [ "$m" = 0 ]; then
+        python3 "$DIR/replay-corpus.py" /tmp/corpus-f${FIDX}-m0.txt http://127.0.0.1:19545 1 >/dev/null
+      else
+        timeout -k 10 180 tailscale ssh papaduck@${RTS[$m]} "python3 /tmp/replay-corpus.py /tmp/corpus-f${FIDX}-m${m}.txt http://127.0.0.1:${RPORTS[$m]} 1" </dev/null >/dev/null 2>&1
+      fi
     done
-    wait "${RPIDS[@]}" 2>/dev/null
     echo $((FIDX+1)) > "$IDXF"
   done
-  local BACKLOG=$(pend)
+  local BACKLOG=$(pend_only)
 
   echo "-- [${SIZE_M}M] unpace + flip under load (backlog $BACKLOG)"
   bash "$DIR/set-block-time.sh" 0 >/dev/null 2>&1 || true
