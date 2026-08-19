@@ -795,9 +795,9 @@ impl App {
         if let Some(ref be) = payment_builder_engine {
             let be = be.clone();
             let slot = state.builder_prebuilt.clone();
-            let active = state.builder_refresher_active.clone();
+            let trigger = state.builder_refresher.clone();
             let fee_recipient = state.fee_recipient();
-            tokio::spawn(crate::builder_prebuild::run_refresher(be, slot, active, fee_recipient));
+            tokio::spawn(crate::builder_prebuild::run_refresher(be, slot, trigger, fee_recipient));
         }
 
         // Spawn the metrics server

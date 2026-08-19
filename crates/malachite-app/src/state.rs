@@ -137,8 +137,8 @@ pub struct State {
     /// Phase-1 builder separation v1: payment payload the remote builder pre-built for
     /// this node's next proposer turn (kicked at decide, consumed by get_value on match).
     pub builder_prebuilt: crate::builder_prebuild::PrebuiltSlot,
-    /// Gate: this node is the next proposer, so its builder refresher may build.
-    pub builder_refresher_active: crate::builder_prebuild::RefresherActive,
+    /// Trigger for the builder refresher (set at decide by the next proposer).
+    pub builder_refresher: crate::builder_prebuild::RefresherHandle,
 
     /// Timestamps of heights that received a synced value via ProcessSyncedValue.
     synced_heights: HashMap<Height, SystemTime>,
@@ -195,7 +195,7 @@ impl State {
             current_round: Round::Nil,
             current_proposer: None,
             builder_prebuilt: Default::default(),
-            builder_refresher_active: Default::default(),
+            builder_refresher: Default::default(),
             validator_set: ValidatorSet::default(), // initially empty, will be updated from reth
             store,
             stream_nonce: 0,

@@ -124,9 +124,8 @@ pub async fn handle(
                     )
                     .address
                     == state.address();
-                state
-                    .builder_refresher_active
-                    .store(im_next, std::sync::atomic::Ordering::Relaxed);
+                let trigger = state.builder_refresher.clone();
+                let payment_ts = pp.payload_inner.payload_inner.timestamp;
                 let be = be.clone();
                 tokio::spawn(async move {
                     // SINGLE-FEEDER: only the NEXT proposer feeds the builder.
@@ -147,8 +146,11 @@ pub async fn handle(
                         debug!("builder follow: forkchoice({hash}) failed: {e:#}");
                         return;
                     }
-                    // Building is owned by the continuous refresher
-                    // (builder_prebuild::run_refresher); decide only feeds.
+                    // Hand the refresher the exact head we just fed and wake it
+                    // NOW — the decide->get_value gap is too short for polling.
+                    *trigger.expected.lock().await =
+                        Some((arc_consensus_types::BlockHash::from(hash), payment_ts));
+                    trigger.notify.notify_one();
                 });
             }
 

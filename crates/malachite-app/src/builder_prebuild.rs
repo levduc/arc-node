@@ -42,12 +42,20 @@ pub struct PrebuiltPayment {
 /// second-rollover miss class by construction).
 pub type PrebuiltSlot = Arc<Mutex<Vec<PrebuiltPayment>>>;
 
-/// Gate for the continuous refresher: only the NEXT proposer's refresher may
-/// build. Without this, all four validators' refreshers each pulled ~6MB
-/// payloads from the builder continuously — saturating its link with fetches
-/// for payloads three of them would never use (the fetch-side twin of the
-/// 4x-feed lesson). Set by decided (which knows im_next), cleared on consume.
-pub type RefresherActive = Arc<std::sync::atomic::AtomicBool>;
+/// Trigger for the continuous refresher: set by decided on the NEXT proposer
+/// only (the same node that feeds), carrying the exact head the builder is
+/// about to have and the timestamp base. Event-driven — the refresher wakes on
+/// notify instead of polling, because the decide->get_value gap (~0.3-0.5s) is
+/// shorter than any polite polling cadence (v2.0's 500ms tick scored 0/1,077
+/// hits). Only-next-proposer gating also keeps the builder link frugal (the
+/// 4x-fetch lesson).
+#[derive(Default)]
+pub struct RefresherTrigger {
+    /// (expected builder head after our feed, its timestamp)
+    pub expected: Mutex<Option<(BlockHash, u64)>>,
+    pub notify: tokio::sync::Notify,
+}
+pub type RefresherHandle = Arc<RefresherTrigger>;
 
 /// Continuous builder refresher (v2 of the prebuild): instead of a one-shot kick
 /// at decide with a PREDICTED timestamp (whose staleness under stretched rounds
@@ -61,32 +69,44 @@ pub type RefresherActive = Arc<std::sync::atomic::AtomicBool>;
 pub async fn run_refresher(
     builder: arc_eth_engine::engine::Engine,
     slot: PrebuiltSlot,
-    active: RefresherActive,
+    trigger: RefresherHandle,
     fee_recipient: Address,
 ) {
     use tracing::{debug, info};
-    info!("🏗️ builder refresher: continuous prebuild loop starting");
-    let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    info!("🏗️ builder refresher: event-driven prebuild loop starting");
     loop {
-        tick.tick().await;
-        // Only the next proposer builds (see RefresherActive).
-        if !active.load(std::sync::atomic::Ordering::Relaxed) {
+        // Wake on the decide-time trigger, or every 500ms for drift repair
+        // (clock rollover while waiting for get_value on a stretched round).
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            trigger.notify.notified(),
+        )
+        .await;
+        let Some((want_head, head_ts)) = *trigger.expected.lock().await else {
             continue;
+        };
+        // Wait (briefly) for the builder to have executed our feed: poll its
+        // head until it matches what we just fed. The feed runs concurrently.
+        let mut head = None;
+        for _ in 0..40 {
+            match builder.eth.get_block_by_number("latest").await {
+                Ok(Some(h)) if h.block_hash == want_head => {
+                    head = Some(h);
+                    break;
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            }
         }
-        // Current builder head (its canonical payment chain, kept current by the
-        // single-feeder decide feed).
-        let head = match builder.eth.get_block_by_number("latest").await {
-            Ok(Some(h)) => h,
-            _ => continue,
+        let Some(head) = head else {
+            debug!("builder refresher: builder never reached fed head {want_head}");
+            continue;
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let t0 = head.timestamp.max(now);
+        let t0 = head_ts.max(now);
         let wanted = [t0, t0 + 1];
-        // What's missing? (stash may hold them from the previous tick)
         let missing: Vec<u64> = {
             let stash = slot.lock().await;
             wanted
@@ -123,12 +143,10 @@ pub async fn run_refresher(
             continue;
         }
         let mut stash = slot.lock().await;
-        // Drop stale candidates (other parents, or timestamps now in the past),
-        // keep still-valid ones, add the new builds.
         stash.retain(|p| p.parent == head.block_hash && p.timestamp >= t0);
         stash.extend(built);
         debug!(
-            "builder refresher: stash now has {} candidates for head {}",
+            "builder refresher: stash has {} candidates for head {}",
             stash.len(),
             head.block_hash
         );
