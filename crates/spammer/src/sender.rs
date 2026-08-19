@@ -344,8 +344,9 @@ impl TxSender {
                 let mut w = w.lock().unwrap();
                 writeln!(w, "{payload}").expect("corpus write failed");
                 w.flush().ok();
-                // pretend success; request_id 1 is never awaited in dump runs
-                return Ok((1, 0, tx_len, tx_hash));
+                // id 0 = "already handled": send() returns Ok, send_and_wait
+                // maps it to Accepted below (dump mode never awaits the ws).
+                return Ok((0, 0, tx_len, tx_hash));
             }
         }
 
@@ -424,6 +425,9 @@ impl TxSender {
         let (request_id, node_idx, tx_len, tx_hash) = self.dispatch_raw_tx(tx).await?;
 
         if request_id == 0 {
+            if std::env::var("SPAM_DUMP_FILE").is_ok() {
+                return Ok(SendOutcome::Accepted);
+            }
             return Ok(SendOutcome::Transient(
                 "dispatch failed (tracked)".to_string(),
             ));
