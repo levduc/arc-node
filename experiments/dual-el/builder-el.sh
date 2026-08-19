@@ -40,9 +40,9 @@ docker run -d --name "$NAME" --network "$HOSTNET" \
     --metrics=0.0.0.0:9001 --disable-discovery --ipcdisable \
     --port 30303 \
     --arc.builder.deadline=500 --arc.builder.wait-for-payload=true --txpool.nolocals \
-    --txpool.pending-max-count=200000 --txpool.queued-max-count=200000 \
+    --txpool.pending-max-count=${PAY_POOL_COUNT:-200000} --txpool.queued-max-count=${PAY_POOL_COUNT:-200000} \
     --txpool.pending-max-size=512 --txpool.queued-max-size=512 \
-    --txpool.basefee-max-count=200000 --txpool.basefee-max-size=512 \
+    --txpool.basefee-max-count=${PAY_POOL_COUNT:-200000} --txpool.basefee-max-size=512 \
     --txpool.max-account-slots=${PAY_ACCOUNT_SLOTS:-256} \
     --rpc-cache.max-blocks=200 --rpc-cache.max-receipts=200 \
     ${BUILDER_EXTRA_ARGS:-} >/dev/null \
