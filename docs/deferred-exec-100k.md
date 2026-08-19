@@ -151,6 +151,23 @@ sustained needs POOL_TARGET ~100-150k and remains admission-bound ~8-10k regardl
 post-churn 1G drain read 3,432ms/13.9k = the documented aged-chain artifact (age 3,232 after 25min
 churn) — the canonical 1G capacity remains the fresh-chain n=2: **29.4k/29.1k tps @ ~1.62s**.
 
+### Rung 1+2 CLOSED — robust 1G numbers, builder verdict, and the honest 30k line (2026-08-19)
+
+Tuned point (250k fill, 7-block resolution, deferred x4): **1G = 1,892ms / 25,164 tps — the best
+robust-resolution reading** (vs 17.6k at 313k depth: 250k is the right operating depth; the depth
+penalty is confirmed monotonic above it). Builder arm read 20.8k BUT its fill overshot to 299k —
+unequal depths make that pairing void; at equal depth the builder's measured range (+9.4%, +17.6%)
+projects 27.5-29.5k. Builder hit rate at 1.1s deadline: 40% (deadline tuning did not recover hits;
+misses are dominated by fill-churn timing, not candidate coverage).
+
+**Honest close of the no-reth-mods track:** robust 1G capacity 25.2k (n=1 at 7 blocks) with
+builder projecting high-20s; best-case shallow-pool methodology 29.1-29.4k (n=2, 3 blocks).
+A DEFENSIBLE >=30k needs one of: (a) rung 3 — 2G blocks via Arc's own chainspec bound (law
+predicts ~2.96s / ~32k, but the depth penalty at 400k+ fills may cancel it); (b) reth-side pool
+iterator work (the depth penalty itself, priced ~15-20%); (c) persistence surgery (54% of bytes
+droppable, profiled). Campaign-per-datapoint variance (fill overshoot 250k->299k) is now the
+measurement bottleneck — fix the fill governor before more pairings.
+
 ### 1G capacity is POOL-DEPTH-DEPENDENT; builder edge grows with depth (2026-08-19)
 
 Resolution campaign (FILL_ACCTS fix: the old ~204k fill ceiling was 800 fill senders x 256
