@@ -80,7 +80,7 @@ run_one(){ # $1 = size in M; returns via $RUN/capacity.json
   stop_all_spam; sleep 4
   gas_set 25000000 $TIP
   verify 25000000 30 || { echo "shrink failed"; return 1; }
-  S=1 ACCTS=200 RATE=12000 DUR=400 "$DIR/fleet/spam-fleet-distributed.sh" start >/dev/null 2>&1
+  S=1 ACCTS=${FILL_ACCTS:-200} RATE=12000 DUR=400 "$DIR/fleet/spam-fleet-distributed.sh" start >/dev/null 2>&1
   t0=$SECONDS
   while [ $((SECONDS-t0)) -lt 200 ]; do p=$(pend); [ "$p" -gt "$FILL_TARGET" ] && break; sleep "${FILL_POLL:-5}"; done
   local BACKLOG=$p
