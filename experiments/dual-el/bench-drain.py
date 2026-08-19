@@ -25,7 +25,12 @@ while time.time()<deadline:
     # end-of-drain = a NON-full block AT the drain size. A wrong-size transition block must not
     # trigger this (that early-exit cost a 1G run: the first 1G block took ~8s to land and the
     # sampler had already quit on a 25M straggler).
-    if stop_ts and events and events[-1][0]>stop_ts+3 and events[-1][4] and not events[-1][2]:
+    # Only honor the end condition once a FULL at-size block has been seen
+    # post-stop: after a gas flip the FIRST block at the new limit is a
+    # sub-full transition block (packed during the flip) — at 1G it arrived
+    # after stop+3s and ended sampling before the drain began (empty rows).
+    seen_full=any(e[2] for e in events if stop_ts and e[0]>stop_ts)
+    if stop_ts and events and seen_full and events[-1][0]>stop_ts+3 and events[-1][4] and not events[-1][2]:
         break
 try: stop_ts=float(open(run+"/stop-ts").read().strip())
 except Exception: stop_ts=None
@@ -40,4 +45,7 @@ if stop_ts:
                  "capacity_txs_per_block":round(txs/n)}
             if drain_gas_m: cap["capacity_gas_m"]=drain_gas_m
 json.dump(cap,open(run+"/capacity.json","w"))
+with open(run+"/samples.jsonl","w") as sf:
+    for e in events:
+        sf.write(json.dumps({"t":round(e[0],3),"blk":e[1],"full_at_size":e[2],"txs":e[3],"at_size":e[4]})+"\n")
 print("capacity:",cap)
