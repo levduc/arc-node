@@ -129,6 +129,15 @@ pub async fn handle(
                 let slot = state.builder_prebuilt.clone();
                 let fee_recipient = state.fee_recipient();
                 tokio::spawn(async move {
+                    // SINGLE-FEEDER: only the NEXT proposer feeds the builder.
+                    // All four validators feeding the same ~6MB payload each
+                    // height (24MB/height inbound) saturated a wifi builder —
+                    // measured: hit rate 62% wired -> 27% wifi. One feed
+                    // carries all the information; a lost feed is only a
+                    // stash miss (local-build fallback), never a wrong block.
+                    if !im_next {
+                        return;
+                    }
                     let hash = pp.payload_inner.payload_inner.block_hash;
                     if let Err(e) = be.notify_new_block(&pp, Vec::new()).await {
                         debug!("builder follow: newPayload({hash}) failed: {e:#}");
@@ -136,9 +145,6 @@ pub async fn handle(
                     }
                     if let Err(e) = be.set_latest_forkchoice_state(hash).await {
                         debug!("builder follow: forkchoice({hash}) failed: {e:#}");
-                        return;
-                    }
-                    if !im_next {
                         return;
                     }
                     // Predict the payment payload's attrs for our turn: parent = the block
