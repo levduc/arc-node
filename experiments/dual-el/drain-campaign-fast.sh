@@ -94,7 +94,7 @@ run_one(){ # $1 = size in M; returns via $RUN/capacity.json
     python3 "$DIR/replay-corpus.py" /tmp/corpus-f${FIDX}-m0.txt http://127.0.0.1:19545 8 &
     local RPIDS=($!)
     for m in 1 2 3; do
-      timeout -k 10 120 tailscale ssh papaduck@${RTS[$m]}         "python3 /tmp/replay-corpus.py /tmp/corpus-f${FIDX}-m${m}.txt http://127.0.0.1:${RPORTS[$m]} 8" </dev/null >/dev/null 2>&1 &
+      timeout -k 10 120 tailscale ssh papaduck@${RTS[$m]}         "python3 /tmp/replay-corpus.py /tmp/corpus-f${FIDX}-m${m}.txt http://127.0.0.1:${RPORTS[$m]} 1" </dev/null >/dev/null 2>&1 &
       RPIDS+=($!)
     done
     wait "${RPIDS[@]}" 2>/dev/null
