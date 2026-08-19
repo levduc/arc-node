@@ -14,7 +14,7 @@ for m in $(seq 0 $((M-1))); do
   off=$((m*A))
   rm -f ${OUT}-m${m}.*
   SPAM_DUMP_FILE=${OUT}-m${m} "$SP" ws --targets "$WS" -r 100000 -g 1 -a $A \
-    --account-offset $off -t 1 --chain-id 1338 -l --max-txs $((A*TXS)) 2>/dev/null || true
+    --account-offset $off -t 30 --chain-id 1338 -l -x $TXS 2>/dev/null || true
   cat ${OUT}-m${m}.* > ${OUT}-m${m}.txt && rm -f ${OUT}-m${m}.[0-9]*
   echo "machine $m: $(wc -l < ${OUT}-m${m}.txt) txs -> ${OUT}-m${m}.txt"
 done
