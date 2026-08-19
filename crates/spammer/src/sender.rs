@@ -318,6 +318,37 @@ impl TxSender {
         let payload = format!("0x{}", hex::encode(buf));
         let tx_len = tx_len as u64;
 
+        // Corpus dump mode (SPAM_DUMP_FILE): write the signed raw tx to disk
+        // instead of sending it. Signed txs are chain-independent for a fresh
+        // chain with the same chainId + prefunded accounts + nonce-0 start, so
+        // a corpus generated once can prefill any number of future testnets
+        // via batched eth_sendRawTransaction (no signing, no nonce queries).
+        {
+            use std::io::Write as _;
+            use std::sync::OnceLock;
+            static DUMP: OnceLock<Option<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>> =
+                OnceLock::new();
+            let dump = DUMP.get_or_init(|| {
+                std::env::var("SPAM_DUMP_FILE").ok().map(|p| {
+                    let path = format!("{p}.{}", std::process::id());
+                    std::sync::Mutex::new(std::io::BufWriter::new(
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(path)
+                            .expect("SPAM_DUMP_FILE must be writable"),
+                    ))
+                })
+            });
+            if let Some(w) = dump {
+                let mut w = w.lock().unwrap();
+                writeln!(w, "{payload}").expect("corpus write failed");
+                w.flush().ok();
+                // pretend success; request_id 1 is never awaited in dump runs
+                return Ok((1, 0, tx_len, tx_hash));
+            }
+        }
+
         let len = self.ws_clients.len();
         let node_idx = self.node_index % len;
         self.node_index = (self.node_index + 1) % len;
