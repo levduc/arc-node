@@ -1,20 +1,25 @@
 #!/bin/bash
-# Generate a pre-signed raw-tx corpus for fast testnet prefills.
-# Signs N txs per account ONCE (chainId 1338, nonce 0.., fixed fee band) via the
-# spammer's SPAM_DUMP_FILE mode against a THROWAWAY endpoint (txs are dumped,
-# not sent). Produces per-machine files with disjoint account ranges.
+# Generate pre-signed raw-tx corpora for fast testnet prefills.
+# Each FILL uses a DISJOINT account range (a drain consumes the nonces, so a
+# reused range would be all nonce-too-low). 32k prefunded accounts / 800 per
+# fill = up to 40 fills per corpus set; everything resets on a fresh chain.
 #
-# Usage: TXS_PER_ACCT=240 ACCTS=200 MACHINES=4 OUT=/tmp/corpus ./gen-corpus.sh <ws-url>
-# 4 machines x 200 accts x 240 txs = 192,000 txs (~one 190k fill).
+# Usage: FILLS=12 TXS_PER_ACCT=240 ACCTS=200 MACHINES=4 OUT=/tmp/corpus ./gen-corpus.sh <ws-url>
+# One fill = MACHINES x ACCTS x TXS_PER_ACCT = 4*200*240 = 192,000 txs.
 set -e
-WS=${1:?ws url of any live payment EL (nonce source only; nothing is sent)}
-TXS=${TXS_PER_ACCT:-240}; A=${ACCTS:-200}; M=${MACHINES:-4}; OUT=${OUT:-/tmp/corpus}
+WS=${1:?ws url of a live payment EL (nonce source; dump mode sends nothing)}
+TXS=${TXS_PER_ACCT:-240}; A=${ACCTS:-200}; M=${MACHINES:-4}; F=${FILLS:-12}; OUT=${OUT:-/tmp/corpus}
 SP=$(dirname "$0")/../../target/release/spammer
-for m in $(seq 0 $((M-1))); do
-  off=$((m*A))
-  rm -f ${OUT}-m${m}.*
-  SPAM_DUMP_FILE=${OUT}-m${m} "$SP" ws --targets "$WS" -r 100000 -g 1 -a $A \
-    --account-offset $off -t 30 --chain-id 1338 -l -x $TXS 2>/dev/null || true
-  cat ${OUT}-m${m}.* > ${OUT}-m${m}.txt && rm -f ${OUT}-m${m}.[0-9]*
-  echo "machine $m: $(wc -l < ${OUT}-m${m}.txt) txs -> ${OUT}-m${m}.txt"
+for f in $(seq 0 $((F-1))); do
+  for m in $(seq 0 $((M-1))); do
+    off=$(( (f*M + m) * A ))
+    rm -f ${OUT}-f${f}-m${m}.*
+    SPAM_DUMP_FILE=${OUT}-f${f}-m${m} "$SP" ws --targets "$WS" -r 100000 -g 1 -a $A \
+      --account-offset $off -t 30 --chain-id 1338 -l -x $TXS 2>/dev/null || true
+    cat ${OUT}-f${f}-m${m}.[0-9]* > ${OUT}-f${f}-m${m}.txt 2>/dev/null && rm -f ${OUT}-f${f}-m${m}.[0-9]*
+    n=$(wc -l < ${OUT}-f${f}-m${m}.txt)
+    [ "$n" -ge $((A*TXS*9/10)) ] || { echo "GEN_FAIL fill $f machine $m: only $n txs"; exit 1; }
+  done
+  echo "fill $f: $(cat ${OUT}-f${f}-m*.txt | wc -l) txs"
 done
+echo "CORPUS_OK: $F fills x $((M*A*TXS)) txs at ${OUT}-f*-m*.txt (accounts 0..$((F*M*A-1)))"
