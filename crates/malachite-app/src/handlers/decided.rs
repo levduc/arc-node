@@ -124,6 +124,9 @@ pub async fn handle(
                     )
                     .address
                     == state.address();
+                state
+                    .builder_refresher_active
+                    .store(im_next, std::sync::atomic::Ordering::Relaxed);
                 let be = be.clone();
                 tokio::spawn(async move {
                     // SINGLE-FEEDER: only the NEXT proposer feeds the builder.

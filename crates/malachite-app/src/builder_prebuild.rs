@@ -42,6 +42,13 @@ pub struct PrebuiltPayment {
 /// second-rollover miss class by construction).
 pub type PrebuiltSlot = Arc<Mutex<Vec<PrebuiltPayment>>>;
 
+/// Gate for the continuous refresher: only the NEXT proposer's refresher may
+/// build. Without this, all four validators' refreshers each pulled ~6MB
+/// payloads from the builder continuously — saturating its link with fetches
+/// for payloads three of them would never use (the fetch-side twin of the
+/// 4x-feed lesson). Set by decided (which knows im_next), cleared on consume.
+pub type RefresherActive = Arc<std::sync::atomic::AtomicBool>;
+
 /// Continuous builder refresher (v2 of the prebuild): instead of a one-shot kick
 /// at decide with a PREDICTED timestamp (whose staleness under stretched rounds
 /// was the dominant miss class — observed ts_needed up to prebuilt+6s), a loop
@@ -54,6 +61,7 @@ pub type PrebuiltSlot = Arc<Mutex<Vec<PrebuiltPayment>>>;
 pub async fn run_refresher(
     builder: arc_eth_engine::engine::Engine,
     slot: PrebuiltSlot,
+    active: RefresherActive,
     fee_recipient: Address,
 ) {
     use tracing::{debug, info};
@@ -62,6 +70,10 @@ pub async fn run_refresher(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
+        // Only the next proposer builds (see RefresherActive).
+        if !active.load(std::sync::atomic::Ordering::Relaxed) {
+            continue;
+        }
         // Current builder head (its canonical payment chain, kept current by the
         // single-feeder decide feed).
         let head = match builder.eth.get_block_by_number("latest").await {
