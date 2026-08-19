@@ -151,6 +151,31 @@ sustained needs POOL_TARGET ~100-150k and remains admission-bound ~8-10k regardl
 post-churn 1G drain read 3,432ms/13.9k = the documented aged-chain artifact (age 3,232 after 25min
 churn) — the canonical 1G capacity remains the fresh-chain n=2: **29.4k/29.1k tps @ ~1.62s**.
 
+### 1G capacity is POOL-DEPTH-DEPENDENT; builder edge grows with depth (2026-08-19)
+
+Resolution campaign (FILL_ACCTS fix: the old ~204k fill ceiling was 800 fill senders x 256
+per-sender slots, NOT pool caps): 7-full-block drains at 313k backlog, same chain, deferred x4:
+
+| arm | 1G capacity | note |
+|---|---|---|
+| deferred only | 2,701ms / 17,631 tps | 7 blocks |
+| deferred + builder (2s deadline) | 2,296ms / 20,735 tps | **+17.6%**, hits 44% |
+
+vs 1,827ms/26.1k at 203k backlog and 1.6s/29k at ~190k (3-4-block resolution): **packing a 1G
+block from a deeper pool costs more** (pool-iterator/build cost scales with pending size — same
+in-process contention family as the cpuset-null finding). "Depth-insensitive" holds at 300M
+(623-844ms across 190-313k) but NOT at 1G. Also: two sequential 2s candidate builds don't fit a
+~2.3s height -> builder hit rate fell to 44% at depth (was 78-84% at 190k).
+
+The 1G ladder to date (all deferred): 29.4/29.1k (190k fill, warm, 3 blks) · 26.1k (203k, 3 blks)
+· 21-23k (cold, 3 blks) · 17.6k arm A / 20.7k builder (313k, 7 blks). Honest statement: best-case
+~29k, robust-resolution ~18-26k depending on depth; builder +9..+18% same-chain, twice reproduced.
+Deep-pool "collapse" from the sick-NVMe night stays retracted (203k healthy = 26.1k), but the
+MILD depth penalty at 1G is real and reproducible.
+
+Robust >=30k without reth mods hinges on the tuned point (moderate 250k depth + 1.1s builder
+deadline for 2-candidate coverage) — else the levers are reth-side (pool iterator, persistence).
+
 ### Deferred exec SOLIDIFIED at 1G — ~29k tps with zero reth modifications (2026-08-18, n=2)
 
 Two fresh fleet chains, deferred on all 4 CLs (env-verified), drain ladder incl. 1G, 50-height
