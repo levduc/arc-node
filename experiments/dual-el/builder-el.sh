@@ -39,7 +39,7 @@ docker run -d --name "$NAME" --network "$HOSTNET" \
     --authrpc.addr=0.0.0.0 --authrpc.port=8551 --authrpc.jwtsecret=/app/assets/payment-jwt.hex \
     --metrics=0.0.0.0:9001 --disable-discovery --ipcdisable \
     --port 30303 \
-    --arc.builder.deadline=500 --arc.builder.wait-for-payload=true --txpool.nolocals \
+    --arc.builder.deadline=${BUILDER_DEADLINE:-500} --arc.builder.wait-for-payload=true --txpool.nolocals \
     --txpool.pending-max-count=${PAY_POOL_COUNT:-200000} --txpool.queued-max-count=${PAY_POOL_COUNT:-200000} \
     --txpool.pending-max-size=512 --txpool.queued-max-size=512 \
     --txpool.basefee-max-count=${PAY_POOL_COUNT:-200000} --txpool.basefee-max-size=512 \
