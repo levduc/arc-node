@@ -151,6 +151,29 @@ sustained needs POOL_TARGET ~100-150k and remains admission-bound ~8-10k regardl
 post-churn 1G drain read 3,432ms/13.9k = the documented aged-chain artifact (age 3,232 after 25min
 churn) — the canonical 1G capacity remains the fresh-chain n=2: **29.4k/29.1k tps @ ~1.62s**.
 
+### Fast harness LANDED + corpus-fill matrix (2026-08-19)
+
+Campaign time: ~95min -> **8-10min per 4-size arm** (ARM_SECONDS 420-670 measured). Pieces:
+pre-signed tx corpus (SPAM_DUMP_FILE spammer mode + gen-corpus.sh, disjoint 800-account ranges
+per fill, nonce-0 fresh chains) + batched raw replay (replay-corpus.py; **48,000/48,000 accepted
+at 36-41k tx/s per EL — the old "5-8k delivery ceiling" was the ws-ack spammer, NOT reth
+admission**) + cap-aware pending-only fills + boot-time CL_EXTRA_ENV (no live-CL surgery; three
+distinct recreate failure modes eliminated) + bench-drain samples.jsonl forensics.
+
+Debug ledger (each cost a run): tar|ssh stdin-override shipped empty corpora; parallel replay
+nonce-gaps the pool into stuck-queued (cap-rejected txs strand successors FOREVER — also the
+root cause of the "empty 1G blocks" artifact); post-flip transition block ended 1G sampling
+before the drain (bench-drain now requires a full at-size block first); 1G drains need ~380k
+funding (pre-stop burn eats 2-3 full blocks; 2 full post-stop blocks < the 3-block minimum).
+
+o8 matrix (250k fills, 500k... 400k caps, n=2, fresh chain per arm, boot-time envs, all
+agreement OK, builder hits 60-64%): deferred 150M 357-427ms/16.7-20.0k · 300M 657-675/21.2-21.8k
+· 500M 944-1,109/21.3-25.2k; +builder 150M 380-405/17.6-18.8k · 300M 676-750/19.0-21.1k(one hole)
+· **500M 812ms/29,327 tps (best 500M ever) / 1,212/19.6k** — corpus-filled pools (uniform,
+all-pending, closed-set) read HIGHER than spam-churned pools at 500M+; the corpus-vs-spam fill
+regime is now a documented methodology variable. 1G cells pending the funding fix (o9, blocked
+mid-run on tailscale re-auth).
+
 ### Rung 1+2 CLOSED — robust 1G numbers, builder verdict, and the honest 30k line (2026-08-19)
 
 Tuned point (250k fill, 7-block resolution, deferred x4): **1G = 1,892ms / 25,164 tps — the best
