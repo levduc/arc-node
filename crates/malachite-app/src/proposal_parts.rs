@@ -361,18 +361,30 @@ async fn reconstruct_compact_payment(
         hasher.finalize().as_slice() == want.as_slice()
     }
 
-    let fetched = payment_engine
+    // A local-EL hiccup (restart, transient RPC outage) must NOT fail assembly
+    // outright when a proposer fallback exists: degrade to "everything missing"
+    // and let the fallback try. Only a hash MISMATCH is fatal here (EL bug).
+    let fetched = match payment_engine
         .eth
         .get_raw_transactions_by_hash(tx_hashes)
         .await
-        .wrap_err("compact reconstruction: raw-tx batch fetch failed")?;
-    if fetched.len() != tx_hashes.len() {
-        return Err(eyre::eyre!(
-            "compact reconstruction: EL returned {} entries for {} hashes",
-            fetched.len(),
-            tx_hashes.len()
-        ));
-    }
+    {
+        Ok(f) if f.len() == tx_hashes.len() => f,
+        Ok(f) => {
+            tracing::warn!(
+                "compact reconstruction: local EL returned {} entries for {} hashes; treating all as missing",
+                f.len(),
+                tx_hashes.len()
+            );
+            vec![None; tx_hashes.len()]
+        }
+        Err(e) => {
+            tracing::warn!(
+                "compact reconstruction: local raw-tx fetch failed ({e:#}); treating all as missing"
+            );
+            vec![None; tx_hashes.len()]
+        }
+    };
 
     let mut txs: Vec<Option<alloy_primitives::Bytes>> = Vec::with_capacity(tx_hashes.len());
     let mut missing_idx: Vec<usize> = Vec::new();
