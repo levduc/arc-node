@@ -10,6 +10,7 @@ import json, sys, threading, urllib.request
 path, url = sys.argv[1], sys.argv[2]
 workers = int(sys.argv[3]) if len(sys.argv) > 3 else 1
 batch_n = int(sys.argv[4]) if len(sys.argv) > 4 else 100
+rate = int(sys.argv[5]) if len(sys.argv) > 5 else 0  # tx/s pacing; 0 = full speed
 
 txs = [l.strip() for l in open(path) if l.strip()]
 batches = [txs[i:i+batch_n] for i in range(0, len(txs), batch_n)]
@@ -17,6 +18,8 @@ lock = threading.Lock()
 idx = 0
 ok = err = 0
 
+import time as _t
+_t0 = _t.time()
 def worker():
     global idx, ok, err
     while True:
@@ -24,6 +27,12 @@ def worker():
             global idx
             if idx >= len(batches): return
             my = batches[idx]; idx += 1
+            if rate > 0:
+                # pace: this batch may start no earlier than (txs sent so far)/rate
+                due = _t0 + (idx * batch_n) / rate
+                wait = due - _t.time()
+        if rate > 0 and wait > 0:
+            _t.sleep(wait)
         body = json.dumps([
             {"jsonrpc":"2.0","id":i,"method":"eth_sendRawTransaction","params":[tx]}
             for i, tx in enumerate(my)
