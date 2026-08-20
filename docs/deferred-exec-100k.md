@@ -151,6 +151,33 @@ sustained needs POOL_TARGET ~100-150k and remains admission-bound ~8-10k regardl
 post-churn 1G drain read 3,432ms/13.9k = the documented aged-chain artifact (age 3,232 after 25min
 churn) — the canonical 1G capacity remains the fresh-chain n=2: **29.4k/29.1k tps @ ~1.62s**.
 
+### Builder v2 (continuous, event-driven) — mechanics proven; measurement parked on link/peering (2026-08-20)
+
+The "cut the proposer's build time" rung, iterated three times in one night:
+- **v2.0** (500ms polling refresher on every CL): 0/1,077 hits AND chain 3x slower — all four
+  validators' refreshers pulled ~6MB payloads continuously over the builder's wifi (~50MB/s of
+  fetches for payloads 3 of 4 would never use). The fetch-side twin of the 4x-feed lesson.
+- **v2.1** (refresher gated on next-proposer): fixed the fetch storm; hits still ~0 — the
+  decide->get_value gap (~0.3-0.5s) is shorter than any polling cadence, and the builder's head
+  only advances ~0.5-1.5s after decide (feed -> exec -> build). Polling cannot win this race.
+- **v2.2** (event-driven: the single-feeder hands the refresher the exact fed head hash + ts and
+  wakes it via Notify; refresher confirms the builder reached that head, then builds t0/t0+1):
+  mechanics VERIFIED on the local rig — trigger fires, builds land, stash serves (19 hits through
+  a tx-starved builder). Full scoring blocked: the local demo's builder peering fails (enode
+  rewrite assumes fleet port publishing; container-IP addPeer also 0 peers — unresolved), so the
+  builder pool is empty and every build waits out its deadline. On the fleet, wifi is the wall.
+
+ALSO: single-feeder committed (one 6MB feed/height instead of 4 — wifi builder hit rate was 27%
+vs 62% wired under 4x feeds). STANDING RESULT for the rung: v1.1 wired co-located builder
+= +9.4%/+17.6% same-chain. NEXT unblocks: (a) ethernet for papaduck-extreme -> full v2.2 fleet
+measurement; (b) fix local-rig builder peering -> 15-min iteration loop for all builder work.
+Empty-candidate guard TODO: a hit serving an EMPTY payload (starved builder) must lose to a
+local full build — add min-fullness to the stash-consume gate before the next measurement.
+
+WIFI-BUILDER MEASUREMENT LEDGER (all discarded as capacity data, kept as protocol lessons):
+4x-feed 27% hits/empty drains; v2.0 fetch-storm 3x slowdown; v2.1 0-hit race; sync-burst
+artifacts (val1 catch-up reads 54-57k "tps" — always check the source isn't a lagging syncer).
+
 ### Fast harness LANDED + corpus-fill matrix (2026-08-19)
 
 Campaign time: ~95min -> **8-10min per 4-size arm** (ARM_SECONDS 420-670 measured). Pieces:
