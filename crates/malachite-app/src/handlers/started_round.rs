@@ -108,6 +108,7 @@ async fn on_started_round(
     } else {
         PaymentExecMode::Gated
     };
+    let payment_peer_rpcs = state.env_config().payment_peer_rpcs.clone();
     fetch_and_process_pending_proposals(
         height,
         round,
@@ -117,6 +118,7 @@ async fn on_started_round(
         engine,
         payment_engine,
         payment_exec_mode,
+        &payment_peer_rpcs,
         state.signing_provider(),
         state.metrics(),
     )
@@ -134,6 +136,7 @@ async fn fetch_and_process_pending_proposals(
     engine: &Engine,
     payment_engine: Option<&Engine>,
     payment_exec_mode: PaymentExecMode,
+    payment_peer_rpcs: &std::collections::HashMap<String, String>,
     signing_provider: &ArcSigningProvider,
     metrics: &AppMetrics,
 ) -> eyre::Result<Vec<ProposedValue<ArcContext>>> {
@@ -155,6 +158,7 @@ async fn fetch_and_process_pending_proposals(
         proposer_selector,
         signing_provider,
         payment_engine,
+        payment_peer_rpcs,
         metrics,
     )
     .await
@@ -191,6 +195,7 @@ async fn process_pending_proposal_parts(
     proposer_selector: &dyn ProposerSelector,
     signing_provider: &ArcSigningProvider,
     payment_engine: Option<&Engine>,
+    payment_peer_rpcs: &std::collections::HashMap<String, String>,
     metrics: &AppMetrics,
 ) -> eyre::Result<()> {
     for parts in pending_parts {
@@ -214,7 +219,7 @@ async fn process_pending_proposal_parts(
         // This temporary inconsistency is acceptable here because all blocks
         // in the undecided table are immediately validated by the subsequent
         // `validate_undecided_blocks` in `AppMsg::StartedRound` handler.
-        match assemble_block_from_parts(&parts, payment_engine, None).await {
+        match assemble_block_from_parts(&parts, payment_engine, Some(payment_peer_rpcs)).await {
             Ok(block) => {
                 info!(%height, %round, %proposer, "Added pending block to undecided");
 
@@ -636,6 +641,7 @@ mod tests {
             &selector,
             &provider,
             None,
+            &Default::default(),
             &metrics,
         )
         .await
