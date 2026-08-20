@@ -520,6 +520,39 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**🧾 LAB NOTEBOOK WORKFLOW (2026-08-20, user-directed):** day-by-day experiment log with
+figures lives at **`2026.arc.payment.highway.claude/lab-notebook.tex`** (append-only; one
+section/day; every attempt gets PASS/FAIL/RETRACTED; figures only where they explain a
+mechanism; push after compile-clean append). The deck (presentation/slides.tex) is now touched
+only at milestones, cherry-picking matured notebook figures. docs/deferred-exec-100k.md stays
+the dense text ledger; the notebook is its illustrated twin.
+
+**🔩 RUNG 4 (compact proposals v2) + BUILDER v2.x STATUS (2026-08-19..20, branch
+`builder-separation`):**
+- **Compact v2 = v1 + the getblocktxn-style fallback:** on reconstruction miss, batch-fetch the
+  missing txs from the PROPOSER's payment EL (hash-verified per tx; proposer provably holds all
+  it packed), keyed by `ARC_PAYMENT_PEER_RPCS` (JSON: consensus addr lowercase-hex -> pay-EL eth
+  URL; local demo builds it from CL log line 'local signer identity address='). Local-EL
+  transport errors degrade to all-missing -> fallback (a restarted EL erred out BEFORE the
+  fallback on first live test). Emission still `ARC_COMPACT_PAYMENT_PROPOSALS=1` default-off.
+  Local validation: phase-1 healthy pools PASS (1.87 blk/s, agreement, 0 fallbacks needed);
+  phase-2 forced-divergence (restart a pay EL = wiped pool, the exact v1 killer) = the gate.
+- **Builder v2.2 (continuous, event-driven):** decide-time single-feeder hands the refresher the
+  exact fed head + wakes via Notify; refresher confirms head then builds t0/t0+1; empty-candidate
+  guard (starved builder must not win a hit with a hollow payload). Mechanics verified live;
+  SCORING PARKED on link: wifi cannot carry ~12MB/height (papaduck-extreme = wifi-only, 16c/30G/
+  0.61ms-fsync NVMe — best disk in fleet; needs ethernet OR compact-v2 lightening the link ~4x).
+  WIFI LESSON LADDER (each cost a fleet run): 4x-feed 27% hits; v2.0 all-CL refresher fetch storm
+  (~50MB/s, chain 3x slower); v2.1 polling loses the decide->get_value race (0/1,077); v1.1 wired
+  co-located = +9.4%/+17.6% stands as the rung's measured result.
+- **Fast-harness facts:** per-arm 8-10 min (corpus fills); reth admission = 36-41k tx/s batched
+  raw (the old '5-8k delivery ceiling' was the ws-ack spammer, NOT reth); 1G depth penalty
+  (26.1k@203k / 25.2k@250k(7blks) / 17.6k@313k — operate at 250k); corpus fill ceiling was
+  senders x slots (FILL_ACCTS); cap overshoot strands queued successors FOREVER (pending-only
+  quarter-step fills); bench-drain needs a full at-size block before honoring the sub-full end
+  condition (post-flip transition block); sampling from a value-sync laggard fabricates tps
+  (54-57k 'bursts') — always tip-convergence-gate the measurement source after CL restarts.
+
 ## 🐛 BUG LEDGER (consolidated, 2026-08-10 — details in the dated entries + MISSION-EL.md)
 
 **Consensus-critical (all in the gated-off native-transfer fast path; all fixed; ONE root shape:
