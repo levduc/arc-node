@@ -379,6 +379,15 @@ pub async fn build_block(
                         && p.timestamp == timestamp
                         && p.fee_recipient == *fee_recipient
                     {
+                        // Empty-candidate guard: a tx-starved builder (dead
+                        // peering, cold pool) produces VALID but EMPTY payloads;
+                        // serving one beats a full local build on latency and
+                        // loses on everything else. Treat empty as a miss —
+                        // the local build path packs from our own pool.
+                        if p.payload.payload_inner.payload_inner.transactions.is_empty() {
+                            warn!("builder candidate matched but is EMPTY; ignoring (starved builder?)");
+                            continue;
+                        }
                         info!("🏗️ prebuilt payment payload HIT (builder-served, zero build on path)");
                         prebuilt = Some(p.payload);
                         break;

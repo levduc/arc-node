@@ -26,6 +26,7 @@ const ARC_SYNC_CATCH_UP_THRESHOLD: &str = "ARC_SYNC_CATCH_UP_THRESHOLD";
 const ARC_GENESIS_FILE_PATH: &str = "ARC_GENESIS_FILE_PATH";
 const ARC_PAYMENT_DEFERRED_EXEC: &str = "ARC_PAYMENT_DEFERRED_EXEC";
 const ARC_COMPACT_PAYMENT_PROPOSALS: &str = "ARC_COMPACT_PAYMENT_PROPOSALS";
+const ARC_PAYMENT_PEER_RPCS: &str = "ARC_PAYMENT_PEER_RPCS";
 
 /// Default cache size for the database (1 GiB).
 const DEFAULT_DB_CACHE_SIZE: ByteSize = ByteSize::gib(1);
@@ -62,6 +63,13 @@ pub struct EnvConfig {
     /// OLD binaries cannot decode compact frames (fail-closed decode error).
     /// Stores and value-sync always carry full payloads.
     pub compact_payment_proposals: bool,
+    /// Compact-proposal fallback (`ARC_PAYMENT_PEER_RPCS`): JSON map from a
+    /// validator's consensus address (lowercase 0x hex) to its payment EL's
+    /// eth JSON-RPC URL. On a compact-reconstruction miss, missing txs are
+    /// batch-fetched from the PROPOSER's EL (which provably has every tx it
+    /// packed) instead of failing the round — the getblocktxn analogue that
+    /// makes compact proposals immune to pool divergence.
+    pub payment_peer_rpcs: std::collections::HashMap<String, String>,
 }
 
 impl EnvConfig {
@@ -103,6 +111,11 @@ impl EnvConfig {
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let payment_peer_rpcs = std::env::var(ARC_PAYMENT_PEER_RPCS)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
         Self {
             halt_height,
             db_cache_size,
@@ -111,6 +124,7 @@ impl EnvConfig {
             genesis_file_path,
             payment_deferred_exec,
             compact_payment_proposals,
+            payment_peer_rpcs,
         }
     }
 }
@@ -125,6 +139,7 @@ impl Default for EnvConfig {
             genesis_file_path: None,
             payment_deferred_exec: false,
             compact_payment_proposals: false,
+            payment_peer_rpcs: Default::default(),
         }
     }
 }

@@ -66,6 +66,7 @@ pub async fn handle(
     } else {
         PaymentExecMode::Gated
     };
+    let payment_peer_rpcs = state.env_config().payment_peer_rpcs.clone();
 
     let context = HandlerContext {
         engine,
@@ -80,6 +81,7 @@ pub async fn handle(
         proposer_selector: &proposer_selector,
         max_pending_proposals,
         payment_exec_mode,
+        payment_peer_rpcs,
     };
 
     let response = on_received_proposal_part(context, from, part)
@@ -152,6 +154,7 @@ struct HandlerContext<'a, 'b> {
     proposer_selector: &'a dyn ProposerSelector,
     max_pending_proposals: usize,
     payment_exec_mode: PaymentExecMode,
+    payment_peer_rpcs: std::collections::HashMap<String, String>,
 }
 
 async fn on_received_proposal_part(
@@ -284,6 +287,7 @@ async fn validate_block(
 
 struct ProcessingContext<'a> {
     payment_engine: Option<&'a Engine>,
+    payment_peer_rpcs: &'a std::collections::HashMap<String, String>,
     store: &'a Store,
     metrics: &'a AppMetrics,
     signing_provider: &'a ArcSigningProvider,
@@ -298,6 +302,7 @@ impl<'a> From<&'a HandlerContext<'_, '_>> for ProcessingContext<'a> {
     fn from(handler_ctx: &'a HandlerContext<'_, '_>) -> Self {
         Self {
             payment_engine: handler_ctx.payment_engine,
+            payment_peer_rpcs: &handler_ctx.payment_peer_rpcs,
             store: &handler_ctx.store,
             metrics: &handler_ctx.metrics,
             signing_provider: &handler_ctx.signing_provider,
@@ -365,7 +370,7 @@ async fn process_proposal_parts(
     }
 
     // Assemble the block
-    let block = match assemble_block_from_parts(&parts, ctx.payment_engine).await {
+    let block = match assemble_block_from_parts(&parts, ctx.payment_engine, Some(ctx.payment_peer_rpcs)).await {
         Ok(block) => block,
         Err(e) => {
             warn!(
@@ -483,8 +488,11 @@ mod tests {
         let provider = ArcSigningProvider::Local(LocalSigningProvider::new(signing_key));
         let metrics = AppMetrics::default();
 
+        static EMPTY_RPCS: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+            std::sync::OnceLock::new();
         let ctx = ProcessingContext {
             payment_engine: None,
+            payment_peer_rpcs: EMPTY_RPCS.get_or_init(Default::default),
             store: &store,
             metrics: &metrics,
             signing_provider: &provider,

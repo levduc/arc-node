@@ -214,7 +214,7 @@ async fn process_pending_proposal_parts(
         // This temporary inconsistency is acceptable here because all blocks
         // in the undecided table are immediately validated by the subsequent
         // `validate_undecided_blocks` in `AppMsg::StartedRound` handler.
-        match assemble_block_from_parts(&parts, payment_engine).await {
+        match assemble_block_from_parts(&parts, payment_engine, None).await {
             Ok(block) => {
                 info!(%height, %round, %proposer, "Added pending block to undecided");
 

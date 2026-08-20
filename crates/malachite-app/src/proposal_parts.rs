@@ -283,6 +283,7 @@ pub fn resolve_expected_proposer<'a>(
 pub async fn assemble_block_from_parts(
     parts: &ProposalParts,
     payment_engine: Option<&Engine>,
+    peer_rpcs: Option<&std::collections::HashMap<String, String>>,
 ) -> eyre::Result<ConsensusBlock> {
     // Calculate total size and allocate buffer
     let total_size = parts.data_size();
@@ -306,8 +307,17 @@ pub async fn assemble_block_from_parts(
                      to reconstruct it"
                 )
             })?;
-            let payment =
-                reconstruct_compact_payment(engine, payment_header, &tx_hashes).await?;
+            let proposer_rpc = peer_rpcs.and_then(|m| {
+                m.get(&parts.proposer().to_string().to_lowercase())
+                    .cloned()
+            });
+            let payment = reconstruct_compact_payment(
+                engine,
+                payment_header,
+                &tx_hashes,
+                proposer_rpc.as_deref(),
+            )
+            .await?;
             (execution_payload, Some(payment))
         }
     };
@@ -338,8 +348,18 @@ async fn reconstruct_compact_payment(
     payment_engine: &Engine,
     mut payment_header: alloy_rpc_types_engine::ExecutionPayloadV3,
     tx_hashes: &[arc_consensus_types::BlockHash],
+    proposer_rpc: Option<&str>,
 ) -> eyre::Result<alloy_rpc_types_engine::ExecutionPayloadV3> {
     use sha3::{Digest, Keccak256};
+
+    fn verify(
+        raw: &alloy_primitives::Bytes,
+        want: &arc_consensus_types::BlockHash,
+    ) -> bool {
+        let mut hasher = Keccak256::new();
+        hasher.update(raw.as_ref());
+        hasher.finalize().as_slice() == want.as_slice()
+    }
 
     let fetched = payment_engine
         .eth
@@ -354,31 +374,64 @@ async fn reconstruct_compact_payment(
         ));
     }
 
-    let mut txs = Vec::with_capacity(tx_hashes.len());
-    let mut missing = 0usize;
+    let mut txs: Vec<Option<alloy_primitives::Bytes>> = Vec::with_capacity(tx_hashes.len());
+    let mut missing_idx: Vec<usize> = Vec::new();
     for (i, (raw, want)) in fetched.into_iter().zip(tx_hashes).enumerate() {
         match raw {
-            Some(bytes) => {
-                let mut hasher = Keccak256::new();
-                hasher.update(bytes.as_ref());
-                if hasher.finalize().as_slice() != want.as_slice() {
-                    return Err(eyre::eyre!(
-                        "compact reconstruction: EL returned bytes not matching hash {want} at index {i}"
-                    ));
-                }
-                txs.push(bytes);
+            Some(bytes) if verify(&bytes, want) => txs.push(Some(bytes)),
+            Some(_) => {
+                return Err(eyre::eyre!(
+                    "compact reconstruction: EL returned bytes not matching hash at index {i}"
+                ))
             }
-            None => missing += 1,
+            None => {
+                txs.push(None);
+                missing_idx.push(i);
+            }
         }
     }
-    if missing > 0 {
-        return Err(eyre::eyre!(
-            "compact reconstruction: {missing}/{} txs not found in local payment EL",
-            tx_hashes.len()
-        ));
+
+    // Fallback (the getblocktxn analogue): fetch what our pool lacks from the
+    // PROPOSER's payment EL — it provably has every tx it packed. This turns
+    // pool divergence (which deadlocked compact v1: every proposal referenced
+    // txs some receiver had evicted) into a bounded fetch instead of a dead
+    // round. Hash-verified per tx, so a lying proposer RPC can only fail us
+    // into the normal round-failure path, never corrupt a block.
+    if !missing_idx.is_empty() {
+        if let Some(url) = proposer_rpc {
+            tracing::debug!(
+                "compact reconstruction: fetching {}/{} missing txs from proposer {url}",
+                missing_idx.len(),
+                tx_hashes.len()
+            );
+            let rpc = arc_eth_engine::rpc::ethereum_rpc::EthereumRPC::new(
+                url.parse().wrap_err("bad proposer rpc url")?,
+            )?;
+            let want: Vec<arc_consensus_types::BlockHash> =
+                missing_idx.iter().map(|&i| tx_hashes[i]).collect();
+            let fetched = rpc
+                .get_raw_transactions_by_hash(&want)
+                .await
+                .wrap_err("compact reconstruction: proposer fetch failed")?;
+            for (k, raw) in fetched.into_iter().enumerate() {
+                let i = missing_idx[k];
+                match raw {
+                    Some(bytes) if verify(&bytes, &tx_hashes[i]) => txs[i] = Some(bytes),
+                    _ => {}
+                }
+            }
+        }
+        let still_missing = txs.iter().filter(|t| t.is_none()).count();
+        if still_missing > 0 {
+            return Err(eyre::eyre!(
+                "compact reconstruction: {still_missing}/{} txs unavailable (local pool + proposer fallback)",
+                tx_hashes.len()
+            ));
+        }
     }
 
-    payment_header.payload_inner.payload_inner.transactions = txs;
+    payment_header.payload_inner.payload_inner.transactions =
+        txs.into_iter().map(|t| t.unwrap()).collect();
     Ok(payment_header)
 }
 
@@ -434,14 +487,14 @@ mod tests {
 
         // happy path: full pool -> byte-identical payload
         let engine = engine_with_pool(txs.clone());
-        let rebuilt = reconstruct_compact_payment(&engine, payment_header.clone(), &tx_hashes)
+        let rebuilt = reconstruct_compact_payment(&engine, payment_header.clone(), &tx_hashes, None)
             .await
             .unwrap();
         assert_eq!(rebuilt, pay);
 
         // missing tx -> loud error naming the miss count
         let engine = engine_with_pool(txs[..1].to_vec());
-        let err = reconstruct_compact_payment(&engine, payment_header, &tx_hashes)
+        let err = reconstruct_compact_payment(&engine, payment_header, &tx_hashes, None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("1/2"), "err: {err:#}");
@@ -643,7 +696,7 @@ mod tests {
         // Sanity: Init carries the pol_round we set
         assert_eq!(parts.init().pol_round, pol_round);
 
-        let assembled = assemble_block_from_parts(&parts, None).await.unwrap();
+        let assembled = assemble_block_from_parts(&parts, None, None).await.unwrap();
         assert_eq!(
             assembled.valid_round, pol_round,
             "assemble_block_from_parts must propagate pol_round as valid_round"
@@ -679,7 +732,7 @@ mod tests {
 
         assert_eq!(parts.init().pol_round, Round::Nil);
 
-        let assembled = assemble_block_from_parts(&parts, None).await.unwrap();
+        let assembled = assemble_block_from_parts(&parts, None, None).await.unwrap();
         assert_eq!(assembled.valid_round, Round::Nil);
     }
 
@@ -716,10 +769,10 @@ mod tests {
         let parts = ProposalParts::new(raw_parts).unwrap();
 
         // without an engine the compact frame must fail loudly, not silently degrade
-        assert!(assemble_block_from_parts(&parts, None).await.is_err());
+        assert!(assemble_block_from_parts(&parts, None, None).await.is_err());
 
         let engine = engine_with_pool(txs);
-        let assembled = assemble_block_from_parts(&parts, Some(&engine)).await.unwrap();
+        let assembled = assemble_block_from_parts(&parts, Some(&engine), None).await.unwrap();
         assert_eq!(assembled.execution_payload, evm_payload);
         assert_eq!(assembled.payment_payload, Some(pay_payload));
     }
@@ -760,7 +813,7 @@ mod tests {
         let (raw_parts, _sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
         let parts = ProposalParts::new(raw_parts).unwrap();
 
-        let assembled = assemble_block_from_parts(&parts, None).await.unwrap();
+        let assembled = assemble_block_from_parts(&parts, None, None).await.unwrap();
         assert_eq!(
             assembled.execution_payload, evm_payload,
             "EVM lane must survive streaming"
