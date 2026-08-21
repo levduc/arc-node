@@ -51,8 +51,14 @@ pub type PrebuiltSlot = Arc<Mutex<Vec<PrebuiltPayment>>>;
 /// 4x-fetch lesson).
 #[derive(Default)]
 pub struct RefresherTrigger {
-    /// (expected builder head after our feed, its timestamp)
-    pub expected: Mutex<Option<(BlockHash, u64)>>,
+    /// (expected builder head after our feed, its timestamp, its block number).
+    /// The number lets the refresher tell "feed still executing" (builder head
+    /// BEHIND want -> keep polling) from "builder moved PAST our stale want"
+    /// (someone else fed since -> bail immediately and clear). Without it the
+    /// confirm loop burned its full 2s budget on every stale drift-wake, and a
+    /// fresh trigger could queue behind that burn past get_value (the dominant
+    /// isolated-ingress miss class: 0-40% hits, phase-dependent).
+    pub expected: Mutex<Option<(BlockHash, u64, u64)>>,
     pub notify: tokio::sync::Notify,
 }
 pub type RefresherHandle = Arc<RefresherTrigger>;
@@ -82,23 +88,35 @@ pub async fn run_refresher(
             trigger.notify.notified(),
         )
         .await;
-        let Some((want_head, head_ts)) = *trigger.expected.lock().await else {
+        let Some((want_head, head_ts, want_number)) = *trigger.expected.lock().await else {
             continue;
         };
         // Wait (briefly) for the builder to have executed our feed: poll its
         // head until it matches what we just fed. The feed runs concurrently.
+        // If the builder's head is already PAST our want (another validator fed
+        // a newer height since), the want is stale forever -- bail on the first
+        // poll and CLEAR it, so a fresh trigger is never queued behind a 2s
+        // burn against a head the builder will not show again.
         let mut head = None;
+        let mut stale = false;
         for _ in 0..40 {
             match builder.eth.get_block_by_number("latest").await {
                 Ok(Some(h)) if h.block_hash == want_head => {
                     head = Some(h);
                     break;
                 }
+                Ok(Some(h)) if h.block_number > want_number => {
+                    stale = true;
+                    break;
+                }
                 _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
             }
         }
         let Some(head) = head else {
-            debug!("builder refresher: builder never reached fed head {want_head}");
+            debug!(
+                "builder refresher: fed head {want_head} not reached (stale={stale}); clearing"
+            );
+            *trigger.expected.lock().await = None;
             continue;
         };
         let now = std::time::SystemTime::now()

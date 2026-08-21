@@ -126,6 +126,7 @@ pub async fn handle(
                     == state.address();
                 let trigger = state.builder_refresher.clone();
                 let payment_ts = pp.payload_inner.payload_inner.timestamp;
+                let payment_number = pp.payload_inner.payload_inner.block_number;
                 let be = be.clone();
                 tokio::spawn(async move {
                     // SINGLE-FEEDER: only the NEXT proposer feeds the builder.
@@ -148,8 +149,11 @@ pub async fn handle(
                     }
                     // Hand the refresher the exact head we just fed and wake it
                     // NOW — the decide->get_value gap is too short for polling.
-                    *trigger.expected.lock().await =
-                        Some((arc_consensus_types::BlockHash::from(hash), payment_ts));
+                    *trigger.expected.lock().await = Some((
+                        arc_consensus_types::BlockHash::from(hash),
+                        payment_ts,
+                        payment_number,
+                    ));
                     trigger.notify.notify_one();
                 });
             }

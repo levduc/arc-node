@@ -27,6 +27,8 @@ p.add_argument("--rate", type=int, default=20000, help="global tx/s cap")
 p.add_argument("--duration", type=int, default=900, help="hard wall-clock stop (s)")
 p.add_argument("--max-txs", type=int, default=0)
 p.add_argument("--batch", type=int, default=100)
+p.add_argument("--skip-files", type=int, default=0,
+               help="skip the first N corpus files per set (their txs already mined)")
 p.add_argument("--heartbeat", type=int, default=5)
 args = p.parse_args()
 
@@ -137,6 +139,7 @@ limiter = Limiter(args.rate)
 feeders = []
 for i, (url, st) in enumerate(zip(targets, sets)):
     files = sorted(glob.glob(f"{args.corpus_dir}/corpus-f*-{st}.txt"), key=fill_no)
+    files = files[args.skip_files:]
     if not files:
         print(f"FATAL: no corpus files for set {st}", flush=True)
         sys.exit(1)
