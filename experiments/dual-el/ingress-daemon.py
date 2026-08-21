@@ -29,6 +29,9 @@ p.add_argument("--max-txs", type=int, default=0)
 p.add_argument("--batch", type=int, default=100)
 p.add_argument("--skip-files", type=int, default=0,
                help="skip the first N corpus files per set (their txs already mined)")
+p.add_argument("--shards", type=int, default=1,
+               help="feeder threads per set; files split round-robin (files are disjoint "
+                    "account ranges, so order only matters WITHIN a file)")
 p.add_argument("--heartbeat", type=int, default=5)
 args = p.parse_args()
 
@@ -143,7 +146,10 @@ for i, (url, st) in enumerate(zip(targets, sets)):
     if not files:
         print(f"FATAL: no corpus files for set {st}", flush=True)
         sys.exit(1)
-    feeders.append(Feeder(i, url, files, limiter))
+    for s in range(args.shards):
+        shard_files = files[s::args.shards]
+        if shard_files:
+            feeders.append(Feeder(len(feeders), url, shard_files, limiter))
 
 def TOTAL():
     return sum(f.sent for f in feeders)
