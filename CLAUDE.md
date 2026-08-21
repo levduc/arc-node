@@ -527,6 +527,55 @@ mechanism; push after compile-clean append). The deck (presentation/slides.tex) 
 only at milestones, cherry-picking matured notebook figures. docs/deferred-exec-100k.md stays
 the dense text ledger; the notebook is its illustrated twin.
 
+**🔌 ISOLATED INGRESS — builder as the admission layer (2026-08-20..21, branch
+`builder-separation`). ARCHITECTURE VALIDATED IN PIECES; WAIT-FIX IMAGE NEVER REACHED THE
+FLEET (torn down mid-ship).** Design: ALL spam → ONE unpeered builder EL (`builder-el.sh`
+with `PEERS='' BUILDER_EXTRA_ARGS='--disable-tx-gossip' BUILDER_DEADLINE=150` + datadir
+wipe), every CL gets `ARC_PAYMENT_BUILDER_ENGINE/ETH_RPC` + `ARC_PAYMENT_DEFERRED_EXEC=1`
+via CL_EXTRA_ENV; validators' pools stay 0 (zero admission tax on voters — txs travel only
+inside proposals); load = laptop `ingress-daemon.py` (closed-loop, `--skip-files` for corpus
+reuse). MEASURED: 998k txs ingested by the builder ALL mined, zero loss; every HIT = a
+perfectly FULL 7,142-tx 150M block; agreement OK at every check; chain 1.95 blk/s @500ms
+after val3 recovery. Rationale: sustained = min(capacity, admission); admission (~10k
+ceiling, in-EL contention) was the binding term — this moves it off the voters.
+- **THREE REAL CL BUGS found+fixed in the prebuild path** (invisible before isolation:
+  gossip-filled pools made a miss a FULL local block; isolation makes it EMPTY):
+  (1) stale-confirm burn — refresher polls ≤2s for a fed head the builder already moved
+  past; a fresh trigger queues behind the burn past get_value (hits 0-40% = phase luck).
+  Fix `0f5a43c`: trigger carries block number, bail when builder head > want, clear failed
+  expected. (2) serial dual-ts builds (2×150ms deadline) = ~550ms cycle vs 512ms height →
+  0% hits at 2 blk/s (22% at degraded ~1.5s cadence). Fix `88b2780`: build t0/t0+1
+  concurrently. (3) THE DEEP ONE: under DEFERRED exec get_value fires ~30ms after decide
+  (structural validation is instant) and always beat the ~350ms refresh; its `mem::take`
+  also drained future candidates on every miss. **v1.1's hit rates only ever worked because
+  GATED execution delayed the next height.** Fix `fc10d3c`: bounded 450ms wait-for-stash in
+  get_value (strictly better than the 500ms-deadline local build it replaces), remove only
+  the matched entry, refresher logs → info (runs are now self-diagnosing).
+- **STATUS AT TEARDOWN (2026-08-21):** local `arc_consensus:latest` contains all 3 fixes
+  (verified via binary string "MISS after wait") but ship-images to the remotes failed
+  repeatedly (one explicit "transfer failed to papaduck"; session died mid-ship; the
+  multi-GB wifi upload also made the dev box feel slow — CPU load was 0.8/16, it was pure
+  network). User tore the fleet down suspecting bad execution code on all machines — NOT
+  confirmed by data (per-lane agreement OK at every check all night; the "wrongness" seen
+  was old-code CLs still missing 100% + deliberately empty blocks). **NEXT SESSION: verify
+  per-host image shas, ship, fresh boot via the iso pipeline (scratchpad iso4.sh pattern),
+  gate = hit rate >85% at 2 blk/s → ~14k tps sustained through isolated admission; then
+  300M.**
+- **GOTCHAS BANKED:** wipe the builder datadir before relaunch (stale node key → validators'
+  persisted known-peers redial it — observed twice); NEVER stack rm -rf on a chain datadir
+  (papaduck "freeze #2" = 3 concurrent deleters + 2 tars in D-state on one ~100GB tree;
+  disk was healthy, 2.1ms fsync); val3 now boots from /home/papaduck/arc-fleet (home disk
+  2.3ms fsync) after the NVMe-mount incident; demo-fleet's per-host tar ship can fail
+  SILENTLY after a remote reboot (val3 booted with NO CL container — census the containers
+  after every boot); value-sync healed 3,000 heights in ~6min; an empty un-paced chain runs
+  ~14 blk/s and permanently outruns the builder — ALWAYS pace isolated-ingress runs;
+  local val1_el_pay swept the builder into its addPeer mesh once (`*_el_pay` name glob —
+  builder container name matches; remove peer both sides).
+- **PRODUCTION SHAPE (user-endorsed direction):** the daemon is a stand-in for a real
+  raw-tx FORWARDER in the node (op-reth `--rollup.sequencer-http` pattern): users submit to
+  any validator RPC, the node forwards to the builder instead of pooling+gossiping. Build it
+  once the hit-rate gate passes — "the forwarder, not a better spammer."
+
 **🔩 RUNG 4 (compact proposals v2) + BUILDER v2.x STATUS (2026-08-19..20, branch
 `builder-separation`):**
 - **Compact v2 = v1 + the getblocktxn-style fallback:** on reconstruction miss, batch-fetch the
