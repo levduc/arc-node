@@ -121,6 +121,7 @@ ed25519-dalek = "2.0"
 
 # ssz encoding
 ethereum_ssz = "0.10"
+flate2 = "1"
 ethereum_ssz_derive = "0.10"
 eyre = "0.6"
 futures = "0.3"

@@ -107,6 +107,15 @@ pub trait EthereumAPI: Send + Sync {
         &self,
         hashes: &[B256],
     ) -> eyre::Result<Vec<Option<alloy_primitives::Bytes>>>;
+    /// Fetch a built payload as base64(gzip(ssz(ExecutionPayloadV3))) via Arc's
+    /// non-standard `arc_rawPayload` method — engine_getPayload's JSON-hex costs
+    /// 2x the raw bytes on the wire, which blows the remote prebuild window at
+    /// large blocks. `Ok(None)` = unsupported endpoint or unknown id; the caller
+    /// falls back to engine_getPayload.
+    async fn arc_raw_payload(
+        &self,
+        payload_id: AlloyPayloadId,
+    ) -> eyre::Result<Option<ExecutionPayloadV3>>;
 }
 
 /// Function that checks whether Osaka is active at a given timestamp.
@@ -117,6 +126,15 @@ pub type IsOsakaActiveFn = Arc<dyn Fn(u64) -> bool + Send + Sync>;
 /// Spec: https://github.com/ethereum/execution-apis/tree/main/src/engine
 #[derive(Clone)]
 pub struct Engine(Arc<Inner>);
+
+/// ARC_BUILDER_RAW_FETCH=1 (default off): generate_block fetches built payloads
+/// via `arc_rawPayload` (SSZ+gzip) instead of engine_getPayload's JSON-hex.
+fn raw_fetch_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("ARC_BUILDER_RAW_FETCH").map(|v| v == "1").unwrap_or(false)
+    })
+}
 
 impl Engine {
     /// Create a new engine using IPC.
@@ -435,6 +453,23 @@ impl Inner {
                     ));
                 }
 
+                // ARC_BUILDER_RAW_FETCH=1: fetch the built payload as
+                // base64(gzip(ssz)) over the ETH RPC instead of engine_getPayload's
+                // JSON-hex (2x bytes) — built for the REMOTE builder-prebuild path
+                // where the transfer, not the build, blows the window at 300M.
+                // Any failure falls through to the standard engine fetch.
+                if raw_fetch_enabled() {
+                    match self.eth.arc_raw_payload(payload_id).await {
+                        Ok(Some(payload)) => return Ok(payload),
+                        Ok(None) => {
+                            debug!("arc_rawPayload unsupported/unknown id; falling back to engine_getPayload")
+                        }
+                        Err(e) => {
+                            debug!("arc_rawPayload failed ({e:#}); falling back to engine_getPayload")
+                        }
+                    }
+                }
+
                 // Complete ExecutionPayloadV3 with all transactions and computed state
                 // See https://github.com/ethereum/consensus-specs/blob/v1.1.5/specs/merge/validator.md#block-proposal
                 let use_v5 = self.use_v5(timestamp);
@@ -607,6 +642,13 @@ where
     ) -> eyre::Result<Vec<Option<alloy_primitives::Bytes>>> {
         (**self).get_raw_transactions_by_hash(hashes).await
     }
+
+    async fn arc_raw_payload(
+        &self,
+        payload_id: AlloyPayloadId,
+    ) -> eyre::Result<Option<ExecutionPayloadV3>> {
+        (**self).arc_raw_payload(payload_id).await
+    }
 }
 
 #[async_trait]
@@ -654,6 +696,13 @@ impl EthereumAPI for Box<dyn EthereumAPI> {
         hashes: &[B256],
     ) -> eyre::Result<Vec<Option<alloy_primitives::Bytes>>> {
         (**self).get_raw_transactions_by_hash(hashes).await
+    }
+
+    async fn arc_raw_payload(
+        &self,
+        payload_id: AlloyPayloadId,
+    ) -> eyre::Result<Option<ExecutionPayloadV3>> {
+        (**self).arc_raw_payload(payload_id).await
     }
 }
 

@@ -631,6 +631,20 @@ fn main() {
                     max_batch_entries,
                     rebroadcast_interval,
                 ))
+                .extend_rpc_modules(|ctx| {
+                    // arc_rawPayload: SSZ+gzip built-payload fetch for the remote
+                    // builder-prebuild path (see raw_payload_rpc.rs).
+                    use arc_node_execution::raw_payload_rpc::{
+                        ArcRawPayloadApiServer, ArcRawPayloadRpc,
+                    };
+                    use reth_node_builder::FullNodeComponents;
+                    let store = reth_payload_builder::PayloadStore::from(
+                        ctx.node().payload_builder_handle().clone(),
+                    );
+                    ctx.modules
+                        .merge_configured(ArcRawPayloadRpc::new(store).into_rpc())?;
+                    Ok(())
+                })
                 .launch_with_debug_capabilities()
                 .await?;
 

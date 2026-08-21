@@ -24,6 +24,7 @@ mod args;
 pub use args::patch_node_command_defaults;
 
 pub mod metrics;
+pub mod raw_payload_rpc;
 
 // Re-export commonly used types
 pub use arc_evm::{ArcEvmConfig, ArcEvmFactory};

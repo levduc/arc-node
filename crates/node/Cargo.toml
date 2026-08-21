@@ -54,6 +54,14 @@ reth-node-builder = { workspace = true, features = ["js-tracer"] }
 reth-node-core.workspace = true
 reth-node-ethereum.workspace = true
 reth-node-metrics = { workspace = true, optional = true, features = ["jemalloc"] }
+reth-payload-builder.workspace = true
+reth-payload-primitives.workspace = true
+alloy-rpc-types-engine = { workspace = true, features = ["ssz", "serde"] }
+ethereum_ssz.workspace = true
+jsonrpsee = { workspace = true, features = ["server", "macros"] }
+base64.workspace = true
+flate2.workspace = true
+
 reth-prune-types.workspace = true
 reth-rpc-builder.workspace = true
 reth-rpc-eth-types.workspace = true

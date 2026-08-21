@@ -483,6 +483,52 @@ impl EthereumAPI for EthereumRPC {
             .await
             .wrap_err("EthereumRPC get_raw_transactions_by_hash call failed")
     }
+
+    async fn arc_raw_payload(
+        &self,
+        payload_id: alloy_rpc_types_engine::PayloadId,
+    ) -> eyre::Result<Option<alloy_rpc_types_engine::ExecutionPayloadV3>> {
+        use base64::Engine as _;
+        use ssz::Decode;
+        use std::io::Read;
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "arc_rawPayload",
+            "params": [payload_id],
+            "id": 1
+        });
+        let response: Value = self
+            .client
+            .post(self.url.clone())
+            .json(&request)
+            .timeout(self.batch_request_timeout)
+            .send()
+            .await
+            .wrap_err("arc_rawPayload request failed")?
+            .json()
+            .await
+            .wrap_err("arc_rawPayload response not JSON")?;
+        if let Some(err) = response.get("error") {
+            // Method-not-found on a stock endpoint = graceful None (fallback).
+            if err.get("code").and_then(|c| c.as_i64()) == Some(-32601) {
+                return Ok(None);
+            }
+            return Err(eyre::eyre!("arc_rawPayload error: {err}"));
+        }
+        let Some(b64) = response.get("result").and_then(|r| r.as_str()) else {
+            return Ok(None); // null result: unknown payload id
+        };
+        let compressed = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .wrap_err("arc_rawPayload: bad base64")?;
+        let mut ssz_bytes = Vec::with_capacity(compressed.len() * 2);
+        flate2::read::GzDecoder::new(compressed.as_slice())
+            .read_to_end(&mut ssz_bytes)
+            .wrap_err("arc_rawPayload: gunzip failed")?;
+        let payload = alloy_rpc_types_engine::ExecutionPayloadV3::from_ssz_bytes(&ssz_bytes)
+            .map_err(|e| eyre::eyre!("arc_rawPayload: ssz decode failed: {e:?}"))?;
+        Ok(Some(payload))
+    }
 }
 
 #[cfg(test)]

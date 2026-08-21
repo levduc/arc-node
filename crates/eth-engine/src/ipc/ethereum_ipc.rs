@@ -374,6 +374,15 @@ impl EthereumAPI for EthereumIPC {
             .await
             .wrap_err("EthereumIPC get_raw_transactions_by_hash call failed")
     }
+
+    async fn arc_raw_payload(
+        &self,
+        _payload_id: alloy_rpc_types_engine::PayloadId,
+    ) -> eyre::Result<Option<alloy_rpc_types_engine::ExecutionPayloadV3>> {
+        // IPC = same machine; the raw fetch exists to cut REMOTE wire bytes.
+        // None -> caller uses the standard engine_getPayload.
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
