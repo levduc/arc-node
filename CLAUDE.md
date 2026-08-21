@@ -551,16 +551,34 @@ ceiling, in-EL contention) was the binding term — this moves it off the voters
   GATED execution delayed the next height.** Fix `fc10d3c`: bounded 450ms wait-for-stash in
   get_value (strictly better than the 500ms-deadline local build it replaces), remove only
   the matched entry, refresher logs → info (runs are now self-diagnosing).
-- **STATUS AT TEARDOWN (2026-08-21):** local `arc_consensus:latest` contains all 3 fixes
-  (verified via binary string "MISS after wait") but ship-images to the remotes failed
-  repeatedly (one explicit "transfer failed to papaduck"; session died mid-ship; the
-  multi-GB wifi upload also made the dev box feel slow — CPU load was 0.8/16, it was pure
-  network). User tore the fleet down suspecting bad execution code on all machines — NOT
-  confirmed by data (per-lane agreement OK at every check all night; the "wrongness" seen
-  was old-code CLs still missing 100% + deliberately empty blocks). **NEXT SESSION: verify
-  per-host image shas, ship, fresh boot via the iso pipeline (scratchpad iso4.sh pattern),
-  gate = hit rate >85% at 2 blk/s → ~14k tps sustained through isolated admission; then
-  300M.**
+- **🎯 GATE RUN PASSED (2026-08-21 evening, all 3 fixes deployed fleet-wide):** 150M,
+  500ms pacer, deferred + builder-on-GINNY (unpeered, --disable-tx-gossip, deadline 150,
+  wiped datadir), laptop daemon 20k offered, measured from uninvolved val2: **9,149/9,058/
+  8,212 tps landed over three 160s slices, 76% of blocks perfectly FULL (7,142 tx),
+  cadence 1.61-1.70 blk/s, entire 6.18M-tx corpus accepted zero rejects (~8.8k/s accepted
+  WHILE consenting), agreement OK, builder peers 0 start+end.** Hit rates: val1 89% /
+  val2 ~91% / val3 ~81% / val4-wifi ~25% (the fullness leak). vs the 0.5-0.63 blk/s
+  collapse at 4k direct ingress: **sustained landed went 3.7k → 9.1k tps.** Gaps to the
+  14k ceiling (7,142×2/s): val4's hit rate + cadence 1.7 vs 2.0. NEXT: straggler fix or
+  3-wired-validator arm; 300M; then the production raw-tx forwarder (WS1).
+  Boot recipe that finally worked: iso7*.sh scratchpad pattern = ship-images + CONTAINER
+  CENSUS per host (val3's tar-ship failed silently AGAIN — census gate is now mandatory) +
+  val3 on papaduck HOME disk (NVMe mount has a hung-rm pathology) + builder unpeer check
+  before the window (val1_el_pay's *_el_pay glob swept the builder in once more) + laptop
+  tools re-ship (machine restarts wiped /tmp on BOTH boxes).
+- **LEAN NATIVE-TRANSFER TYPE — INCREMENT 1 DONE (2026-08-21, agent, ~/reth-fork branch
+  `lean-native-transfer` commit `9ab4a08`, arc repo untouched):** fan-out native transfer
+  (1 sig → N recipients), fixed-width no-RLP codec + serial/parallel executors +
+  differential tests (10 green; serial==parallel on pooled/hot/duplicate/self/failure) +
+  bench. MEASURED (this box): N=1 108B/4.4µs-per-output; **N=10 43.2B + 0.47µs/output
+  (2.82× packing, ~70× under the 33µs/tx serial baseline)**; N=100 36.7B + 0.09µs.
+  Semantics locked: whole-tx atomic; same-block incoming credits NOT spendable (keeps
+  sender-partitioned parallel deterministic); duplicate recipients sum; zero-value = no log
+  (bug-ledger #3 as a test); fee = one deferred end-of-block beneficiary credit; lane-domain
+  in the sig hash (no chainId on wire). Increment 2 touchpoints (verified paths) in
+  ~/reth-fork/LEAN-NATIVE.md: envelope crates/ethereum/primitives, pool validate/eth.rs,
+  payload builder, engine-tree execute_transactions (~L1236, BatchExecute pattern), receipt
+  derivation. A 0.9MB block ≈ 20k outputs at N=10 vs 7,142 today.
 - **GOTCHAS BANKED:** wipe the builder datadir before relaunch (stale node key → validators'
   persisted known-peers redial it — observed twice); NEVER stack rm -rf on a chain datadir
   (papaduck "freeze #2" = 3 concurrent deleters + 2 tars in D-state on one ~100GB tree;
