@@ -572,6 +572,19 @@ ceiling, in-EL contention) was the binding term — this moves it off the voters
   val3 on papaduck HOME disk (NVMe mount has a hung-rm pathology) + builder unpeer check
   before the window (val1_el_pay's *_el_pay glob swept the builder in once more) + laptop
   tools re-ship (machine restarts wiped /tmp on BOTH boxes).
+- **🎯 arc_rawPayload (SSZ+gzip prebuild fetch) MEASURED POSITIVE at 300M (2026-08-21 night):**
+  no reth fork — EL serves base64(gzip(ssz(V3))) via extend_rpc_modules
+  (crates/node/src/raw_payload_rpc.rs, PayloadStore, same resolve semantics as getPayload);
+  CL generate_block tries it under ARC_BUILDER_RAW_FETCH=1 w/ engine-API fallback; decode
+  corruption is caught by the deferred structural gate (fail-safe trial). 300M A/B same
+  topology: hits val2 59→~74%, val3 21→~52%, val4 16→~52% (val1 local 84→85%), landed
+  8.1-8.6k → 8.6-9.6k tps, cadence 1.3-1.4 → 1.5-1.6, 6.39M txs zero rejects, agreement OK.
+  RESIDUAL at 300M: remote misses 25-50% (wifi still marginal at ~2MB fetches) + the
+  4-thread daemon's ~9k/s delivery ceiling. GOTCHAS: demo-fleet's val3 tar-ship failed
+  3-for-3 after papaduck's reboot (targets the NVMe path; scripted home-disk repair =
+  scratchpad v3fix-resume.sh — FOLD INTO demo-fleet-metamask's val3 leg); val1_el_pay's
+  *_el_pay glob re-swept the builder into its mesh at every launch (unpeer step is part of
+  the pipeline now; harmless mid-run given --disable-tx-gossip).
 - **LEAN NATIVE-TRANSFER TYPE — INCREMENT 1 DONE (2026-08-21, agent, ~/reth-fork branch
   `lean-native-transfer` commit `9ab4a08`, arc repo untouched):** fan-out native transfer
   (1 sig → N recipients), fixed-width no-RLP codec + serial/parallel executors +
