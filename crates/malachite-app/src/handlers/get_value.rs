@@ -367,36 +367,45 @@ pub async fn build_block(
             // build — v0's on-demand remote build is gone (it measured -5..-10% because it
             // put the build AND the builder's catch-up execution on the critical path).
             // Validation of the payload stays on the LOCAL engine either way.
+            // The refresher's cycle (feed exec + confirm + 2 builds) lands ~350ms after
+            // decide, but with DEFERRED exec get_value arrives ~30ms after decide — it
+            // always beat the stash (measured: 0% hits at 2 blk/s, stale-candidate
+            // misses before that). So: WAIT bounded for the in-flight prebuild instead
+            // of falling back instantly — strictly better than the local fallback,
+            // whose own build deadline is 500ms. Remove only the matched entry (the
+            // old mem::take drained future-ts candidates on every miss).
             let mut prebuilt = None;
             if payment_builder_engine.is_some() {
-                let mut stash = prebuilt_slot.lock().await;
-                let candidates = std::mem::take(&mut *stash);
-                drop(stash);
-                let n = candidates.len();
-                let ts_seen: Vec<u64> = candidates.iter().map(|p| p.timestamp).collect();
-                for p in candidates {
-                    if p.parent == payment_parent.block_hash
-                        && p.timestamp == timestamp
-                        && p.fee_recipient == *fee_recipient
+                let wait_until =
+                    tokio::time::Instant::now() + std::time::Duration::from_millis(450);
+                loop {
                     {
-                        // Empty-candidate guard: a tx-starved builder (dead
-                        // peering, cold pool) produces VALID but EMPTY payloads;
-                        // serving one beats a full local build on latency and
-                        // loses on everything else. Treat empty as a miss —
-                        // the local build path packs from our own pool.
-                        if p.payload.payload_inner.payload_inner.transactions.is_empty() {
-                            warn!("builder candidate matched but is EMPTY; ignoring (starved builder?)");
-                            continue;
+                        let mut stash = prebuilt_slot.lock().await;
+                        if let Some(i) = stash.iter().position(|p| {
+                            p.parent == payment_parent.block_hash
+                                && p.timestamp == timestamp
+                                && p.fee_recipient == *fee_recipient
+                                // Empty-candidate guard: a tx-starved builder produces
+                                // VALID but EMPTY payloads; treat as a miss — the local
+                                // path packs from our own pool.
+                                && !p.payload.payload_inner.payload_inner.transactions.is_empty()
+                        }) {
+                            let p = stash.remove(i);
+                            info!("🏗️ prebuilt payment payload HIT (builder-served, zero build on path)");
+                            prebuilt = Some(p.payload);
                         }
-                        info!("🏗️ prebuilt payment payload HIT (builder-served, zero build on path)");
-                        prebuilt = Some(p.payload);
+                    }
+                    if prebuilt.is_some() || tokio::time::Instant::now() >= wait_until {
                         break;
                     }
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                 }
                 if prebuilt.is_none() {
+                    let stash = prebuilt_slot.lock().await;
+                    let ts_seen: Vec<u64> = stash.iter().map(|p| p.timestamp).collect();
                     warn!(
-                        candidates = n, ts_prebuilt = ?ts_seen, ts_needed = timestamp,
-                        "builder prebuilt MISS; building locally"
+                        candidates = stash.len(), ts_prebuilt = ?ts_seen, ts_needed = timestamp,
+                        "builder prebuilt MISS after wait; building locally"
                     );
                 }
             }

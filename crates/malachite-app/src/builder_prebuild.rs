@@ -163,7 +163,7 @@ pub async fn run_refresher(
                     payload,
                 }),
                 Err(e) => {
-                    debug!("builder refresher: build for ts {ts} failed: {e:#}");
+                    info!("builder refresher: build for ts {ts} failed: {e:#}");
                 }
             }
         }
@@ -173,7 +173,7 @@ pub async fn run_refresher(
         let mut stash = slot.lock().await;
         stash.retain(|p| p.parent == head.block_hash && p.timestamp >= t0);
         stash.extend(built);
-        debug!(
+        info!(
             "builder refresher: stash has {} candidates for head {}",
             stash.len(),
             head.block_hash
