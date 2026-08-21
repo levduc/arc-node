@@ -142,9 +142,20 @@ pub async fn run_refresher(
         if missing.is_empty() {
             continue;
         }
+        // Build the wanted timestamps CONCURRENTLY. Sequentially, two deadline-bounded
+        // builds (~150ms each) plus feed/confirm/fetch total ~550ms — just past a
+        // 512ms height, so every stash landed ~40ms after get_value and hit rate at
+        // 2 blk/s was ZERO (measured; at the degraded ~1.5s cadence the same code
+        // hit 22%). Concurrent builds cut the cycle to ~350ms.
+        let results = futures::future::join_all(
+            missing
+                .iter()
+                .map(|ts| builder.generate_block(&head, *ts, &fee_recipient)),
+        )
+        .await;
         let mut built: Vec<PrebuiltPayment> = Vec::new();
-        for ts in &missing {
-            match builder.generate_block(&head, *ts, &fee_recipient).await {
+        for (ts, r) in missing.iter().zip(results) {
+            match r {
                 Ok(payload) => built.push(PrebuiltPayment {
                     parent: head.block_hash,
                     timestamp: *ts,
@@ -153,7 +164,6 @@ pub async fn run_refresher(
                 }),
                 Err(e) => {
                     debug!("builder refresher: build for ts {ts} failed: {e:#}");
-                    break;
                 }
             }
         }
