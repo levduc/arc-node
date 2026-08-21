@@ -561,6 +561,12 @@ ceiling, in-EL contention) was the binding term — this moves it off the voters
   collapse at 4k direct ingress: **sustained landed went 3.7k → 9.1k tps.** Gaps to the
   14k ceiling (7,142×2/s): val4's hit rate + cadence 1.7 vs 2.0. NEXT: straggler fix or
   3-wired-validator arm; 300M; then the production raw-tx forwarder (WS1).
+  **300M probe (same night): landed stuck at 8.1-8.6k (= 150M) w/ 42-44%% full — NOT chain-bound:
+  2×1.75MB stash fetches over the builder's wifi blow the 450ms get_value wait (val3/4 hits 21/16%%);
+  sharding the daemon to 16 feeders made it WORSE (val1 84→66%%, landed declining to 3.2k) =
+  in-EL pool-lock contention recreated ON the builder. 300M needs wired builder and/or compact
+  stash fetch. Chain restored to 150M. daemon --shards exists but is measured-negative on a
+  single builder.**
   Boot recipe that finally worked: iso7*.sh scratchpad pattern = ship-images + CONTAINER
   CENSUS per host (val3's tar-ship failed silently AGAIN — census gate is now mandatory) +
   val3 on papaduck HOME disk (NVMe mount has a hung-rm pathology) + builder unpeer check
