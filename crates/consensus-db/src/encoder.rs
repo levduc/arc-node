@@ -289,6 +289,7 @@ mod tests {
             execution_payload: create_test_execution_payload(),
             signature: Some(signature),
             payment_payload: None,
+            lean_payload: None,
         }
     }
 

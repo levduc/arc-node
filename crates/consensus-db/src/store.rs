@@ -1845,6 +1845,7 @@ mod tests {
             execution_payload: payload,
             signature: None,
         payment_payload: None,
+            lean_payload: None,
         };
 
         store
@@ -2052,6 +2053,7 @@ mod tests {
             execution_payload: arbitrary_payload(),
             signature: None,
         payment_payload: None,
+            lean_payload: None,
         };
 
         store.store_undecided_block(block.clone()).await.unwrap();
@@ -2490,6 +2492,7 @@ mod tests {
             execution_payload: payload,
             signature: None,
         payment_payload: None,
+            lean_payload: None,
         };
         store
             .store_decided_block(cert, block.execution_payload, block.proposer)
@@ -2552,6 +2555,7 @@ mod tests {
                 execution_payload: payload.clone(),
                 signature: None,
             payment_payload: None,
+                lean_payload: None,
             };
             store.store_undecided_block(block).await.unwrap();
 

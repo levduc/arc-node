@@ -775,6 +775,7 @@ mod tests {
             validity: Validity::Valid,
             signature: None,
             payment_payload: None,
+            lean_payload: None,
         }
     }
 

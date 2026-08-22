@@ -43,6 +43,32 @@ pub struct ConsensusBlock {
     pub signature: Option<Signature>,
     /// Payment-lane execution payload (second EL). `None` for single-EL blocks.
     pub payment_payload: Option<ExecutionPayloadV3>,
+    /// Payment lane as LEAN block bytes (`ARC_PAYMENT_LEAN_LANE`). Mutually
+    /// exclusive with `payment_payload`. NOT part of the SSZ store form — the
+    /// decided store stays EVM-only (the lean node is canonical for lane data,
+    /// the certificate's value_id is the authoritative commitment; same pattern
+    /// as the reth payment lane). Travels in proposals via `frame_lanes_lean`.
+    pub lean_payload: Option<LeanLanePayload>,
+}
+
+/// Lean lane bytes plus their decoded+verified view. Construction ALWAYS
+/// decodes (strict) and recomputes the commitment — carrying this type means
+/// the bytes have been validated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeanLanePayload {
+    pub decoded: LeanBlockRef,
+    pub bytes: Vec<u8>,
+}
+
+impl LeanLanePayload {
+    pub fn new(bytes: Vec<u8>) -> eyre::Result<Self> {
+        let decoded = decode_lean_block(&bytes)?;
+        Ok(Self { decoded, bytes })
+    }
+
+    pub fn commitment(&self) -> BlockHash {
+        self.decoded.commitment
+    }
 }
 
 impl ConsensusBlock {
@@ -65,7 +91,11 @@ impl ConsensusBlock {
     /// payment lane) this equals [`ConsensusBlock::block_hash`] byte-for-byte,
     /// so existing chains and the single-EL path are unaffected.
     pub fn value_id(&self) -> BlockHash {
-        commit_lanes(self.block_hash(), self.payment_block_hash())
+        debug_assert!(
+            !(self.payment_payload.is_some() && self.lean_payload.is_some()),
+            "payment_payload and lean_payload are mutually exclusive"
+        );
+        commit_lanes(self.block_hash(), self.payment_lane_commitment())
     }
 
     /// The payment-lane execution block hash, if a payment lane is present.
@@ -73,6 +103,13 @@ impl ConsensusBlock {
         self.payment_payload
             .as_ref()
             .map(|p| p.payload_inner.payload_inner.block_hash)
+    }
+
+    /// The payment lane's commitment for value_id purposes: the reth lane's
+    /// block hash, or the lean lane's recomputed commitment.
+    pub fn payment_lane_commitment(&self) -> Option<BlockHash> {
+        self.payment_block_hash()
+            .or_else(|| self.lean_payload.as_ref().map(|l| l.commitment()))
     }
 
     /// Returns the size of the block in bytes when encoded using SSZ.
@@ -549,6 +586,7 @@ mod tests {
             execution_payload: evm,
             signature: None,
             payment_payload: payment,
+            lean_payload: None,
         }
     }
 
@@ -655,6 +693,36 @@ mod tests {
         let raw = u64::from_le_bytes(both[..8].try_into().unwrap()) | COMPACT_LANE_BIT;
         both[..8].copy_from_slice(&raw.to_le_bytes());
         assert!(unframe_lanes_any(&both).is_err());
+    }
+
+    /// CROSS-IMPLEMENTATION PIN: exact blockBytes + v2 commitments produced by
+    /// the lean lane node's `gen_vector` example (~/reth-fork, chain 1338).
+    /// If either side changes the wire format or commitment formula, this
+    /// breaks FIRST. Genesis = keccak("ARC_LEAN_LANE_GENESIS" ‖ 1338 BE).
+    #[test]
+    fn lean_commitment_cross_pins_against_lean_node() {
+        use alloy_primitives::hex;
+        let block1 = hex::decode(
+            "ef24da0138bf37159737c3154c5e0a261b50dc3eea4b490975abc6b1215e57700100000000000000d204000000000000020000006400000050000000000100000000000000000000000000000000000000001105000000000000003758f90cf554424a708fa8a07fee665fb84ec41f52a550bff338e5e6aa301e51297d7d54501a9b330fde67ef30e27895cdda71c997c53240fe38d3e3b1195ccc009c00000050000000000300000000000000000000000000000000000000002207000000000000000000000000000000000000000000000000000033000000000000000000000000000000000000000000000000000000220900000000000000077619a741084e5037e9ac4bd54076d20f8afd4190507c875c161c6304429bb33192dc544fe674f0b1876eb7045284569e9db60627338fe30131bc8a427c876f01",
+        )
+        .unwrap();
+        let b1 = decode_lean_block(&block1).unwrap();
+        assert_eq!((b1.number, b1.timestamp_ms, b1.tx_count), (1, 1234, 2));
+        assert_eq!(
+            format!("{:?}", b1.commitment),
+            "0x00e809a870be630b8dd454d74ef8d4bfa3f87f80daa8fac654520bb3874439a4"
+        );
+        let empty = hex::decode(
+            "00e809a870be630b8dd454d74ef8d4bfa3f87f80daa8fac654520bb3874439a40200000000000000dc0500000000000000000000",
+        )
+        .unwrap();
+        let b2 = decode_lean_block(&empty).unwrap();
+        assert_eq!(b2.parent, b1.commitment, "empty block links to block 1");
+        assert_eq!((b2.number, b2.tx_count), (2, 0));
+        assert_eq!(
+            format!("{:?}", b2.commitment),
+            "0x05bbfd6d78e6242a68ee6e45076cf707b3705cfce97ec42b52481d1063827944"
+        );
     }
 
     /// Lean-lane equivocation guard analog: same EVM lane, different lean bytes

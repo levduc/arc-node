@@ -140,6 +140,9 @@ pub fn decode_block(bytes: &[u8]) -> Result<ConsensusBlock, DecodeError> {
                 execution_payload,
                 signature: signature.map(|s| s.0),
                 payment_payload,
+                // The store persists the SSZ form only; lean lane data is
+                // canonical in the lean node and reattached via sync/fetch.
+                lean_payload: None,
             })
         }
         Err(version) => Err(DecodeError::UnsupportedVersion(version)),
@@ -416,6 +419,7 @@ mod tests {
             execution_payload: create_test_execution_payload(),
             signature: Some(signature),
             payment_payload: None,
+            lean_payload: None,
         }
     }
 

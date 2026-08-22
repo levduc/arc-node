@@ -699,6 +699,7 @@ mod tests {
             execution_payload: payload,
             signature: None,
         payment_payload: None,
+            lean_payload: None,
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());
@@ -736,6 +737,7 @@ mod tests {
             execution_payload: payload,
             signature: None,
         payment_payload: None,
+            lean_payload: None,
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());
@@ -774,6 +776,7 @@ mod tests {
             execution_payload: evm_payload.clone(),
             signature: None,
             payment_payload: Some(pay_payload.clone()),
+            lean_payload: None,
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());
@@ -819,6 +822,7 @@ mod tests {
             execution_payload: evm_payload.clone(),
             signature: None,
             payment_payload: Some(pay_payload.clone()),
+            lean_payload: None,
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());
