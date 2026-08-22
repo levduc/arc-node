@@ -271,6 +271,99 @@ pub const COMPACT_LANE_BIT: u64 = 1 << 63;
 /// leaves generous headroom.
 pub const MAX_COMPACT_TX_HASHES: usize = 200_000;
 
+/// Bit 62 of the EVM length prefix marks a LEAN payment section: the payment
+/// lane bytes are canonical lean-lane block bytes (see [`decode_lean_block`]),
+/// NOT an SSZ `ExecutionPayloadV3`. Like the compact bit, a legacy decoder
+/// sees an absurd length and fails its bounds check — fail-closed. Both bits
+/// set is invalid.
+pub const LEAN_LANE_BIT: u64 = 1 << 62;
+
+/// DoS bound on lean block tx count, checked before any per-tx work.
+pub const MAX_LEAN_TXS: usize = 200_000;
+
+/// Decoded, VERIFIED view of canonical lean-lane block bytes:
+/// `[parent 32B][number u64 LE][timestamp_ms u64 LE][n_txs u32 LE]([len u32 LE][tx])*`
+/// with `commitment = keccak256(parent ‖ number LE ‖ timestamp_ms LE ‖ keccak256(cat txs))`.
+/// The commitment is always RECOMPUTED from content here — never trusted from
+/// the wire (the analog of rebuilding the EVM header in structural validation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeanBlockRef {
+    pub parent: BlockHash,
+    pub number: u64,
+    pub timestamp_ms: u64,
+    pub tx_count: u32,
+    pub commitment: BlockHash,
+}
+
+/// Strict decoder for lean block bytes (trailing bytes rejected, tx count
+/// capped). Returns the recomputed commitment alongside the header fields.
+pub fn decode_lean_block(bytes: &[u8]) -> eyre::Result<LeanBlockRef> {
+    const HDR: usize = 32 + 8 + 8 + 4;
+    if bytes.len() < HDR {
+        return Err(eyre::eyre!("lean block bytes too short ({})", bytes.len()));
+    }
+    let parent = BlockHash::from_slice(&bytes[..32]);
+    let number = u64::from_le_bytes(bytes[32..40].try_into().unwrap());
+    let timestamp_ms = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
+    let tx_count = u32::from_le_bytes(bytes[48..52].try_into().unwrap());
+    if tx_count as usize > MAX_LEAN_TXS {
+        return Err(eyre::eyre!("lean block carries {tx_count} txs (cap {MAX_LEAN_TXS})"));
+    }
+    let mut off = HDR;
+    for i in 0..tx_count {
+        let len_end = off
+            .checked_add(4)
+            .filter(|&e| e <= bytes.len())
+            .ok_or_else(|| eyre::eyre!("lean block truncated at tx {i} length"))?;
+        let len = u32::from_le_bytes(bytes[off..len_end].try_into().unwrap()) as usize;
+        let tx_end = len_end
+            .checked_add(len)
+            .filter(|&e| e <= bytes.len())
+            .ok_or_else(|| eyre::eyre!("lean block truncated at tx {i} body (len {len})"))?;
+        off = tx_end;
+    }
+    if off != bytes.len() {
+        return Err(eyre::eyre!(
+            "lean block has {} trailing bytes after {tx_count} txs",
+            bytes.len() - off
+        ));
+    }
+    // txs_hash binds the ENTIRE framed tx section (count + per-tx lengths +
+    // bodies), NOT the concatenated bodies. Concatenation-only binding is a
+    // consensus hole: two different boundary-framings of the same body bytes
+    // would share a commitment yet decode to different tx lists, and under
+    // total-STF both "execute" — same commitment, divergent state (a malicious
+    // sync peer could exploit this). Binding the framing closes it.
+    let txs_hash = {
+        let mut h = Keccak256::new();
+        h.update(&bytes[48..]);
+        h.finalize()
+    };
+    let mut hasher = Keccak256::new();
+    hasher.update(parent.as_slice());
+    hasher.update(number.to_le_bytes());
+    hasher.update(timestamp_ms.to_le_bytes());
+    hasher.update(txs_hash);
+    Ok(LeanBlockRef {
+        parent,
+        number,
+        timestamp_ms,
+        tx_count,
+        commitment: BlockHash::from_slice(&hasher.finalize()),
+    })
+}
+
+/// Lean variant of [`frame_lanes`]:
+/// `[u64-LE len(evm) | LEAN_LANE_BIT] [evm SSZ] [lean block bytes]`.
+pub fn frame_lanes_lean(execution_payload: &ExecutionPayloadV3, lean_bytes: &[u8]) -> Vec<u8> {
+    let evm = execution_payload.as_ssz_bytes();
+    let mut buf = Vec::with_capacity(8 + evm.len() + lean_bytes.len());
+    buf.extend_from_slice(&((evm.len() as u64) | LEAN_LANE_BIT).to_le_bytes());
+    buf.extend_from_slice(&evm);
+    buf.extend_from_slice(lean_bytes);
+    buf
+}
+
 /// Decoded form of a framed lane buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaneFrame {
@@ -283,6 +376,14 @@ pub enum LaneFrame {
         execution_payload: ExecutionPayloadV3,
         payment_header: ExecutionPayloadV3,
         tx_hashes: Vec<BlockHash>,
+    },
+    /// EVM full + the payment lane as canonical LEAN block bytes
+    /// (`ARC_PAYMENT_LEAN_LANE`). `lean` is the decoded+verified view; the raw
+    /// bytes are kept verbatim for the newBlock feed and re-framing.
+    LeanPayment {
+        execution_payload: ExecutionPayloadV3,
+        lean: LeanBlockRef,
+        lean_bytes: Vec<u8>,
     },
 }
 
@@ -326,6 +427,25 @@ pub fn unframe_lanes_any(bytes: &[u8]) -> eyre::Result<LaneFrame> {
         return Err(eyre::eyre!("lane bytes too short to contain length prefix"));
     }
     let raw_len = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+    if raw_len & LEAN_LANE_BIT != 0 {
+        if raw_len & COMPACT_LANE_BIT != 0 {
+            return Err(eyre::eyre!("lane frame has both LEAN and COMPACT bits set"));
+        }
+        let len_evm = (raw_len & !LEAN_LANE_BIT) as usize;
+        let evm_end = 8usize
+            .checked_add(len_evm)
+            .filter(|&e| e <= bytes.len())
+            .ok_or_else(|| eyre::eyre!("invalid lean evm length prefix"))?;
+        let execution_payload = ExecutionPayloadV3::from_ssz_bytes(&bytes[8..evm_end])
+            .map_err(|e| eyre::eyre!("Failed to decode execution payload: {e:?}"))?;
+        let lean_bytes = bytes[evm_end..].to_vec();
+        let lean = decode_lean_block(&lean_bytes)?;
+        return Ok(LaneFrame::LeanPayment {
+            execution_payload,
+            lean,
+            lean_bytes,
+        });
+    }
     if raw_len & COMPACT_LANE_BIT == 0 {
         let (evm, pay) = unframe_lanes(bytes)?;
         return Ok(LaneFrame::Full(evm, pay));
@@ -452,6 +572,100 @@ mod tests {
             b.block_hash(),
             "value_id must not collapse to the EVM hash when a payment lane is present"
         );
+    }
+
+    /// Builds canonical lean block bytes for tests (mirrors the lean-lane-node
+    /// encoding: [parent][number LE][ts_ms LE][n u32 LE]([len u32 LE][tx])*).
+    fn lean_bytes(parent: u8, number: u64, ts_ms: u64, txs: &[&[u8]]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(B256::repeat_byte(parent).as_slice());
+        b.extend_from_slice(&number.to_le_bytes());
+        b.extend_from_slice(&ts_ms.to_le_bytes());
+        b.extend_from_slice(&(txs.len() as u32).to_le_bytes());
+        for t in txs {
+            b.extend_from_slice(&(t.len() as u32).to_le_bytes());
+            b.extend_from_slice(t);
+        }
+        b
+    }
+
+    #[test]
+    fn lean_decode_recomputes_commitment_and_is_content_sensitive() {
+        let a = decode_lean_block(&lean_bytes(0xAA, 7, 1000, &[b"tx-one", b"tx-two"])).unwrap();
+        assert_eq!((a.number, a.timestamp_ms, a.tx_count), (7, 1000, 2));
+        // Any content change moves the commitment.
+        for variant in [
+            lean_bytes(0xAB, 7, 1000, &[b"tx-one", b"tx-two"]),
+            lean_bytes(0xAA, 8, 1000, &[b"tx-one", b"tx-two"]),
+            lean_bytes(0xAA, 7, 1001, &[b"tx-one", b"tx-two"]),
+            lean_bytes(0xAA, 7, 1000, &[b"tx-one", b"tx-tWo"]),
+            lean_bytes(0xAA, 7, 1000, &[b"tx-one"]),
+        ] {
+            assert_ne!(decode_lean_block(&variant).unwrap().commitment, a.commitment);
+        }
+        // SECURITY: boundary shifts with identical concatenated bodies MUST
+        // move the commitment — otherwise two framings of the same bytes share
+        // a commitment but decode to different tx lists, and total-STF executes
+        // both (same commitment, divergent state; exploitable via sync).
+        let b = decode_lean_block(&lean_bytes(0xAA, 7, 1000, &[b"tx-onetx-two"])).unwrap();
+        assert_ne!(b.commitment, a.commitment, "commitment must bind tx FRAMING, not just bodies");
+    }
+
+    #[test]
+    fn lean_decode_rejects_malformed() {
+        let good = lean_bytes(0xAA, 1, 1, &[b"abc"]);
+        assert!(decode_lean_block(&good).is_ok());
+        // trailing garbage
+        let mut t = good.clone();
+        t.push(0);
+        assert!(decode_lean_block(&t).is_err());
+        // truncated tx body
+        assert!(decode_lean_block(&good[..good.len() - 1]).is_err());
+        // truncated header
+        assert!(decode_lean_block(&good[..40]).is_err());
+        // absurd tx count with no bodies
+        let mut c = lean_bytes(0xAA, 1, 1, &[]);
+        let n = (MAX_LEAN_TXS as u32 + 1).to_le_bytes();
+        c[48..52].copy_from_slice(&n);
+        assert!(decode_lean_block(&c).is_err());
+        // claimed count larger than actual bodies
+        let mut d = lean_bytes(0xAA, 1, 1, &[b"abc"]);
+        d[48..52].copy_from_slice(&2u32.to_le_bytes());
+        assert!(decode_lean_block(&d).is_err());
+    }
+
+    #[test]
+    fn lean_frame_round_trips_and_legacy_paths_fail_closed() {
+        let evm = payload(0x11);
+        let lb = lean_bytes(0xAA, 3, 500, &[b"tx-a", b"tx-b", b"tx-c"]);
+        let framed = frame_lanes_lean(&evm, &lb);
+        match unframe_lanes_any(&framed).unwrap() {
+            LaneFrame::LeanPayment { execution_payload, lean, lean_bytes } => {
+                assert_eq!(execution_payload, evm);
+                assert_eq!(lean_bytes, lb);
+                assert_eq!(lean, decode_lean_block(&lb).unwrap());
+            }
+            other => panic!("expected LeanPayment, got {other:?}"),
+        }
+        // The full-format-only decoder must refuse a lean frame (fail-closed),
+        // exactly like it refuses compact frames.
+        assert!(unframe_lanes(&framed).is_err());
+        // Both format bits set is invalid.
+        let mut both = framed.clone();
+        let raw = u64::from_le_bytes(both[..8].try_into().unwrap()) | COMPACT_LANE_BIT;
+        both[..8].copy_from_slice(&raw.to_le_bytes());
+        assert!(unframe_lanes_any(&both).is_err());
+    }
+
+    /// Lean-lane equivocation guard analog: same EVM lane, different lean bytes
+    /// ⇒ different commitment ⇒ different value_id through commit_lanes.
+    #[test]
+    fn lean_commitment_binds_value_id() {
+        let evm_hash = BlockHash::repeat_byte(0x11);
+        let c1 = decode_lean_block(&lean_bytes(0xAA, 3, 500, &[b"tx-a"])).unwrap().commitment;
+        let c2 = decode_lean_block(&lean_bytes(0xAA, 3, 500, &[b"tx-b"])).unwrap().commitment;
+        assert_ne!(commit_lanes(evm_hash, Some(c1)), commit_lanes(evm_hash, Some(c2)));
+        assert_ne!(commit_lanes(evm_hash, Some(c1)), evm_hash);
     }
 
     /// The equivocation guard: two blocks with the SAME EVM lane but DIFFERENT

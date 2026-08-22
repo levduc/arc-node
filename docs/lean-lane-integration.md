@@ -35,6 +35,14 @@ lane makes that stance total:
 `blockBytes` encoding (canonical, also the SSZ-carried consensus form):
 `[parent 32B][number u64 LE][timestamp_ms u64 LE][n_txs u32 LE]([len u32 LE][tx bytes])*`
 
+**Commitment formula v2 (SECURITY — supersedes the lean node's v1):**
+`txs_hash = keccak256(bytes[48..])` — the ENTIRE framed tx section (count + per-tx
+lengths + bodies), NOT the concatenated bodies. v1's concatenation-only binding let two
+different boundary-framings of the same bytes share a commitment while decoding to
+different tx lists; under total-STF both execute → same commitment, divergent state
+(exploitable by a malicious sync peer). `commitment = keccak256(parent ‖ number LE ‖
+timestamp_ms LE ‖ txs_hash)` unchanged. The lean node MUST adopt v2 (chain.rs).
+
 ## CL changes (arc repo), flag `ARC_PAYMENT_LEAN_LANE=1` (default off = byte-identical)
 
 1. **types/block.rs**: `PaymentLane { Evm(ExecutionPayloadV3), Lean(Bytes) }` internal to
