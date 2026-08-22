@@ -520,6 +520,22 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**🎉 I4 FIRST LIGHT PASS (2026-08-22): 7,429 outputs/s THROUGH MALACHITE at just 743 tx/s
+admission — 4/4 identical lean commitments, zero rejects (single box, N=10 smoke, 594k
+outputs/80s).** Boot: lean-i4.sh scratchpad (demo-metamask + 4 host lean nodes --shim
+--bind 0.0.0.0 + compose lean-override w/ per-CL ARC_PAYMENT_LEAN_RPC via docker gateway +
+PEER_RPCS). THREE integration bugs found live, fixed same-day: (1) shim params array-wrapped
+→ jsonrpsee positional parse → all builds failed, chain froze; (2) round-1 decides leave a
+non-assembling validator with no bytes + value-sync never fires (consensus tip current) =
+finding-#7 lean edition → decide-time PEER CATCH-UP (fetch gap from peer lean nodes until
+commit_lanes(evm,head)==cert value_id; healed a 500-block outage in ~20s live); (3)
+POISONED CACHE: sync dedup returned the store-loaded block — SSZ store drops lean bytes →
+its value_id collapses to EVM hash → framework rejects vs cert FOREVER (diagnosed by
+byte-logging both ends: frames identical; the cached copy lied). **CLASS RULE: any
+store-loaded ConsensusBlock has a lying value_id in lean mode — reattach or rebuild.**
+Cadence 0.56 blk/s under load on the single box (contention vs protocol TBD on fleet);
+budget 300M (~42k outputs) not binding at ~13k-output blocks. NEXT: N∈{1,10,50} sweep,
+restart legs, fleet.
 **⚙️ LEAN-LANE INTEGRATION UNDERWAY (2026-08-22, branch `lean-lane-integration`, plan =
 docs/lean-lane-integration.md):** wiring the lean lane node (~/reth-fork lean-lane-node)
 behind Malachite as the payment EL, flag ARC_PAYMENT_LEAN_LANE (default off byte-identical).
