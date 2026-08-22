@@ -520,6 +520,30 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**🏁 FLEET N-SWEEP MEASURED — I5 DONE (2026-08-22 night): outputs/s PLATEAUS ~25k, per-OUTPUT
+bound (~40us/output), fan-out advantage fully banked by N=10.** 4-machine fleet, fixed stack,
+governed batch feeders (ws spammers = admission-vs-build contention, only 240 txs/blk; the
+batch feeder = budget-PERFECT blocks): **N=10: 26,046 outputs/s, 111/111 blocks at 42,250/42,253
+budget, 0.62 blk/s, 2,605 tx/s admission · N=50: 24,593 outputs/s, 80/80 at exactly 55,350,
+0.44 blk/s, 492 tx/s.** Height cost 38-41us/output at BOTH N -> per-output, not per-signature;
+bigger budgets won't help (blocks grow, cadence drops pro-rata). Lean node standalone executes
+at 1.6us/output -> ~90%% of the 40us is CL-side (proposal streaming ~28B/output, per-node anchor
+exec, voting). 100k outputs/s levers: compact lean proposals (hash/delta streaming), deferred
+anchor exec, cut re-exec passes. TWO MORE BUGS closed en route: (7) proposer never stashed its
+own build (self-delivery raced 40ms decides -> every own-proposal anchor via 5s grace; fix
+718bd59 build-time stash) + started_round replay used store-loaded blocks (lying value_id,
+lean_shim=None, no stash -> early-streamed proposals nil'd 25-48%% of turns; fix in same image:
+replay ASSEMBLED blocks, stash, thread shim, skip store-only in lean mode). (8) LEAN NODE POOL
+never re-based per-sender nonces on append (no canonical-state-update path in a standalone lane)
+-> ANY multi-nonce stream demoted queued-forever after block 1 (latent since day 1, invisible to
+1-tx/sender gates; fork fix 6f9521f pool.update_accounts on commit + streamed-nonce gate).
+FLEET IDLE = 1.95 blk/s, 0 slow heights/937, p99 1.03s (= single box). OPS BANKED: remote
+background launches need `(setsid nohup ... &)` + </dev/null (tailscale-ssh teardown kills
+plain `&`); pkill -f in an ssh string matches the SHELL carrying the launch text (split kill
+and launch into separate ssh calls); zsh does NOT word-split `set -- $var`; papaduck MagicDNS
+broken -> use raw 100.x IPs in --peers; wipe lean datadirs between sweep legs or recovery
+resurrects old nonces and the fund-file step silently skips.
+
 **🎯 CADENCE SOLVED — 1.94 blk/s AT THE PACER TARGET (2026-08-22 morning, shim v1.1 stack):
 0.58 -> 1.94 blk/s, 7s-mode GONE (1 slow height in 1,162), anchor failures 24-174/10min -> 0/0/0/0.**
 The morning's 0.58 was a CHAIN of glue bugs, not lean fundamentals: (5) stash clear() wiped
