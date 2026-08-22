@@ -437,16 +437,15 @@ pub async fn validate_consensus_block(
             return Ok(Validity::Invalid);
         }
         let evm = &block.execution_payload.payload_inner.payload_inner;
-        // Lane lockstep: number and (ms-scaled) timestamp must mirror the EVM
-        // lane exactly — this also makes sync serving a trivial by-number fetch.
-        if lane.decoded.number != evm.block_number
-            || lane.decoded.timestamp_ms != evm.timestamp * 1000
-        {
+        // Timestamp lockstep with the EVM lane. Numbers are NOT coupled to EVM
+        // numbers: the lane may activate mid-chain, so lean numbers advance
+        // 1-per-height from activation (sync serving maps by constant offset).
+        if lane.decoded.timestamp_ms != evm.timestamp * 1000 {
             record_invalid_payload(
                 block,
                 &format!(
-                    "lean lane: lockstep violation (lean number {} ts_ms {} vs evm number {} ts {})",
-                    lane.decoded.number, lane.decoded.timestamp_ms, evm.block_number, evm.timestamp
+                    "lean lane: timestamp lockstep violation (lean ts_ms {} vs evm ts {})",
+                    lane.decoded.timestamp_ms, evm.timestamp
                 ),
                 store,
                 metrics,

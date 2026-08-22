@@ -42,7 +42,7 @@ impl LeanShim {
         let response: Value = self
             .client
             .post(&self.url)
-            .json(&json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": [params]}))
+            .json(&json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}))
             .timeout(std::time::Duration::from_secs(10))
             .send()
             .await

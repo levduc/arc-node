@@ -144,10 +144,22 @@ async fn get_decided_values(
     // LEAN lane: fetch canonical lean block bytes by number for the same
     // heights (lockstep: lean number == EVM block number, enforced at
     // validation), so the synced value carries both lanes.
+    // Exactly one lean block anchors per decided height since activation, so
+    // lean_number(h) = lean_head - (latest_decided - h); pre-activation heights
+    // map to <= 0 and serve as EVM-only frames (their certificates bound no
+    // lean lane).
     let mut lean_bytes_by_height: Vec<Option<Vec<u8>>> = Vec::new();
     if let Some(shim) = &lean_shim {
+        let head = shim.get_head().await?;
+        let latest = latest_height.as_u64();
         for h in &heights {
-            lean_bytes_by_height.push(shim.get_block_bytes(h.as_u64()).await?);
+            let behind = latest.saturating_sub(h.as_u64());
+            let lean_number = head.number.saturating_sub(behind);
+            if lean_number == 0 {
+                lean_bytes_by_height.push(None);
+            } else {
+                lean_bytes_by_height.push(shim.get_block_bytes(lean_number).await?);
+            }
         }
     } else {
         lean_bytes_by_height = vec![None; heights.len()];
