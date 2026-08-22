@@ -594,6 +594,18 @@ ceiling, in-EL contention) was the binding term — this moves it off the voters
   crawls; longer deadline = more crawling, not more txs (the 6-10× build-ingress inflation).
   REVERTED to 150ms. **Standing sustained record: 9.0-9.6k @300M** (raw fetch + multi-source).
   20k goes through: wired builder link, lean/FIFO pool (WS4), fan-out type — not knobs.
+- **SPAMMER IS LEAN-READY (2026-08-22, arc `b7dcff0` + fork `5b86994`):** `--mix fanout=N` +
+  `--fanout-outputs K` emits 0x50 fan-out txs; codec mirrored in crates/spammer/src/lean.rs
+  with a BYTE-EXACT pinned vector test vs the fork (`gen_vector` example — breaks FIRST if
+  either side drifts); SpamTx enum carries lean raw bytes through the envelope pipeline
+  (dump/corpus mode works). END-TO-END SMOKE vs lean-lane-node: 31.9k txs = 21.3k outputs/s
+  over ONE ws thread, 0 failures, 59 blocks. Hookup gaps found+fixed by the smoke: node
+  lacked eth_getTransactionCount; run-mode had no genesis funding (--fund-file/--fund-balance
+  added, snapshotted per the recovery gotcha); SPAMMER DERIVATION IS m/44'/60'/**1'**/0/i (not
+  the standard 0' — fund files must use it); fund enough for wei-denominated pool fee math
+  (fee/tx = (21000+5000N) gwei). FALSE-POSITIVE LADDER (bank it): spammer's error tracker
+  truncates server reasons to [0xhash]; timeout-kill loses the buffered dump file; the status
+  ticker keeps printing after the sender task dies — smoke with clean exits + unfiltered logs.
 - **🎯 LEAN LANE NODE (increment 2b', agent, ~/reth-fork `29179e3`): 687,056 outputs/s
   sustained (18.6k tx/s @ avg N=37), INGRESS-BOUND — single-threaded loop ceiling ~600k+.**
   "reth as a mempool library": stock 2a pool unmodified + fan-out total-STF executor on a
