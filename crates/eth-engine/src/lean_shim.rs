@@ -17,6 +17,12 @@ use arc_consensus_types::BlockHash;
 pub struct LeanShim {
     client: reqwest::Client,
     url: String,
+    /// Other validators' lean node RPCs (ARC_PAYMENT_LEAN_PEER_RPCS) — the
+    /// decide-time catch-up source when this node's lane is behind the
+    /// certificate (missed round-1 proposals, restarts). Lean blocks are
+    /// self-verifying (recomputed commitment chain + the certificate binding),
+    /// so peers cannot forge.
+    peers: Vec<LeanShim>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +37,17 @@ impl LeanShim {
         Self {
             client: reqwest::Client::new(),
             url: url.into(),
+            peers: Vec::new(),
         }
+    }
+
+    pub fn with_peers(mut self, peer_urls: Vec<String>) -> Self {
+        self.peers = peer_urls.into_iter().map(LeanShim::new).collect();
+        self
+    }
+
+    pub fn peers(&self) -> &[LeanShim] {
+        &self.peers
     }
 
     pub fn url(&self) -> &str {

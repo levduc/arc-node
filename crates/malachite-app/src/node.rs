@@ -733,7 +733,8 @@ impl App {
                      pay ELs idle)"
                 );
             }
-            let shim = arc_eth_engine::lean_shim::LeanShim::new(env_config.payment_lean_rpc.clone());
+            let shim = arc_eth_engine::lean_shim::LeanShim::new(env_config.payment_lean_rpc.clone())
+                .with_peers(env_config.payment_lean_peer_rpcs.clone());
             let head = shim.get_head().await.wrap_err(
                 "ARC_PAYMENT_LEAN_LANE=1 but the lean lane node is unreachable at boot",
             )?;

@@ -28,6 +28,7 @@ const ARC_PAYMENT_DEFERRED_EXEC: &str = "ARC_PAYMENT_DEFERRED_EXEC";
 const ARC_PAYMENT_LEAN_LANE: &str = "ARC_PAYMENT_LEAN_LANE";
 const ARC_PAYMENT_LEAN_RPC: &str = "ARC_PAYMENT_LEAN_RPC";
 const ARC_PAYMENT_LEAN_BUDGET_GAS: &str = "ARC_PAYMENT_LEAN_BUDGET_GAS";
+const ARC_PAYMENT_LEAN_PEER_RPCS: &str = "ARC_PAYMENT_LEAN_PEER_RPCS";
 const ARC_COMPACT_PAYMENT_PROPOSALS: &str = "ARC_COMPACT_PAYMENT_PROPOSALS";
 const ARC_PAYMENT_PEER_RPCS: &str = "ARC_PAYMENT_PEER_RPCS";
 
@@ -70,6 +71,9 @@ pub struct EnvConfig {
     /// (`ARC_PAYMENT_LEAN_BUDGET_GAS`, default 300_000_000 = ~42k outputs at
     /// N=10 under gas = 21000 + 5000*N — the 2 blk/s starting point).
     pub payment_lean_budget_gas: u64,
+    /// Comma-separated peer lean node RPCs (`ARC_PAYMENT_LEAN_PEER_RPCS`) —
+    /// decide-time lane catch-up source.
+    pub payment_lean_peer_rpcs: Vec<String>,
     /// EXPERIMENTAL (`ARC_COMPACT_PAYMENT_PROPOSALS=1`): stream live payment-lane
     /// proposals as tx hashes (32B) instead of full tx bytes; receivers rebuild
     /// the payload from their local payment EL pool. EMISSION only — decoding
@@ -126,6 +130,15 @@ impl EnvConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(300_000_000);
+        let payment_lean_peer_rpcs = std::env::var(ARC_PAYMENT_LEAN_PEER_RPCS)
+            .map(|v| {
+                v.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
         let payment_deferred_exec = std::env::var(ARC_PAYMENT_DEFERRED_EXEC)
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
@@ -149,6 +162,7 @@ impl EnvConfig {
             payment_lean_lane,
             payment_lean_rpc,
             payment_lean_budget_gas,
+            payment_lean_peer_rpcs,
             compact_payment_proposals,
             payment_peer_rpcs,
         }
@@ -167,6 +181,7 @@ impl Default for EnvConfig {
             payment_lean_lane: false,
             payment_lean_rpc: "http://127.0.0.1:8560".to_string(),
             payment_lean_budget_gas: 300_000_000,
+            payment_lean_peer_rpcs: Vec::new(),
             compact_payment_proposals: false,
             payment_peer_rpcs: Default::default(),
         }

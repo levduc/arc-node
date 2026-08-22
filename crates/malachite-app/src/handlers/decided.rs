@@ -313,52 +313,11 @@ async fn decide(
     // binding and that the node's answer reproduces the commitment. Failure =
     // loud height failure (Decision::Failure -> restart/sync), never a fork.
     if let Some(shim) = lean_shim {
-        let lane = lean_lane.as_ref().ok_or_else(|| {
-            eyre!(
-                "lean lane: decided value {value_id} at height={height} has no stashed lean                  payload (restart mid-height?) — cannot anchor; height will recover via sync"
-            )
-        })?;
         let evm_hash = block.block_hash();
-        let bound = arc_consensus_types::block::commit_lanes(evm_hash, Some(lane.commitment()));
-        if bound != value_id.block_hash() {
-            return Err(eyre!(
-                "lean lane: stashed payload does not reproduce the certified value_id                  (evm {evm_hash}, lean {}, bound {bound}, certified {value_id})",
-                lane.commitment()
-            ));
-        }
-        let wait_start = std::time::Instant::now();
-        let mut last_err = None;
-        let mut anchored = None;
-        for attempt in 1..=3u32 {
-            match shim.new_block(&lane.bytes).await {
-                Ok(c) => {
-                    anchored = Some(c);
-                    break;
-                }
-                Err(e) => {
-                    warn!("lean lane: anchor attempt {attempt}/3 failed: {e:#}");
-                    last_err = Some(e);
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-            }
-        }
-        let anchored = anchored.ok_or_else(|| {
-            eyre!(
-                "lean lane: decide anchor failed after 3 attempts at height={height}: {:#}",
-                last_err.expect("at least one error recorded")
-            )
-        })?;
-        if anchored != lane.commitment() {
-            return Err(eyre!(
-                "lean lane: node anchored {anchored} but the certified commitment is {} — halting",
-                lane.commitment()
-            ));
-        }
-        debug!(
-            "🪶 Lean lane anchored at decide in {:?} (height {height}, {} txs)",
-            wait_start.elapsed(),
-            lane.decoded.tx_count
-        );
+        let cert_bound = value_id.block_hash();
+        anchor_lean_lane(shim, evm_hash, cert_bound, lean_lane.as_ref(), height)
+            .await
+            .wrap_err_with(|| format!("lean lane: decide anchor failed at height={height}"))?;
     }
 
     // Commit the decision to the store before finalizing the block.
@@ -399,6 +358,91 @@ async fn decide(
     metrics.observe_block_finalize_time(stats.height_started().elapsed().as_secs_f64());
 
     Ok((new_latest_block, block.payment_payload.clone()))
+}
+
+/// Anchors the decided lean block, catching the local lane up from PEER lean
+/// nodes when it is behind the certificate (missed round-1 proposals, node
+/// restarts, mid-height stash loss). Termination is exact and trustless: keep
+/// feeding until `commit_lanes(evm_hash, local_head) == certificate value_id`
+/// — every ingested block's commitment is recomputed by our own node, and the
+/// final head must reproduce the certified binding, so peers cannot forge.
+async fn anchor_lean_lane(
+    shim: &arc_eth_engine::lean_shim::LeanShim,
+    evm_hash: arc_consensus_types::BlockHash,
+    cert_bound: arc_consensus_types::BlockHash,
+    stashed: Option<&arc_consensus_types::block::LeanLanePayload>,
+    height: Height,
+) -> eyre::Result<()> {
+    use arc_consensus_types::block::commit_lanes;
+    const MAX_CATCH_UP: u64 = 100_000;
+    let wait_start = std::time::Instant::now();
+    let mut fed_from_peers = 0u64;
+    let mut iterations = 0u64;
+    loop {
+        iterations += 1;
+        if iterations > MAX_CATCH_UP {
+            return Err(eyre!(
+                "lean lane: catch-up exceeded {MAX_CATCH_UP} blocks without reaching the \
+                 certified commitment — halting"
+            ));
+        }
+        let head = shim.get_head().await.wrap_err("lean lane: get_head failed")?;
+        if commit_lanes(evm_hash, Some(head.commitment)) == cert_bound {
+            if fed_from_peers > 0 || iterations > 2 {
+                info!(
+                    "🪶 Lean lane anchored at height {height} after catch-up \
+                     ({fed_from_peers} blocks from peers) in {:?}",
+                    wait_start.elapsed()
+                );
+            } else {
+                debug!(
+                    "🪶 Lean lane anchored at decide in {:?} (height {height})",
+                    wait_start.elapsed()
+                );
+            }
+            return Ok(());
+        }
+        // Fast path: the stashed decided payload extends the current head.
+        if let Some(lane) = stashed {
+            if lane.decoded.parent == head.commitment {
+                match shim.new_block(&lane.bytes).await {
+                    Ok(_) => continue,
+                    Err(e) => {
+                        warn!("lean lane: stashed anchor failed ({e:#}); trying peer catch-up");
+                    }
+                }
+            }
+        }
+        // Behind: fetch the next block from any peer lean node and ingest it
+        // (our node recomputes + verifies its commitment chain on ingest).
+        let next = head.number + 1;
+        let mut fed = false;
+        for peer in shim.peers() {
+            match peer.get_block_bytes(next).await {
+                Ok(Some(bytes)) => match shim.new_block(&bytes).await {
+                    Ok(_) => {
+                        fed = true;
+                        fed_from_peers += 1;
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("lean lane: peer-fed block {next} rejected by local node: {e:#}");
+                    }
+                },
+                Ok(None) => {}
+                Err(e) => {
+                    debug!("lean lane: peer {} has no block {next}: {e:#}", peer.url());
+                }
+            }
+        }
+        if !fed {
+            return Err(eyre!(
+                "lean lane: behind the certificate at height={height} (local lean head {}) \
+                 and no peer served block {next} — cannot anchor",
+                head.number
+            ));
+        }
+    }
 }
 
 /// Commits a value with the given certificate, cleanup stale consensus data and prune historical data.
