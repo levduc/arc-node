@@ -717,6 +717,29 @@ impl App {
             None
         };
 
+        // LEAN payment lane (ARC_PAYMENT_LEAN_LANE): the payment lane is a lean
+        // lane node driven via the CL shim instead of a reth EL. Mutually
+        // exclusive with a reth payment engine — refuse a half-configured boot.
+        let lean_shim = if env_config.payment_lean_lane {
+            if payment_engine.is_some() {
+                eyre::bail!(
+                    "ARC_PAYMENT_LEAN_LANE=1 but a reth payment engine is also configured; \
+                     the payment lane must be exactly one of the two"
+                );
+            }
+            let shim = arc_eth_engine::lean_shim::LeanShim::new(env_config.payment_lean_rpc.clone());
+            let head = shim.get_head().await.wrap_err(
+                "ARC_PAYMENT_LEAN_LANE=1 but the lean lane node is unreachable at boot",
+            )?;
+            tracing::info!(
+                url = %shim.url(), number = head.number, commitment = %head.commitment,
+                "🪶 Connected to LEAN payment lane node"
+            );
+            Some(shim)
+        } else {
+            None
+        };
+
         let (chain_id, genesis_block) = self
             .resolve_chain_identity(&engine)
             .await
@@ -842,6 +865,7 @@ impl App {
                 engine,
                 payment_engine,
                 payment_builder_engine,
+                lean_shim,
                 rx_app_req,
                 cancel_token,
             )

@@ -18,6 +18,7 @@ pub mod capabilities;
 pub mod engine;
 pub mod ipc;
 pub mod json_structures;
+pub mod lean_shim;
 pub mod persistence_meter;
 pub mod retry;
 pub mod rpc;

@@ -200,6 +200,30 @@ impl DecidedBlock {
         }
     }
 
+    /// Lean-lane variant of [`DecidedBlock::new`]: the payment lane is a lean
+    /// commitment (recomputed from validated bytes by the caller), not an
+    /// ExecutionPayloadV3. Panics if `commit_lanes(evm, lane)` does not match
+    /// the certificate — same invariant as `new`.
+    pub fn new_with_lane_commitment(
+        execution_payload: ExecutionPayloadV3,
+        lane_commitment: Option<BlockHash>,
+        certificate: CommitCertificate<ArcContext>,
+    ) -> Self {
+        let evm_block_hash = execution_payload.payload_inner.payload_inner.block_hash;
+        let value_id = commit_lanes(evm_block_hash, lane_commitment);
+        let certificate_value_id = certificate.value_id.block_hash();
+        assert_eq!(
+            value_id, certificate_value_id,
+            "decided lanes do not reproduce the certified value_id \
+             (evm {evm_block_hash}, lane {lane_commitment:?})"
+        );
+        Self {
+            execution_payload,
+            payment_payload: None,
+            certificate,
+        }
+    }
+
     /// Reconstructs a decided block from persisted CL state.
     ///
     /// The CL decided store caches only the EVM payload; the authoritative

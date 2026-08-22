@@ -52,6 +52,7 @@ pub async fn handle(
     state: &mut State,
     engine: &Engine,
     payment_engine: Option<&Engine>,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     height: Height,
     round: Round,
     proposer: Address,
@@ -61,6 +62,8 @@ pub async fn handle(
     let proposal = match on_process_synced_value(
         EnginePayloadValidator::new(engine, state.metrics()),
         payment_engine,
+        lean_shim,
+        state.lean_undecided.clone(),
         state.store(),
         state.store(),
         state.persistence_meter(),
@@ -114,6 +117,15 @@ async fn on_process_synced_value(
     // streaming path), so synced blocks re-validate the payment lane and
     // reconstruct the same `value_id` the certificate was signed over.
     payment_engine: Option<&Engine>,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_undecided: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                arc_consensus_types::BlockHash,
+                arc_consensus_types::block::LeanLanePayload,
+            >,
+        >,
+    >,
     undecided_blocks_repo: impl UndecidedBlocksRepository,
     invalid_payloads_repo: impl InvalidPayloadsRepository,
     persistence_meter: impl PersistenceMeter,
@@ -123,9 +135,26 @@ async fn on_process_synced_value(
     proposer: Address,
     value_bytes: Bytes,
 ) -> eyre::Result<Option<ProposedValue<ArcContext>>> {
-    let (payload, payment_payload) = match unframe_lanes(&value_bytes) {
-        Ok(pair) => pair,
-        Err(e) => {
+    let (payload, payment_payload, lean_payload) =
+        match arc_consensus_types::block::unframe_lanes_any(&value_bytes) {
+            Ok(arc_consensus_types::block::LaneFrame::Full(evm, pay)) => (evm, pay, None),
+            Ok(arc_consensus_types::block::LaneFrame::LeanPayment {
+                execution_payload,
+                lean,
+                lean_bytes,
+            }) => (
+                execution_payload,
+                None,
+                Some(arc_consensus_types::block::LeanLanePayload {
+                    decoded: lean,
+                    bytes: lean_bytes,
+                }),
+            ),
+            Ok(arc_consensus_types::block::LaneFrame::CompactPayment { .. }) => {
+                warn!(%height, %round, %proposer, "sync carried a COMPACT frame — unsupported on the sync path");
+                return Ok(None);
+            }
+            Err(e) => {
             warn!(
                 %height, %round, %proposer,
                 "Failed to decode synced value into execution payloads: {e:?}",
@@ -141,9 +170,9 @@ async fn on_process_synced_value(
                 )
             })?;
 
-            return Ok(None);
-        }
-    };
+                return Ok(None);
+            }
+        };
 
     // Build the block before validation so that
     // `validate_consensus_block` can record an `InvalidPayload`
@@ -157,7 +186,7 @@ async fn on_process_synced_value(
         validity: Validity::Valid,
         signature: None,
         payment_payload,
-        lean_payload: None,
+        lean_payload,
     };
 
     // Sync path deliberately stays Gated (full re-execution): it is off the live
@@ -166,6 +195,7 @@ async fn on_process_synced_value(
     let validity = validate_consensus_block(
         &engine,
         payment_engine,
+        lean_shim,
         &block,
         &invalid_payloads_repo,
         metrics,
@@ -181,6 +211,18 @@ async fn on_process_synced_value(
     })?;
 
     block.validity = validity;
+
+    // LEAN lane: stash the synced lean payload for the decide anchor (sync
+    // heights are decided through the same decide path; the SSZ store drops
+    // lean bytes).
+    if validity.is_valid() {
+        if let Some(lane) = block.lean_payload.as_ref() {
+            lean_undecided
+                .lock()
+                .expect("lean_undecided mutex poisoned")
+                .insert(block.value_id(), lane.clone());
+        }
+    }
 
     let block_hash = block.block_hash();
     // The undecided store is keyed by the consensus value id (commitment over
@@ -317,6 +359,8 @@ mod tests {
         let Some(proposal) = on_process_synced_value(
             engine,
             None,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -374,6 +418,8 @@ mod tests {
         let proposal = on_process_synced_value(
             engine,
             None,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -419,6 +465,8 @@ mod tests {
         let result = on_process_synced_value(
             engine,
             None,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -457,6 +505,8 @@ mod tests {
         let result = on_process_synced_value(
             engine,
             None,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -501,6 +551,8 @@ mod tests {
         let result = on_process_synced_value(
             engine,
             None,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -553,6 +605,8 @@ mod tests {
         let proposal = on_process_synced_value(
             engine,
             None,
+            None,
+            Default::default(),
             undecided,
             invalid,
             persistence_meter,
@@ -604,6 +658,8 @@ mod tests {
         let proposal = on_process_synced_value(
             engine,
             None,
+            None,
+            Default::default(),
             undecided,
             invalid,
             persistence_meter,
@@ -657,6 +713,8 @@ mod tests {
         let proposal = on_process_synced_value(
             engine,
             None,
+            None,
+            Default::default(),
             undecided,
             invalid,
             persistence_meter,
@@ -736,6 +794,8 @@ mod tests {
         let proposal = on_process_synced_value(
             engine,
             None,
+            None,
+            Default::default(),
             undecided,
             invalid,
             persistence_meter,

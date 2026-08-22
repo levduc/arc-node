@@ -59,6 +59,7 @@ pub async fn handle(
     engine: &Engine,
     payment_engine: Option<&Engine>,
     payment_builder_engine: Option<&Engine>,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     certificate: CommitCertificate<ArcContext>,
     commit_ack: Reply<()>,
 ) -> eyre::Result<()> {
@@ -77,6 +78,16 @@ pub async fn handle(
     } else {
         PaymentExecMode::Gated
     };
+    // LEAN lane: the decide anchor needs the lean bytes, which the SSZ store
+    // dropped — read them from the in-memory stash (written at get_value /
+    // proposal assembly / sync). Missing after a mid-height restart -> decide
+    // fails loudly and the height recovers via sync.
+    let lean_lane = state
+        .lean_undecided
+        .lock()
+        .expect("lean_undecided mutex poisoned")
+        .get(&certificate.value_id.block_hash())
+        .cloned();
     let block = decide(
         block_finalizer,
         payment_engine,
@@ -88,12 +99,19 @@ pub async fn handle(
         metrics,
         commit_ack,
         payment_exec_mode,
+        lean_shim,
+        lean_lane,
     )
     .await;
 
     match block {
         Ok((block, payment_payload)) => {
             info!("🟢 Successfully committed the decided value");
+            state
+                .lean_undecided
+                .lock()
+                .expect("lean_undecided mutex poisoned")
+                .clear();
 
             let catch_up_threshold = state.env_config().sync_catch_up_threshold;
             let new_sync_state = sync_state(block.timestamp, catch_up_threshold);
@@ -211,6 +229,8 @@ async fn decide(
     metrics: &AppMetrics,
     commit_ack: Reply<()>,
     payment_exec_mode: PaymentExecMode,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_lane: Option<arc_consensus_types::block::LeanLanePayload>,
 ) -> eyre::Result<(ExecutionBlock, Option<alloy_rpc_types_engine::ExecutionPayloadV3>)> {
     let height = certificate.height;
     let round = certificate.round;
@@ -284,6 +304,61 @@ async fn decide(
                 wait_start.elapsed()
             );
         }
+    }
+
+    // LEAN lane anchor: execute + append the decided lean block on the lean
+    // node BEFORE commit — the one and only feed (validation never appends;
+    // arc_newBlock is permanent and idempotent by commitment). The certificate
+    // binds commit_lanes(evm, lean_commitment) == value_id; verify BOTH that
+    // binding and that the node's answer reproduces the commitment. Failure =
+    // loud height failure (Decision::Failure -> restart/sync), never a fork.
+    if let Some(shim) = lean_shim {
+        let lane = lean_lane.as_ref().ok_or_else(|| {
+            eyre!(
+                "lean lane: decided value {value_id} at height={height} has no stashed lean                  payload (restart mid-height?) — cannot anchor; height will recover via sync"
+            )
+        })?;
+        let evm_hash = block.block_hash();
+        let bound = arc_consensus_types::block::commit_lanes(evm_hash, Some(lane.commitment()));
+        if bound != value_id.block_hash() {
+            return Err(eyre!(
+                "lean lane: stashed payload does not reproduce the certified value_id                  (evm {evm_hash}, lean {}, bound {bound}, certified {value_id})",
+                lane.commitment()
+            ));
+        }
+        let wait_start = std::time::Instant::now();
+        let mut last_err = None;
+        let mut anchored = None;
+        for attempt in 1..=3u32 {
+            match shim.new_block(&lane.bytes).await {
+                Ok(c) => {
+                    anchored = Some(c);
+                    break;
+                }
+                Err(e) => {
+                    warn!("lean lane: anchor attempt {attempt}/3 failed: {e:#}");
+                    last_err = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+        let anchored = anchored.ok_or_else(|| {
+            eyre!(
+                "lean lane: decide anchor failed after 3 attempts at height={height}: {:#}",
+                last_err.expect("at least one error recorded")
+            )
+        })?;
+        if anchored != lane.commitment() {
+            return Err(eyre!(
+                "lean lane: node anchored {anchored} but the certified commitment is {} — halting",
+                lane.commitment()
+            ));
+        }
+        debug!(
+            "🪶 Lean lane anchored at decide in {:?} (height {height}, {} txs)",
+            wait_start.elapsed(),
+            lane.decoded.tx_count
+        );
     }
 
     // Commit the decision to the store before finalizing the block.
@@ -619,6 +694,8 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             PaymentExecMode::Deferred,
+            None,
+            None,
         )
         .await;
 
@@ -702,6 +779,8 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             PaymentExecMode::Gated,
+            None,
+            None,
         )
         .await;
 
@@ -741,6 +820,8 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             PaymentExecMode::Gated,
+            None,
+            None,
         )
         .await;
 
@@ -779,6 +860,8 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             PaymentExecMode::Gated,
+            None,
+            None,
         )
         .await;
 
@@ -823,6 +906,8 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             PaymentExecMode::Gated,
+            None,
+            None,
         )
         .await;
 

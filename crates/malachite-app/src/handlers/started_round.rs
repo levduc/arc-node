@@ -287,6 +287,7 @@ async fn validate_undecided_blocks(
         let validity = match validate_consensus_block(
             payload_validator,
             payment_engine,
+            None,
             &block,
             invalid_payloads,
             metrics,

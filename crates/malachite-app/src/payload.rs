@@ -402,6 +402,7 @@ pub fn validate_payment_payload_structurally(
 pub async fn validate_consensus_block(
     payload_validator: &impl PayloadValidator,
     payment_engine: Option<&Engine>,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     block: &ConsensusBlock,
     store: &impl InvalidPayloadsRepository,
     metrics: &AppMetrics,
@@ -416,6 +417,79 @@ pub async fn validate_consensus_block(
     if let PayloadValidationResult::Invalid { reason } = result {
         record_invalid_payload(block, &reason, store, metrics).await;
         return Ok(Validity::Invalid);
+    }
+
+    // LEAN payment lane: validation is STRUCTURAL + linkage only. The lean
+    // node has no forkchoice — arc_newBlock appends PERMANENTLY — so undecided
+    // blocks are never fed to it; execution happens once, inline, at the
+    // decide anchor (affordable: ~us/output on the flat map). Safety comes
+    // from total STF (invalid tx = no-op, a byzantine proposer can never
+    // halt the lane) + the certificate binding the recomputed commitment.
+    if let Some(lane) = block.lean_payload.as_ref() {
+        if block.payment_payload.is_some() {
+            record_invalid_payload(
+                block,
+                "lean lane: block carries BOTH payment_payload and lean_payload",
+                store,
+                metrics,
+            )
+            .await;
+            return Ok(Validity::Invalid);
+        }
+        let evm = &block.execution_payload.payload_inner.payload_inner;
+        // Lane lockstep: number and (ms-scaled) timestamp must mirror the EVM
+        // lane exactly — this also makes sync serving a trivial by-number fetch.
+        if lane.decoded.number != evm.block_number
+            || lane.decoded.timestamp_ms != evm.timestamp * 1000
+        {
+            record_invalid_payload(
+                block,
+                &format!(
+                    "lean lane: lockstep violation (lean number {} ts_ms {} vs evm number {} ts {})",
+                    lane.decoded.number, lane.decoded.timestamp_ms, evm.block_number, evm.timestamp
+                ),
+                store,
+                metrics,
+            )
+            .await;
+            return Ok(Validity::Invalid);
+        }
+        // Parent linkage vs OUR lean head: prevents a byzantine proposer from
+        // getting a wrong-parent block certified (which would make the decide
+        // anchor fail network-wide = a halt). If WE are behind, we vote Nil
+        // and sync catches us up — safe either way.
+        if let Some(shim) = lean_shim {
+            match shim.get_head().await {
+                Ok(head) => {
+                    if lane.decoded.parent != head.commitment
+                        || lane.decoded.number != head.number + 1
+                    {
+                        record_invalid_payload(
+                            block,
+                            &format!(
+                                "lean lane: parent/number mismatch (block parent {} number {} vs head {} number {})",
+                                lane.decoded.parent, lane.decoded.number, head.commitment, head.number
+                            ),
+                            store,
+                            metrics,
+                        )
+                        .await;
+                        return Ok(Validity::Invalid);
+                    }
+                }
+                Err(e) => {
+                    // Unreachable lean node: cannot verify linkage -> Nil vote.
+                    record_invalid_payload(
+                        block,
+                        &format!("lean lane: node unreachable during validation: {e:#}"),
+                        store,
+                        metrics,
+                    )
+                    .await;
+                    return Ok(Validity::Invalid);
+                }
+            }
+        }
     }
 
     // Payment lane (second EL): re-execute the payment payload when both the
@@ -794,6 +868,7 @@ mod tests {
         let result = validate_consensus_block(
             &validator,
             None,
+            None,
             &block,
             &store,
             &metrics,
@@ -834,6 +909,7 @@ mod tests {
         let result = validate_consensus_block(
             &validator,
             None,
+            None,
             &block,
             &store,
             &metrics,
@@ -861,6 +937,7 @@ mod tests {
         let block = test_block();
         let err = validate_consensus_block(
             &validator,
+            None,
             None,
             &block,
             &store,
@@ -904,6 +981,7 @@ mod tests {
         let block = test_block();
         let validity = validate_consensus_block(
             &validator,
+            None,
             None,
             &block,
             &store,

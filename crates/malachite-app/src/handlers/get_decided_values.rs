@@ -41,6 +41,7 @@ pub async fn handle(
     state: &mut State,
     engine: &Engine,
     payment_engine: Option<&Engine>,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     range: RangeInclusive<Height>,
     reply: Reply<Vec<RawDecidedValue<ArcContext>>>,
 ) -> Result<(), eyre::Error> {
@@ -70,6 +71,7 @@ pub async fn handle(
     let metrics = state.metrics().clone();
     let engine = engine.clone();
     let payment_engine = payment_engine.cloned();
+    let lean_shim = lean_shim.cloned();
 
     // Spawn retrieval of decided values in a separate task to avoid blocking the main application loop.
     tokio::spawn(async move {
@@ -81,6 +83,7 @@ pub async fn handle(
             store,
             engine,
             payment_engine,
+            lean_shim,
             metrics,
         )
         .await
@@ -106,6 +109,7 @@ async fn get_decided_values(
     store: Store,
     engine: Engine,
     payment_engine: Option<Engine>,
+    lean_shim: Option<arc_eth_engine::lean_shim::LeanShim>,
     metrics: AppMetrics,
 ) -> Result<Vec<RawDecidedValue<ArcContext>>, eyre::Error> {
     let _guard = metrics.start_msg_process_timer("GetDecidedValues");
@@ -137,13 +141,26 @@ async fn get_decided_values(
         None => vec![None; block_numbers.len()],
     };
 
+    // LEAN lane: fetch canonical lean block bytes by number for the same
+    // heights (lockstep: lean number == EVM block number, enforced at
+    // validation), so the synced value carries both lanes.
+    let mut lean_bytes_by_height: Vec<Option<Vec<u8>>> = Vec::new();
+    if let Some(shim) = &lean_shim {
+        for h in &heights {
+            lean_bytes_by_height.push(shim.get_block_bytes(h.as_u64()).await?);
+        }
+    } else {
+        lean_bytes_by_height = vec![None; heights.len()];
+    }
+
     let mut values = Vec::with_capacity(range.len());
     let mut total_bytes = ByteSize::b(0);
 
-    for ((height, execution_payload), payment_payload) in heights
+    for (((height, execution_payload), payment_payload), lean_bytes) in heights
         .into_iter()
         .zip(execution_payloads.into_iter())
         .zip(payment_payloads.into_iter())
+        .zip(lean_bytes_by_height.into_iter())
     {
         let Some(execution_payload) = execution_payload else {
             debug!(%height, "No execution payload found at this height from EL, skipping");
@@ -151,7 +168,7 @@ async fn get_decided_values(
         };
 
         let (raw_value, raw_bytes_len) =
-            match get_raw_decided_value(&store, execution_payload, payment_payload, height).await {
+            match get_raw_decided_value(&store, execution_payload, payment_payload, lean_bytes, height).await {
                 Ok(result) => result,
                 Err(e) => {
                     warn!(%height, "Failed to get decided value at height: {e}");
@@ -210,6 +227,7 @@ async fn get_raw_decided_value(
     store: &Store,
     execution_payload: ExecutionPayloadV3,
     payment_payload: Option<ExecutionPayloadV3>,
+    lean_bytes: Option<Vec<u8>>,
     height: Height,
 ) -> eyre::Result<(RawDecidedValue<ArcContext>, ByteSize)> {
     let stored = store
@@ -221,9 +239,14 @@ async fn get_raw_decided_value(
     // them to a peer. Guards against an EL2 mismatch (wrong/missing payment block)
     // that would otherwise send a value the peer cannot validate against the cert.
     let evm_block_hash = execution_payload.payload_inner.payload_inner.block_hash;
+    let lean_lane = lean_bytes
+        .map(|b| arc_consensus_types::block::LeanLanePayload::new(b))
+        .transpose()
+        .wrap_err_with(|| format!("lean lane: fetched block bytes failed strict decode at height {height}"))?;
     let payment_block_hash = payment_payload
         .as_ref()
-        .map(|p| p.payload_inner.payload_inner.block_hash);
+        .map(|p| p.payload_inner.payload_inner.block_hash)
+        .or_else(|| lean_lane.as_ref().map(|l| l.commitment()));
     let value_id = commit_lanes(evm_block_hash, payment_block_hash);
     if value_id != stored.certificate.value_id.block_hash() {
         return Err(eyre!(
@@ -232,7 +255,12 @@ async fn get_raw_decided_value(
         ));
     }
 
-    let value_bytes = frame_lanes(&execution_payload, payment_payload.as_ref());
+    let value_bytes = match lean_lane.as_ref() {
+        Some(lane) => {
+            arc_consensus_types::block::frame_lanes_lean(&execution_payload, &lane.bytes)
+        }
+        None => frame_lanes(&execution_payload, payment_payload.as_ref()),
+    };
     let raw_value = RawDecidedValue {
         certificate: stored.certificate,
         value_bytes: value_bytes.into(),

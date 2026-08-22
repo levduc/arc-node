@@ -139,6 +139,18 @@ pub struct State {
     pub builder_prebuilt: crate::builder_prebuild::PrebuiltSlot,
     /// Trigger for the builder refresher (set at decide by the next proposer).
     pub builder_refresher: crate::builder_prebuild::RefresherHandle,
+    /// LEAN lane: undecided lean payloads keyed by value_id. The SSZ undecided
+    /// store drops lean bytes (store form unchanged), so the decide anchor
+    /// reads them from here. Lost on restart mid-height — decide then fails
+    /// loudly and the height recovers via sync (which re-feeds inline).
+    pub lean_undecided: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                arc_consensus_types::BlockHash,
+                arc_consensus_types::block::LeanLanePayload,
+            >,
+        >,
+    >,
 
     /// Timestamps of heights that received a synced value via ProcessSyncedValue.
     synced_heights: HashMap<Height, SystemTime>,
@@ -196,6 +208,7 @@ impl State {
             current_proposer: None,
             builder_prebuilt: Default::default(),
             builder_refresher: Default::default(),
+            lean_undecided: Default::default(),
             validator_set: ValidatorSet::default(), // initially empty, will be updated from reth
             store,
             stream_nonce: 0,

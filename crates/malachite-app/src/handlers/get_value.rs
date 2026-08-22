@@ -59,6 +59,7 @@ pub async fn handle(
     engine: &Engine,
     payment_engine: Option<&Engine>,
     payment_builder_engine: Option<&Engine>,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     height: Height,
     round: Round,
     timeout: Duration,
@@ -80,11 +81,14 @@ pub async fn handle(
         PaymentExecMode::Gated
     };
     let compact_payment = state.env_config().compact_payment_proposals;
+    let lean_budget_gas = state.env_config().payment_lean_budget_gas;
     let proposed_value = on_get_value(
         network,
         engine,
         payment_engine,
         payment_builder_engine,
+        lean_shim,
+        lean_budget_gas,
         prebuilt_slot,
         payment_exec_mode,
         compact_payment,
@@ -136,6 +140,8 @@ async fn on_get_value(
     engine: &Engine,
     payment_engine: Option<&Engine>,
     payment_builder_engine: Option<&Engine>,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_budget_gas: u64,
     prebuilt_slot: crate::builder_prebuild::PrebuiltSlot,
     payment_exec_mode: PaymentExecMode,
     compact_payment: bool,
@@ -175,6 +181,8 @@ async fn on_get_value(
                 engine,
                 payment_engine,
                 payment_builder_engine,
+                lean_shim,
+                lean_budget_gas,
                 prebuilt_slot,
                 payment_exec_mode,
                 &metrics,
@@ -249,6 +257,8 @@ async fn build_and_validate_block(
     engine: &Engine,
     payment_engine: Option<&Engine>,
     payment_builder_engine: Option<&Engine>,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_budget_gas: u64,
     prebuilt_slot: crate::builder_prebuild::PrebuiltSlot,
     payment_exec_mode: PaymentExecMode,
     metrics: &AppMetrics,
@@ -265,6 +275,8 @@ async fn build_and_validate_block(
         engine,
         payment_engine,
         payment_builder_engine,
+        lean_shim,
+        lean_budget_gas,
         prebuilt_slot,
         metrics,
         height,
@@ -279,6 +291,7 @@ async fn build_and_validate_block(
     let validity = validate_consensus_block(
         &validator,
         payment_engine,
+        None,
         &block,
         store,
         metrics,
@@ -331,6 +344,8 @@ pub async fn build_block(
     engine: &Engine,
     payment_engine: Option<&Engine>,
     payment_builder_engine: Option<&Engine>,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_budget_gas: u64,
     prebuilt_slot: crate::builder_prebuild::PrebuiltSlot,
     metrics: &AppMetrics,
     height: Height,
@@ -348,6 +363,41 @@ pub async fn build_block(
         "🌈 Got execution payload: {:?}",
         PrettyPayload(&execution_payload)
     );
+
+    // LEAN payment lane (ARC_PAYMENT_LEAN_LANE): build the next lean block on
+    // the lean node's head, timestamp locked to the EVM lane (ts_ms = evm_ts * 1000)
+    // so the two lanes advance in lockstep. The commitment is RECOMPUTED from
+    // the returned bytes by LeanLanePayload::new — the shim's answer is only
+    // cross-checked, never trusted.
+    let lean_payload = match lean_shim {
+        Some(shim) => {
+            let head = shim
+                .get_head()
+                .await
+                .wrap_err("lean lane: failed to fetch head for build")?;
+            let ts_ms = execution_payload.timestamp() * 1000;
+            let (claimed, bytes) = shim
+                .build_block(head.commitment, head.number + 1, ts_ms, lean_budget_gas)
+                .await
+                .wrap_err("lean lane: buildBlock failed")?;
+            let lane = arc_consensus_types::block::LeanLanePayload::new(bytes)
+                .wrap_err("lean lane: built block failed strict decode")?;
+            if lane.commitment() != claimed {
+                return Err(eyre!(
+                    "lean lane: recomputed commitment {} != shim's claimed {claimed}",
+                    lane.commitment()
+                ));
+            }
+            debug!(
+                number = head.number + 1,
+                txs = lane.decoded.tx_count,
+                commitment = %lane.commitment(),
+                "🪶 built lean payment block"
+            );
+            Some(lane)
+        }
+        None => None,
+    };
 
     // Payment lane (second EL): build a payment payload on top of EL2's own head,
     // aligned to the EVM lane's timestamp so the two lanes advance in lockstep.
@@ -435,7 +485,7 @@ pub async fn build_block(
         execution_payload,
         signature: None,
         payment_payload,
-        lean_payload: None,
+        lean_payload,
     })
 }
 

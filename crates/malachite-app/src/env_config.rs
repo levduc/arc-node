@@ -25,6 +25,9 @@ const ARC_SYNC_STATUS_UPDATE_INTERVAL: &str = "ARC_SYNC_STATUS_UPDATE_INTERVAL";
 const ARC_SYNC_CATCH_UP_THRESHOLD: &str = "ARC_SYNC_CATCH_UP_THRESHOLD";
 const ARC_GENESIS_FILE_PATH: &str = "ARC_GENESIS_FILE_PATH";
 const ARC_PAYMENT_DEFERRED_EXEC: &str = "ARC_PAYMENT_DEFERRED_EXEC";
+const ARC_PAYMENT_LEAN_LANE: &str = "ARC_PAYMENT_LEAN_LANE";
+const ARC_PAYMENT_LEAN_RPC: &str = "ARC_PAYMENT_LEAN_RPC";
+const ARC_PAYMENT_LEAN_BUDGET_GAS: &str = "ARC_PAYMENT_LEAN_BUDGET_GAS";
 const ARC_COMPACT_PAYMENT_PROPOSALS: &str = "ARC_COMPACT_PAYMENT_PROPOSALS";
 const ARC_PAYMENT_PEER_RPCS: &str = "ARC_PAYMENT_PEER_RPCS";
 
@@ -56,6 +59,17 @@ pub struct EnvConfig {
     /// Safe only while every proposer is honest w.r.t. executability (total STF not yet
     /// in the EL) — experiment fleets only. Default off = current behavior byte-for-byte.
     pub payment_deferred_exec: bool,
+    /// EXPERIMENTAL (`ARC_PAYMENT_LEAN_LANE=1`): the payment lane is a LEAN
+    /// lane node (no Ethereum header; commitment chain) driven via the CL shim
+    /// (docs/lean-lane-integration.md). Mutually exclusive with a reth payment
+    /// engine. Default off = byte-identical legacy behavior.
+    pub payment_lean_lane: bool,
+    /// Lean lane node RPC (`ARC_PAYMENT_LEAN_RPC`, default http://127.0.0.1:8560).
+    pub payment_lean_rpc: String,
+    /// Per-block lean-gas budget passed to arc_buildBlock
+    /// (`ARC_PAYMENT_LEAN_BUDGET_GAS`, default 300_000_000 = ~42k outputs at
+    /// N=10 under gas = 21000 + 5000*N — the 2 blk/s starting point).
+    pub payment_lean_budget_gas: u64,
     /// EXPERIMENTAL (`ARC_COMPACT_PAYMENT_PROPOSALS=1`): stream live payment-lane
     /// proposals as tx hashes (32B) instead of full tx bytes; receivers rebuild
     /// the payload from their local payment EL pool. EMISSION only — decoding
@@ -103,6 +117,15 @@ impl EnvConfig {
             .ok()
             .filter(|s| !s.is_empty());
 
+        let payment_lean_lane = std::env::var(ARC_PAYMENT_LEAN_LANE)
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let payment_lean_rpc = std::env::var(ARC_PAYMENT_LEAN_RPC)
+            .unwrap_or_else(|_| "http://127.0.0.1:8560".to_string());
+        let payment_lean_budget_gas = std::env::var(ARC_PAYMENT_LEAN_BUDGET_GAS)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300_000_000);
         let payment_deferred_exec = std::env::var(ARC_PAYMENT_DEFERRED_EXEC)
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
@@ -123,6 +146,9 @@ impl EnvConfig {
             sync_catch_up_threshold,
             genesis_file_path,
             payment_deferred_exec,
+            payment_lean_lane,
+            payment_lean_rpc,
+            payment_lean_budget_gas,
             compact_payment_proposals,
             payment_peer_rpcs,
         }
@@ -138,6 +164,9 @@ impl Default for EnvConfig {
             sync_catch_up_threshold: DEFAULT_SYNC_CATCH_UP_THRESHOLD,
             genesis_file_path: None,
             payment_deferred_exec: false,
+            payment_lean_lane: false,
+            payment_lean_rpc: "http://127.0.0.1:8560".to_string(),
+            payment_lean_budget_gas: 300_000_000,
             compact_payment_proposals: false,
             payment_peer_rpcs: Default::default(),
         }
