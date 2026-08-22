@@ -421,6 +421,34 @@ async fn anchor_lean_lane(
             ));
         }
         let head = shim.get_head().await.wrap_err("lean lane: get_head failed")?;
+        // ALREADY-CANONICAL (sync replay of a historic height): when the lean
+        // node ran ahead of this validator's consensus (v1.1 gossip), the
+        // decided lean block is in our past — the certificate binds THAT
+        // block's commitment, which will never equal the moving head. Anchor
+        // is a no-op iff our canonical block at that number is byte-identical.
+        if let Some(lane) = stashed {
+            if lane.decoded.number <= head.number
+                && commit_lanes(evm_hash, Some(lane.commitment())) == cert_bound
+            {
+                match shim.get_block_bytes(lane.decoded.number).await {
+                    Ok(Some(ours)) if ours == lane.bytes => {
+                        debug!(
+                            "🪶 Lean lane anchored (historic no-op, block {}) at height {height}",
+                            lane.decoded.number
+                        );
+                        return Ok(());
+                    }
+                    Ok(_) => {
+                        return Err(eyre!(
+                            "lean lane: certified historic block {} conflicts with our \
+                             canonical chain at height={height} — halting",
+                            lane.decoded.number
+                        ));
+                    }
+                    Err(e) => return Err(e.wrap_err("lean lane: historic anchor read failed")),
+                }
+            }
+        }
         if commit_lanes(evm_hash, Some(head.commitment)) == cert_bound {
             if fed_from_peers > 0 || iterations > 2 {
                 info!(

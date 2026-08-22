@@ -468,6 +468,42 @@ pub async fn validate_consensus_block(
         if let Some(shim) = lean_shim {
             match shim.get_head().await {
                 Ok(mut head) => {
+                    // ALREADY-CANONICAL (sync replay of a historic height):
+                    // when consensus lags the lean chain (the node kept up via
+                    // gossip while this validator's consensus fell behind),
+                    // the synced value's lean block is in our PAST. Tip
+                    // linkage (number == head+1) is the wrong test there —
+                    // it rejected every such frame, wedging value-sync
+                    // (measured 2026-08-22: val2 consensus at 15570, lean
+                    // head 15523, lean number 15519 → invalid → sync dead).
+                    // Valid iff it IS our canonical block at that number.
+                    if lane.decoded.number <= head.number {
+                        match shim.get_block_bytes(lane.decoded.number).await {
+                            Ok(Some(ours)) if ours == lane.bytes => {
+                                // Canonical replay — lean lane section valid;
+                                // skip tip-linkage checks entirely.
+                            }
+                            Ok(_) => {
+                                record_invalid_payload(
+                                    block,
+                                    &format!(
+                                        "lean lane: historic block {} conflicts with our canonical chain",
+                                        lane.decoded.number
+                                    ),
+                                    store,
+                                    metrics,
+                                )
+                                .await;
+                                return Ok(Validity::Invalid);
+                            }
+                            Err(e) => {
+                                return Err(e.wrap_err(
+                                    "lean lane: node unreachable during historic validation",
+                                ));
+                            }
+                        }
+                        return Ok(Validity::Valid);
+                    }
                     if lane.decoded.number > head.number + 1 {
                         let mut fed = 0u64;
                         'catchup: while lane.decoded.number > head.number + 1 {
