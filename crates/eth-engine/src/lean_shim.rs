@@ -55,14 +55,43 @@ impl LeanShim {
     }
 
     async fn call(&self, method: &str, params: Value) -> eyre::Result<Value> {
-        let response: Value = self
-            .client
-            .post(&self.url)
-            .json(&json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-            .wrap_err_with(|| format!("lean shim: {method} request failed"))?
+        // Transport errors are retried: a lean-node restart (~10s snapshot
+        // replay) must read as a brief stall, not an INVALID verdict — a
+        // rejected certified value is re-proposed un-revalidated (valid-round
+        // rule), so one transient outage otherwise deadlocks the height.
+        // Every shim verb is idempotent (newBlock dedups by commitment).
+        const ATTEMPTS: u32 = 30; // ~15s: covers a lean-node restart (snapshot replay ~10s)
+        const DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+        let mut last_err = None;
+        let mut sent = None;
+        for attempt in 0..ATTEMPTS {
+            match self
+                .client
+                .post(&self.url)
+                .json(&json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}))
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    sent = Some(resp);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt + 1 < ATTEMPTS {
+                        tokio::time::sleep(DELAY).await;
+                    }
+                }
+            }
+        }
+        let response: Value = sent
+            .ok_or_else(|| {
+                eyre!(
+                    "lean shim: {method} request failed after {ATTEMPTS} attempts: {:#}",
+                    last_err.expect("no response implies an error")
+                )
+            })?
             .json()
             .await
             .wrap_err_with(|| format!("lean shim: {method} response not JSON"))?;

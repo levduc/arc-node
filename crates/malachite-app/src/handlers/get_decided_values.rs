@@ -152,20 +152,80 @@ async fn get_decided_values(
     if let Some(shim) = &lean_shim {
         let head = shim.get_head().await?;
         let latest = latest_height.as_u64();
-        for h in &heights {
-            let behind = latest.saturating_sub(h.as_u64());
-            let lean_number = head.number.saturating_sub(behind);
-            let bytes = if lean_number == 0 {
-                None
-            } else {
-                shim.get_block_bytes(lean_number).await?
+        for (h, ep) in heights.iter().zip(execution_payloads.iter()) {
+            let Some(ep) = ep else {
+                lean_bytes_by_height.push(None);
+                continue;
             };
-            info!(
-                height = h.as_u64(), latest, lean_head = head.number, lean_number,
-                got = bytes.is_some(),
-                "GetDecidedValues: lean lane mapping"
-            );
-            lean_bytes_by_height.push(bytes);
+            let evm_hash = ep.payload_inner.payload_inner.block_hash;
+            let Some(cert_vid) = store
+                .get_certificate(Some(*h))
+                .await?
+                .map(|s| s.certificate.value_id.block_hash())
+            else {
+                lean_bytes_by_height.push(None);
+                continue;
+            };
+            // Heights whose certificate bound no lean lane (pre-activation, or
+            // decided EVM-only) serve EVM-only frames.
+            if commit_lanes(evm_hash, None) == cert_vid {
+                lean_bytes_by_height.push(None);
+                continue;
+            }
+            // The offset guess (lean_number = head - (latest - h)) is only
+            // valid when our lane is fully caught up AND every height since
+            // activation carried a lean block. Neither held during the
+            // 2026-08-22 freeze window — a mid-recovery head made this serve
+            // WRONG blocks, every height then failed the certificate check
+            // below, and the syncing peer starved on empty responses. So:
+            // verify the guess against the certificate, and scan outward for
+            // the block that actually reproduces it.
+            let behind = latest.saturating_sub(h.as_u64());
+            let guess = head.number.saturating_sub(behind).max(1);
+            let mut candidates = vec![guess];
+            for d in 1..=128u64 {
+                if guess > d {
+                    candidates.push(guess - d);
+                }
+                if guess + d <= head.number {
+                    candidates.push(guess + d);
+                }
+            }
+            let mut found = None;
+            for n in candidates {
+                if n == 0 || n > head.number {
+                    continue;
+                }
+                if let Some(bytes) = shim.get_block_bytes(n).await? {
+                    if let Ok(lane) =
+                        arc_consensus_types::block::LeanLanePayload::new(bytes.clone())
+                    {
+                        if commit_lanes(evm_hash, Some(lane.commitment())) == cert_vid {
+                            found = Some((n, bytes));
+                            break;
+                        }
+                    }
+                }
+            }
+            match found {
+                Some((n, bytes)) => {
+                    if n != guess {
+                        info!(
+                            height = h.as_u64(), guess, resolved = n,
+                            "GetDecidedValues: lean mapping corrected by certificate scan"
+                        );
+                    }
+                    lean_bytes_by_height.push(Some(bytes));
+                }
+                None => {
+                    warn!(
+                        height = h.as_u64(), latest, lean_head = head.number, guess,
+                        "GetDecidedValues: no lean block reproduces the certificate \
+                         (lane behind or gap > 128) — height not served"
+                    );
+                    lean_bytes_by_height.push(None);
+                }
+            }
         }
     } else {
         lean_bytes_by_height = vec![None; heights.len()];

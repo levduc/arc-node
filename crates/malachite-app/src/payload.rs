@@ -455,11 +455,49 @@ pub async fn validate_consensus_block(
         }
         // Parent linkage vs OUR lean head: prevents a byzantine proposer from
         // getting a wrong-parent block certified (which would make the decide
-        // anchor fail network-wide = a halt). If WE are behind, we vote Nil
-        // and sync catches us up — safe either way.
+        // anchor fail network-wide = a halt).
+        //
+        // If WE are behind (block.number > head.number + 1), catch up from
+        // peer lean nodes HERE, before the verdict. Waiting for value-sync
+        // deadlocks: a lagging validator can't vote, so consensus can't
+        // decide, so the decide-time catch-up never fires (measured live
+        // 2026-08-22: 2/4 validators one lean block behind = permanent
+        // 40/80-nil stall). Peer blocks are safe to ingest pre-verdict — the
+        // local node recomputes every commitment on ingest, and appended
+        // certified-chain blocks are exactly what sync would feed anyway.
         if let Some(shim) = lean_shim {
             match shim.get_head().await {
-                Ok(head) => {
+                Ok(mut head) => {
+                    if lane.decoded.number > head.number + 1 {
+                        let mut fed = 0u64;
+                        'catchup: while lane.decoded.number > head.number + 1 {
+                            let next = head.number + 1;
+                            let mut advanced = false;
+                            for peer in shim.peers() {
+                                if let Ok(Some(bytes)) = peer.get_block_bytes(next).await {
+                                    if shim.new_block(&bytes).await.is_ok() {
+                                        advanced = true;
+                                        fed += 1;
+                                        break;
+                                    }
+                                }
+                            }
+                            if !advanced {
+                                break 'catchup;
+                            }
+                            match shim.get_head().await {
+                                Ok(h) => head = h,
+                                Err(_) => break 'catchup,
+                            }
+                        }
+                        if fed > 0 {
+                            tracing::info!(
+                                "🪶 lean lane: validation-time catch-up fed {fed} blocks \
+                                 from peers (local head now {})",
+                                head.number
+                            );
+                        }
+                    }
                     if lane.decoded.parent != head.commitment
                         || lane.decoded.number != head.number + 1
                     {
@@ -477,15 +515,14 @@ pub async fn validate_consensus_block(
                     }
                 }
                 Err(e) => {
-                    // Unreachable lean node: cannot verify linkage -> Nil vote.
-                    record_invalid_payload(
-                        block,
-                        &format!("lean lane: node unreachable during validation: {e:#}"),
-                        store,
-                        metrics,
-                    )
-                    .await;
-                    return Ok(Validity::Invalid);
+                    // Unreachable past the shim's ~15s transport retry: the
+                    // node is genuinely down. Return Err (no verdict) rather
+                    // than Invalid — a recorded Invalid sticks to the value,
+                    // and the valid-round rule re-proposes certified values
+                    // WITHOUT re-validation, so a transient outage would wedge
+                    // the height permanently (measured live 2026-08-22: all-4
+                    // rolling restart => 0-precommit deadlock at height 3446).
+                    return Err(e.wrap_err("lean lane: node unreachable during validation"));
                 }
             }
         }
