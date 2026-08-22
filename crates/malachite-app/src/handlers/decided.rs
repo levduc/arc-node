@@ -396,16 +396,28 @@ async fn anchor_lean_lane(
     height: Height,
 ) -> eyre::Result<()> {
     use arc_consensus_types::block::commit_lanes;
-    const MAX_CATCH_UP: u64 = 100_000;
+    use arc_eth_engine::lean_shim::NewBlockStatus;
+    // Engine-API-shaped anchoring: feed what we have; a SYNCING answer (or a
+    // behind head with nothing to feed) means the NODE is backfilling itself
+    // from its peers — WAIT and re-poll instead of failing the height. The
+    // old fail-fast turned every transient lag into a "Decision failure,
+    // restarting height" loop whose delay made the validator late for its
+    // next proposer turn; the laggard role then migrated around the network
+    // (24-174 anchor failures/10min/validator, cadence 0.60 blk/s measured).
+    // CL-side peer-fetch stays only as a fallback for nodes without --peers.
+    const TOTAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+    const NODE_HEAL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+    const POLL: std::time::Duration = std::time::Duration::from_millis(150);
     let wait_start = std::time::Instant::now();
     let mut fed_from_peers = 0u64;
     let mut iterations = 0u64;
     loop {
         iterations += 1;
-        if iterations > MAX_CATCH_UP {
+        if wait_start.elapsed() > TOTAL_DEADLINE {
+            let head = shim.get_head().await.map(|h| h.number).unwrap_or(0);
             return Err(eyre!(
-                "lean lane: catch-up exceeded {MAX_CATCH_UP} blocks without reaching the \
-                 certified commitment — halting"
+                "lean lane: could not anchor height={height} within {TOTAL_DEADLINE:?} \
+                 (local lean head {head}, {fed_from_peers} peer blocks fed) — halting"
             ));
         }
         let head = shim.get_head().await.wrap_err("lean lane: get_head failed")?;
@@ -413,7 +425,7 @@ async fn anchor_lean_lane(
             if fed_from_peers > 0 || iterations > 2 {
                 info!(
                     "🪶 Lean lane anchored at height {height} after catch-up \
-                     ({fed_from_peers} blocks from peers) in {:?}",
+                     ({fed_from_peers} peer blocks, {iterations} polls) in {:?}",
                     wait_start.elapsed()
                 );
             } else {
@@ -428,23 +440,35 @@ async fn anchor_lean_lane(
         if let Some(lane) = stashed {
             if lane.decoded.parent == head.commitment {
                 match shim.new_block(&lane.bytes).await {
-                    Ok(_) => continue,
+                    Ok(NewBlockStatus::Valid(_)) => continue,
+                    Ok(NewBlockStatus::Syncing) => {
+                        tokio::time::sleep(POLL).await;
+                        continue;
+                    }
                     Err(e) => {
                         warn!("lean lane: stashed anchor failed ({e:#}); trying peer catch-up");
                     }
                 }
             }
         }
-        // Behind: fetch the next block from any peer lean node and ingest it
-        // (our node recomputes + verifies its commitment chain on ingest).
+        // Behind. Give the node its self-backfill grace window first; only
+        // then fall back to CL-side peer fetching (nodes without --peers).
+        if wait_start.elapsed() < NODE_HEAL_GRACE {
+            tokio::time::sleep(POLL).await;
+            continue;
+        }
         let next = head.number + 1;
         let mut fed = false;
         for peer in shim.peers() {
             match peer.get_block_bytes(next).await {
                 Ok(Some(bytes)) => match shim.new_block(&bytes).await {
-                    Ok(_) => {
+                    Ok(NewBlockStatus::Valid(_)) => {
                         fed = true;
                         fed_from_peers += 1;
+                        break;
+                    }
+                    Ok(NewBlockStatus::Syncing) => {
+                        fed = true; // node took it as a sync hint; re-poll
                         break;
                     }
                     Err(e) => {
@@ -458,11 +482,10 @@ async fn anchor_lean_lane(
             }
         }
         if !fed {
-            return Err(eyre!(
-                "lean lane: behind the certificate at height={height} (local lean head {}) \
-                 and no peer served block {next} — cannot anchor",
-                head.number
-            ));
+            // Nobody has it YET (peers' own decides may still be in flight,
+            // the exact race measured tonight) — wait out the deadline
+            // instead of failing the height immediately.
+            tokio::time::sleep(POLL).await;
         }
     }
 }

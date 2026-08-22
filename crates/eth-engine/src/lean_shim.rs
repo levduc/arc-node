@@ -32,6 +32,14 @@ pub struct LeanHead {
     pub timestamp_ms: u64,
 }
 
+/// Outcome of feeding a block: appended (Valid) or the node is behind and
+/// backfilling itself from its peers (Syncing — wait and re-poll the head).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewBlockStatus {
+    Valid(BlockHash),
+    Syncing,
+}
+
 impl LeanShim {
     pub fn new(url: impl Into<String>) -> Self {
         Self {
@@ -145,7 +153,14 @@ impl LeanShim {
 
     /// Validate + execute + append (idempotent by commitment). The decide
     /// anchor, the vote-gap feed, and the sync feed all come through here.
-    pub async fn new_block(&self, block_bytes: &[u8]) -> eyre::Result<BlockHash> {
+    ///
+    /// A node with self-backfill (--peers) answers an unknown-parent feed with
+    /// {"status":"SYNCING"} and heals itself in the background — the caller
+    /// waits and re-polls the head instead of treating it as failure (the
+    /// Engine-API SYNCING semantic; an errored feed here used to become a
+    /// "Decision failure, restarting height" loop that pinned cadence at
+    /// 0.60 blk/s while the laggard role migrated between validators).
+    pub async fn new_block(&self, block_bytes: &[u8]) -> eyre::Result<NewBlockStatus> {
         let r = self
             .call(
                 "arc_newBlock",
@@ -154,7 +169,16 @@ impl LeanShim {
                 }),
             )
             .await?;
-        Self::parse_commitment(&r)
+        if r.get("commitment").is_some() {
+            return Ok(NewBlockStatus::Valid(Self::parse_commitment(&r)?));
+        }
+        match r.get("status").and_then(|s| s.as_str()) {
+            Some("SYNCING") => Ok(NewBlockStatus::Syncing),
+            other => Err(eyre!(
+                "lean shim: newBlock response has neither commitment nor a \
+                 known status (status={other:?})"
+            )),
+        }
     }
 
     pub async fn get_head(&self) -> eyre::Result<LeanHead> {

@@ -475,7 +475,10 @@ pub async fn validate_consensus_block(
                             let mut advanced = false;
                             for peer in shim.peers() {
                                 if let Ok(Some(bytes)) = peer.get_block_bytes(next).await {
-                                    if shim.new_block(&bytes).await.is_ok() {
+                                    if matches!(
+                                        shim.new_block(&bytes).await,
+                                        Ok(arc_eth_engine::lean_shim::NewBlockStatus::Valid(_))
+                                    ) {
                                         advanced = true;
                                         fed += 1;
                                         break;
