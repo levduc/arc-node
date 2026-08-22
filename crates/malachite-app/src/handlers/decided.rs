@@ -82,11 +82,12 @@ pub async fn handle(
     // dropped — read them from the in-memory stash (written at get_value /
     // proposal assembly / sync). Missing after a mid-height restart -> decide
     // fails loudly and the height recovers via sync.
+    let decided_vid = certificate.value_id.block_hash();
     let lean_lane = state
         .lean_undecided
         .lock()
         .expect("lean_undecided mutex poisoned")
-        .get(&certificate.value_id.block_hash())
+        .get(&decided_vid)
         .cloned();
     let block = decide(
         block_finalizer,
@@ -107,11 +108,32 @@ pub async fn handle(
     match block {
         Ok((block, payment_payload)) => {
             info!("🟢 Successfully committed the decided value");
-            state
-                .lean_undecided
-                .lock()
-                .expect("lean_undecided mutex poisoned")
-                .clear();
+            {
+                // Remove only the decided entry. A full clear() here wiped
+                // already-validated NEXT-height stashes (validation of H+1
+                // overlaps decide(H) at sub-second heights), forcing every
+                // decide into the peer-fetch race — measured 2026-08-22:
+                // 24-133 anchor failures/10min per validator, each a
+                // "restarting height" retry whose delay burned ~7s round
+                // timeouts on the late validator's next proposer turn
+                // (cadence 0.58 blk/s vs 0.64s median height). Same bug
+                // class as fc10d3c (mem::take drained future candidates).
+                let mut stash = state
+                    .lean_undecided
+                    .lock()
+                    .expect("lean_undecided mutex poisoned");
+                stash.remove(&decided_vid);
+                // Losing candidates (other rounds' values) accumulate; bound
+                // the map with a safety valve far above any live window.
+                if stash.len() > 256 {
+                    warn!(
+                        "lean stash grew to {} entries — clearing (losing \
+                         candidates leak?)",
+                        stash.len()
+                    );
+                    stash.clear();
+                }
+            }
 
             let catch_up_threshold = state.env_config().sync_catch_up_threshold;
             let new_sync_state = sync_state(block.timestamp, catch_up_threshold);
