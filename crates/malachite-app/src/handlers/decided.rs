@@ -527,6 +527,7 @@ mod tests {
             execution_payload: test_execution_payload(height, timestamp),
             signature: Some(Signature::test()),
             payment_payload: None,
+            lean_payload: None,
         }
     }
 

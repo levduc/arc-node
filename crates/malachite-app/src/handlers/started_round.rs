@@ -385,6 +385,7 @@ mod tests {
             execution_payload: ExecutionPayloadV3::arbitrary(&mut u).unwrap(),
             signature: None,
             payment_payload: None,
+            lean_payload: None,
         }
     }
 

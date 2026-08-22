@@ -435,6 +435,7 @@ pub async fn build_block(
         execution_payload,
         signature: None,
         payment_payload,
+        lean_payload: None,
     })
 }
 

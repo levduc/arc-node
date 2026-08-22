@@ -150,6 +150,7 @@ mod tests {
             execution_payload: ExecutionPayloadV3::arbitrary(&mut u).unwrap(),
             signature: None,
             payment_payload: None,
+            lean_payload: None,
         }
     }
 
@@ -269,6 +270,7 @@ mod tests {
             execution_payload: payload,
             signature: None,
         payment_payload: None,
+        lean_payload: None,
         };
 
         let (raw_first, first_sig) = make_proposal_parts(&provider, &block, false).await.unwrap();

@@ -294,8 +294,20 @@ pub async fn assemble_block_from_parts(
         block_bytes.extend_from_slice(&part.bytes);
     }
 
-    let (execution_payload, payment_payload) = match unframe_lanes_any(&block_bytes)? {
-        LaneFrame::Full(evm, pay) => (evm, pay),
+    let (execution_payload, payment_payload, lean_payload) = match unframe_lanes_any(&block_bytes)? {
+        LaneFrame::Full(evm, pay) => (evm, pay, None),
+        LaneFrame::LeanPayment {
+            execution_payload,
+            lean,
+            lean_bytes,
+        } => {
+            // Already strictly decoded + commitment recomputed by unframe.
+            let lean = arc_consensus_types::block::LeanLanePayload {
+                decoded: lean,
+                bytes: lean_bytes,
+            };
+            (execution_payload, None, Some(lean))
+        }
         LaneFrame::CompactPayment {
             execution_payload,
             payment_header,
@@ -318,7 +330,7 @@ pub async fn assemble_block_from_parts(
                 proposer_rpc.as_deref(),
             )
             .await?;
-            (execution_payload, Some(payment))
+            (execution_payload, Some(payment), None)
         }
     };
 
@@ -331,6 +343,7 @@ pub async fn assemble_block_from_parts(
         execution_payload,
         signature: Some(parts.fin().signature),
         payment_payload,
+        lean_payload,
     };
 
     Ok(consensus_block)

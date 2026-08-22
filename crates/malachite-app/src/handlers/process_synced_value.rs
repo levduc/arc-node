@@ -157,6 +157,7 @@ async fn on_process_synced_value(
         validity: Validity::Valid,
         signature: None,
         payment_payload,
+        lean_payload: None,
     };
 
     // Sync path deliberately stays Gated (full re-execution): it is off the live
@@ -704,6 +705,7 @@ mod tests {
             validity: Validity::Valid,
             signature: None,
         payment_payload: None,
+        lean_payload: None,
         };
 
         // Engine validation still runs once (defense in depth on the synced
