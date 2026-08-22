@@ -520,6 +520,49 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**🌙 OVERNIGHT CAMPAIGN 1 (2026-08-22, branch `lean-lane-integration`, commit `da922f2`): N-SWEEP
+MEASURED + 4 LIVENESS BUGS FOUND & FIXED + 4h EVM-load soak clean.**
+- **N-SWEEP (single box, 300M budget, governed feeders, all arms budget-full 97-100%):**
+  N=1: 0.30 blk/s, 3,461 tx/s = 3,461 outputs/s, 11,538 txs/blk (exactly 300M/26k) ·
+  N=10: 0.39 blk/s, 1,692 tx/s, **16,224 outputs/s**, 41,720 outs/blk ·
+  N=50: 0.42 blk/s, 646 tx/s, **22,618 outputs/s**, 53,570 outs/blk. Fan-out delivers 6.5×
+  outputs at 5.4× LESS admission; cadence IMPROVES with N (fewer sigs/output). Single-box
+  cadence (0.3-0.42) is the only limiter → at fleet 2 blk/s, N=50 extrapolates ~107k outputs/s.
+- **4 LIVENESS BUGS (all measured live, fixes in `da922f2`, 268 lib tests green):**
+  (1) transient lean-node unreachability recorded INVALID; malachite's valid-round rule
+  re-proposes certified values UN-revalidated → one ~10s restart = permanent 0-precommit
+  deadlock (h3446). Fix: shim retries transport ~15s (30×500ms); past that return Err
+  (no verdict), never Invalid. (2) lean catch-up only fired at decide; a lagging validator
+  can't vote → no decide → no catch-up (2 validators 1 block behind = permanent 40/80-nil
+  stall at h3499). Fix: validation-time peer catch-up before the verdict. (3) sync serving's
+  offset mapping (head-(latest-h)) used a mid-recovery head → served wrong lean blocks →
+  every height failed the cert ship-check → SKIPPED silently → syncing peer starved on empty
+  responses. Fix: verify mapping against the height's certificate + scan ±128 for the true
+  block; EVM-only heights (cert binds no lean) detected via commit_lanes(evm,None)==vid.
+  (4) harness: ungoverned feeder blast (pool_target > the 51.2k slot cap) → eviction
+  nonce-gaps → 40k queued-forever + tiny blocks. Fix: rate 2500/s, target 30k.
+- **STAGGERED lean restarts under a LIVE chain now heal cleanly** (validated post-fix: 4
+  sequential restarts, zero stall — the identical operation pre-fix wedged the chain).
+- **4h SOAK (fixed image): 48/48 5-min slices healthy, 12/12 containers, perfect 4/4 lean
+  lockstep, ZERO monitor heals.** CAVEAT: EVM lane carried its full 200 tx/s × 14,400s
+  (2.88M txs) but lean spammers died ~15min in (-32000 = replacement-underpriced vs N-sweep
+  pool leftovers at same nonces) → lean lane idle for most of the window. LEG 2 relaunched
+  with pools wiped + a 2-min landing gate (52,638 lean txs/20 blks PASS).
+- **OPS RULES BANKED:** (a) leftover pool txs poison the NEXT load phase (same-nonce
+  replacements rejected underpriced) — wipe pools (staggered lean restarts) between phases;
+  (b) SPAM_DUMP_FILE writes <path>.<PID> — merge before feeding; (c) never sample chain
+  height from one node: val1 was 50+ behind while the chain moved (the value-sync-laggard
+  landmine, again); (d) all-4-at-once lean restarts are the deadlock trigger — always stagger.
+- **Self-healing monitor** (/tmp/overnight/monitor.py): 5-min checks, 30-min report lines,
+  heals dead lean node (staggered) / lean lag>5 (peer-feed equalize) / EVM stall / lean
+  freeze (equalize + rolling CL restart), each ≤1 per cooldown, all logged.
+- **FORK DEEP PRUNE LANDED** (~/reth-fork `lean-prune` `4e6ee48`): 43→29 crates, 13M→6.7M,
+  MDBX/C toolchain GONE — LeanProvider (~430 lines: basic_account + chain_spec real,
+  trie/proof methods fail loudly) replaced MockEthProvider; storage stack survived only as
+  dev-deps of vendored test suites. All gates green incl. byte-identical gen_vector.
+- Idle cadence on the fresh chain read ~0.53 blk/s (below the 2/s pacer even unloaded) —
+  UNINVESTIGATED, morning question.
+
 **🎉 I4 FIRST LIGHT PASS (2026-08-22): 7,429 outputs/s THROUGH MALACHITE at just 743 tx/s
 admission — 4/4 identical lean commitments, zero rejects (single box, N=10 smoke, 594k
 outputs/80s).** Boot: lean-i4.sh scratchpad (demo-metamask + 4 host lean nodes --shim
