@@ -720,11 +720,17 @@ impl App {
         // LEAN payment lane (ARC_PAYMENT_LEAN_LANE): the payment lane is a lean
         // lane node driven via the CL shim instead of a reth EL. Mutually
         // exclusive with a reth payment engine — refuse a half-configured boot.
+        let payment_engine = if env_config.payment_lean_lane {
+            None
+        } else {
+            payment_engine
+        };
         let lean_shim = if env_config.payment_lean_lane {
             if payment_engine.is_some() {
-                eyre::bail!(
-                    "ARC_PAYMENT_LEAN_LANE=1 but a reth payment engine is also configured; \
-                     the payment lane must be exactly one of the two"
+                tracing::warn!(
+                    "ARC_PAYMENT_LEAN_LANE=1: IGNORING the configured reth payment engine — \
+                     the lean lane replaces it (existing scenarios boot unmodified; their \
+                     pay ELs idle)"
                 );
             }
             let shim = arc_eth_engine::lean_shim::LeanShim::new(env_config.payment_lean_rpc.clone());
