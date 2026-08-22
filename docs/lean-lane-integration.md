@@ -6,6 +6,42 @@ reth EL with the lean lane node (687k outputs/s standalone; block = {parent, num
 ts_ms, txs}, commitment = keccak chain — no Ethereum header), behind one experiment flag,
 consensus-carried end to end on the 4-validator fleet.
 
+## Shim contract v1.1 (2026-08-22, post-hardening — the plug-and-play boundary)
+
+The CL is a thin client of FOUR verbs; ALL recovery machinery lives in the node
+(user directive: robust EL, minimal CL, swappable):
+
+- `arc_buildBlock{parentCommitment,number,timestampMs,budgetGas}` -> `{commitment, blockBytes}`
+- `arc_newBlock{blockBytes}` -> `{"status":"VALID","commitment"}` (applied or already known)
+  or `{"status":"SYNCING","number":<local head>}` (queued; node backfills itself from
+  --peers and applies when the gap closes). Malformed bytes / conflicting block at a
+  known height = JSON-RPC error (protocol violation, not lag).
+- `arc_getHead` -> `{commitment,number,timestampMs}`
+- `arc_getBlockBytes{number}` -> `{blockBytes|null}`
+
+Node-side robustness (v1.1, fork `50f0039`): push-on-append gossip to peers,
+SYNCING queue (bounded 512), background peer backfill, append-only log + snapshots
+(restart = snapshot + replay, ~10s at 200k txs).
+
+CL-side semantics (arc `da922f2..7f18196`), the FULL lean delta, flag-gated
+ARC_PAYMENT_LEAN_LANE (default off = stock byte-identical):
+1. Transport errors retried ~15s; past that = NO VERDICT (Err), never Invalid —
+   a recorded Invalid sticks to a certified value forever (valid-round rule).
+2. Validation tip test (parent==head && number==head+1) applies ONLY when
+   number==head+1. number<=head = HISTORIC (sync replay while our consensus lags
+   a self-healed node): valid iff byte-identical to our canonical block at that
+   number. number>head+1 = we are behind: bounded peer catch-up, else Nil.
+3. Decide anchor: wait-and-poll (30s deadline, SYNCING-aware); historic no-op
+   when the cert binds an already-canonical block; stash removes only the
+   decided entry (a full clear wiped next-height stashes = anchor races).
+4. Sync serving verifies the offset-mapped lean block against the height's
+   certificate and scans outward; EVM-only heights detected via
+   commit_lanes(evm,None)==value_id.
+
+CANDIDATE REMOVALS once v1.1 soaks clean (shrink the CL delta further): the
+validation-time catch-up loop and the anchor's CL-side peer-fetch fallback —
+both exist only to compensate for a node that could not heal itself.
+
 ## Why this composes cleanly with what exists
 
 The deferred-exec CL already votes on STRUCTURE and executes in the vote gap. The lean
