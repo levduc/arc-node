@@ -585,6 +585,22 @@ ceiling, in-EL contention) was the binding term — this moves it off the voters
   scratchpad v3fix-resume.sh — FOLD INTO demo-fleet-metamask's val3 leg); val1_el_pay's
   *_el_pay glob re-swept the builder into its mesh at every launch (unpeer step is part of
   the pipeline now; harmless mid-run given --disable-tx-gossip).
+- **MULTI-SOURCE + DEADLINE ARMS (2026-08-22 early):** 3-machine gentle ingress (laptop 12k +
+  ginnythui 6k + alien2 6k caps): landed ~9k with builder pool PINNED at 90k target the whole
+  window → **sustained = mining = cadence × prebuild fullness; delivery was NEVER the limit**
+  (daemon-ceiling theory falsified). Gentler streams RAISED hits (90/80/67/55%). Avg hit-block
+  ~6.1k/14,285 txs ≈ a 150ms build's packing → tried BUILDER_DEADLINE 300ms: WORSE (landed
+  3.5-7.5k, fullness 14-33%, hits unchanged) — under concurrent admission the build iterator
+  crawls; longer deadline = more crawling, not more txs (the 6-10× build-ingress inflation).
+  REVERTED to 150ms. **Standing sustained record: 9.0-9.6k @300M** (raw fetch + multi-source).
+  20k goes through: wired builder link, lean/FIFO pool (WS4), fan-out type — not knobs.
+- **LEAN FAN-OUT INCREMENT 2a DONE (agent, ~/reth-fork `lean-native-transfer` c6a54ad):**
+  wire v2 = 72+28N (u64 gwei amounts; type byte 0x50 carries version): **35.2 B/output @N=10
+  (3.47×), 28.7 @N=100 (4.25×)**; canonical bytes = 2718 bytes, decode-once w/ retained raw
+  (later encodes = memcpy; RLP = passthrough); **ZERO reth source edits** (stock pool
+  `with_custom_tx_type(0x50)`); 21 tests through real Pool incl. rejects; full workspace
+  check green; fee = (21000+5000N)×1gwei. 0.9MB block ≈ 25.6k outputs @N=10. 2b (execution+
+  receipts) deliberately deferred. ~/reth-fork/CLAUDE.md is current for fresh sessions.
 - **LEAN NATIVE-TRANSFER TYPE — INCREMENT 1 DONE (2026-08-21, agent, ~/reth-fork branch
   `lean-native-transfer` commit `9ab4a08`, arc repo untouched):** fan-out native transfer
   (1 sig → N recipients), fixed-width no-RLP codec + serial/parallel executors +
