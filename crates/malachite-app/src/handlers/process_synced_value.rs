@@ -263,10 +263,20 @@ async fn on_process_synced_value(
                  (expected only under deferred exec on a byzantine payload)",
                 existing.validity,
             );
-            debug_assert!(
-                !(existing.validity == Validity::Invalid && validity == Validity::Valid),
-                "stored Invalid but engine says Valid at height={height} — this is a bug"
-            );
+            // Stored-Invalid vs engine-Valid is NOT necessarily a bug: a
+            // validation-code fix legitimately flips verdicts that an older
+            // binary persisted (measured 2026-08-22: pre-fix tip-linkage
+            // rejected historic lean replays; the stored Invalid then
+            // panicked every post-fix boot — a poisoned verdict outliving
+            // its bug). The certificate is the authority (2/3+ committed
+            // this value); trust the FRESH verdict and say so loudly.
+            if existing.validity == Validity::Invalid && validity == Validity::Valid {
+                tracing::error!(
+                    %height, %round, %block_hash,
+                    "stored Invalid flipped to Valid by current validation — \
+                     stale verdict from an older binary; proceeding with Valid"
+                );
+            }
         }
         // Return the FRESH block's proposal, not the stored copy: the SSZ store
         // drops lean bytes, so `existing.value_id()` collapses to the EVM hash
