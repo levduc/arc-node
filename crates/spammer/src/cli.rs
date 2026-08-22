@@ -106,6 +106,9 @@ pub struct SpammerArgs {
     /// Size of transaction input data in bytes
     #[clap(short = 's', long, default_value_t = defaults::TX_INPUT_SIZE, global = true)]
     pub tx_input_size: usize,
+    /// Recipients per lean fan-out tx (used when --mix includes fanout=..)
+    #[clap(long, default_value_t = 10, global = true)]
+    pub fanout_outputs: usize,
     /// Every transfer pays a brand-new recipient address (creates a new account per tx)
     #[clap(long, default_value_t = false, global = true)]
     pub fresh_recipients: bool,
@@ -243,6 +246,7 @@ impl SpammerArgs {
         flag!(args, "--pool-target", self.pool_target, 0);
         flag!(args, "-t", self.time, defaults::TIME);
         flag!(args, "-s", self.tx_input_size, defaults::TX_INPUT_SIZE);
+        flag!(args, "--fanout-outputs", self.fanout_outputs, 10);
         flag!(
             args,
             "-x",
@@ -363,6 +367,7 @@ impl SpammerArgs {
             pool_target: self.pool_target,
             max_time: self.time,
             tx_input_size: self.tx_input_size,
+            fanout_outputs: self.fanout_outputs,
             fresh_recipients: self.fresh_recipients,
             recipient_pool: self.recipient_pool.as_ref().map(|v| {
                 let (b, z) = v.split_once(':').expect("--recipient-pool needs base:size");
@@ -405,6 +410,7 @@ mod tests {
             chain_id: 1337,
             time: defaults::TIME,
             tx_input_size: defaults::TX_INPUT_SIZE,
+            fanout_outputs: 10,
             fresh_recipients: false,
             recipient_pool: None,
             max_txs_per_account: defaults::MAX_TXS_PER_ACCOUNT,

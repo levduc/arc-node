@@ -225,6 +225,9 @@ pub enum TxType {
     Erc20,
     /// Call to the GasGuzzler contract (function selected by `--guzzler-fn-weights`).
     Guzzler,
+    /// Lean fan-out native transfer (tx type 0x50, 1 sig -> N recipients) for
+    /// the lean payment lane. Wire format mirrored from ~/reth-fork lean-native.
+    Fanout,
 }
 
 /// Relative weights for blending transaction types via `--mix`.
@@ -238,20 +241,22 @@ pub struct TxTypeMix {
     pub legacy: u32,
     pub erc20: u32,
     pub guzzler: u32,
+    pub fanout: u32,
 }
 
 impl TxTypeMix {
-    pub fn buckets(&self) -> [(TxType, u32); 4] {
+    pub fn buckets(&self) -> [(TxType, u32); 5] {
         [
             (TxType::Transfer, self.transfer),
             (TxType::Legacy, self.legacy),
             (TxType::Erc20, self.erc20),
             (TxType::Guzzler, self.guzzler),
+            (TxType::Fanout, self.fanout),
         ]
     }
 
     pub fn total_weight(&self) -> u32 {
-        self.transfer + self.legacy + self.erc20 + self.guzzler
+        self.transfer + self.legacy + self.erc20 + self.guzzler + self.fanout
     }
 }
 
@@ -278,9 +283,10 @@ impl FromStr for TxTypeMix {
                 "legacy" => out.legacy = weight,
                 "erc20" => out.erc20 = weight,
                 "guzzler" => out.guzzler = weight,
+                "fanout" => out.fanout = weight,
                 _ => {
                     return Err(format!(
-                        "Unknown tx type '{raw_key}'. Valid keys: transfer, legacy, erc20, guzzler"
+                        "Unknown tx type '{raw_key}'. Valid keys: transfer, legacy, erc20, guzzler, fanout"
                     ))
                 }
             }
@@ -313,6 +319,8 @@ pub struct Config {
     pub max_time: u64,
     /// Size of transaction input data in bytes
     pub tx_input_size: usize,
+    /// Recipients per lean fan-out tx (tx type 0x50, --mix fanout=..)
+    pub fanout_outputs: usize,
     pub fresh_recipients: bool,
     pub recipient_pool: Option<(u64, u64)>,
     /// Maximum number of transactions to send per account (0 for no limit)
@@ -449,6 +457,7 @@ mod tests {
             recipient_pool: None,
             max_time: 0,
             tx_input_size: 0,
+            fanout_outputs: 10,
             max_txs_per_account: 0,
             silent: false,
             show_pool_status: false,
@@ -529,6 +538,7 @@ mod tests {
                 legacy: 0,
                 erc20: 0,
                 guzzler: 0,
+                fanout: 0,
             },
             ..default_config()
         };

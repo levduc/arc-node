@@ -24,6 +24,7 @@ mod accounts;
 mod cli;
 mod config;
 mod erc20;
+pub mod lean;
 mod generator;
 pub use generator::set_chain_id;
 mod latency;

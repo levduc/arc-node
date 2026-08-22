@@ -20,6 +20,7 @@ use alloy_signer::Signer;
 use alloy_signer_local::LocalSigner;
 use alloy_sol_types::{sol, SolCall};
 use color_eyre::eyre::{self, Result};
+use alloy_eips::eip2718::Encodable2718;
 use k256::ecdsa::SigningKey;
 use rand::Rng;
 use serde_json::json;
@@ -40,6 +41,38 @@ static CHAIN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 /// Set once at startup from --chain-id before any generator runs.
 pub fn set_chain_id(id: u64) { CHAIN_ID.store(id, std::sync::atomic::Ordering::Relaxed); }
 pub(crate) fn testnet_chain_id() -> u64 { CHAIN_ID.load(std::sync::atomic::Ordering::Relaxed) }
+
+/// A generated, signed transaction ready for dispatch. Standard types travel as
+/// alloy envelopes; the lean fan-out (0x50) travels as its canonical raw bytes
+/// (its wire format is not representable as an alloy `TxEnvelope`).
+#[derive(Clone, Debug)]
+pub enum SpamTx {
+    Envelope(TxEnvelope),
+    Lean(Vec<u8>),
+}
+
+impl SpamTx {
+    /// Nonce accessor for tests (envelope variants only).
+    #[cfg(test)]
+    pub(crate) fn nonce(&self) -> u64 {
+        match self {
+            SpamTx::Envelope(env) => alloy_consensus::Transaction::nonce(env),
+            SpamTx::Lean(bytes) => u32::from_le_bytes(bytes[1..5].try_into().unwrap()) as u64,
+        }
+    }
+
+    /// EIP-2718 bytes for dispatch; tx hash = keccak of these on both paths.
+    pub fn to_2718_bytes(&self) -> Vec<u8> {
+        match self {
+            SpamTx::Envelope(env) => {
+                let mut buf = Vec::with_capacity(env.encode_2718_len());
+                env.encode_2718(&mut buf);
+                buf
+            }
+            SpamTx::Lean(bytes) => bytes.clone(),
+        }
+    }
+}
 
 /// Max fee per gas (in wei) used for all generated transactions.
 ///
@@ -92,10 +125,11 @@ pub(crate) struct TxGenerator {
     ws_client_builders: Vec<WsClientBuilder>,
     /// Channel to send signed txs to a separate `TxSender` task (fire-and-forget mode).
     /// `None` in backpressure mode, where the sender owns the generator directly.
-    tx_sender: Option<Sender<TxEnvelope>>,
+    tx_sender: Option<Sender<SpamTx>>,
     max_txs_per_account: u64,
     query_latest_nonce: bool,
     tx_input_size: usize,
+    fanout_outputs: usize,
     fresh_recipients: bool,
     recipient_pool: Option<(u64, u64)>,
     fresh_ctr: std::sync::atomic::AtomicU64,
@@ -129,7 +163,7 @@ impl TxGenerator {
         signers_range: Range<usize>,
         account_builder: AccountBuilder,
         ws_client_builders: Vec<WsClientBuilder>,
-        tx_sender: Option<Sender<TxEnvelope>>,
+        tx_sender: Option<Sender<SpamTx>>,
         max_txs_per_account: u64,
         query_latest_nonce: bool,
         tx_input_size: usize,
@@ -138,6 +172,7 @@ impl TxGenerator {
         guzzler_fn_weights: GuzzlerFnWeights,
         erc20_fn_weights: Erc20FnWeights,
         tx_type_mix: TxTypeMix,
+        fanout_outputs: usize,
     ) -> Self {
         let size = signers_range.len();
         Self {
@@ -151,6 +186,7 @@ impl TxGenerator {
             max_txs_per_account,
             query_latest_nonce,
             tx_input_size,
+            fanout_outputs,
             fresh_recipients,
             recipient_pool,
             fresh_ctr: std::sync::atomic::AtomicU64::new(
@@ -224,7 +260,7 @@ impl TxGenerator {
     }
 
     /// Replace the tx channel sender, used when reusing a generator across phases.
-    pub(crate) fn reset_tx_sender(&mut self, sender: Sender<TxEnvelope>) {
+    pub(crate) fn reset_tx_sender(&mut self, sender: Sender<SpamTx>) {
         self.tx_sender = Some(sender);
         // Clear stale connections so init() rebuilds them on the next run.
         self.ws_clients = None;
@@ -447,7 +483,7 @@ impl TxGenerator {
     /// have hit `max_txs_per_account`. The nonce is NOT incremented; the
     /// caller must call `ack_nonce(account_index)` after the transaction is
     /// accepted.
-    pub async fn next_tx(&mut self) -> Result<Option<(TxEnvelope, usize)>> {
+    pub async fn next_tx(&mut self) -> Result<Option<(SpamTx, usize)>> {
         self.init().await?;
 
         let num_accounts = self.signers.len();
@@ -526,13 +562,14 @@ impl TxGenerator {
                 TxType::Legacy => {
                     let tx = self.make_legacy_tx(next_nonce);
                     let sig = signer.sign_hash(&tx.signature_hash()).await?;
-                    TxEnvelope::Legacy(tx.into_signed(sig))
+                    SpamTx::Envelope(TxEnvelope::Legacy(tx.into_signed(sig)))
                 }
                 TxType::Transfer => {
                     let tx = self.make_eip1559_tx(next_nonce);
                     let sig = signer.sign_hash(&tx.signature_hash()).await?;
-                    TxEnvelope::Eip1559(tx.into_signed(sig))
+                    SpamTx::Envelope(TxEnvelope::Eip1559(tx.into_signed(sig)))
                 }
+                TxType::Fanout => self.make_fanout_tx(next_nonce, signer)?,
                 TxType::Erc20 => {
                     let recipient = erc20_recipient.expect("resolved above for TxType::Erc20");
                     let function =
@@ -547,7 +584,7 @@ impl TxGenerator {
                     )
                     .await?;
                     let sig = signer.sign_hash(&tx.signature_hash()).await?;
-                    TxEnvelope::Eip1559(tx.into_signed(sig))
+                    SpamTx::Envelope(TxEnvelope::Eip1559(tx.into_signed(sig)))
                 }
                 TxType::Guzzler => {
                     let (guzzler_function, base_arg) =
@@ -563,7 +600,7 @@ impl TxGenerator {
                     )
                     .await?;
                     let sig = signer.sign_hash(&tx.signature_hash()).await?;
-                    TxEnvelope::Eip1559(tx.into_signed(sig))
+                    SpamTx::Envelope(TxEnvelope::Eip1559(tx.into_signed(sig)))
                 }
             };
 
@@ -876,6 +913,31 @@ impl TxGenerator {
         }
     }
 
+    /// Build + sign a lean fan-out native transfer (tx type 0x50) — one
+    /// signature, `fanout_outputs` recipients of 1 gwei-unit each. Recipients
+    /// reuse `transfer_recipient` (pool walk / fresh / synthetic), with a
+    /// per-output salt so the default mode yields distinct addresses.
+    fn make_fanout_tx(
+        &self,
+        nonce: u64,
+        signer: &LocalSigner<SigningKey>,
+    ) -> Result<SpamTx> {
+        let nonce32: u32 = nonce
+            .try_into()
+            .map_err(|_| eyre::eyre!("fanout: nonce {nonce} exceeds u32 (lean wire nonce)"))?;
+        let n = self.fanout_outputs.max(1);
+        let outputs: Vec<(Address, u64)> = (0..n)
+            .map(|k| {
+                let salt = nonce.wrapping_mul(1_000_003).wrapping_add(k as u64);
+                (self.transfer_recipient(salt), 1u64)
+            })
+            .collect();
+        let domain = crate::lean::lane_domain(testnet_chain_id());
+        let (bytes, _hash) =
+            crate::lean::build_fanout_tx(nonce32, &outputs, signer.credential(), &domain);
+        Ok(SpamTx::Lean(bytes))
+    }
+
     /// Create a new EIP-1559 transaction.
     fn make_eip1559_tx(&self, nonce: u64) -> TxEip1559 {
         let input = Bytes::from(vec![0u8; self.tx_input_size]);
@@ -944,7 +1006,7 @@ mod tests {
     fn make_generator(
         start: usize,
         end: usize,
-        tx_sender: Option<Sender<TxEnvelope>>,
+        tx_sender: Option<Sender<SpamTx>>,
         max_txs_per_account: u64,
     ) -> TxGenerator {
         let account_builder = AccountBuilder::new(TEST_MNEMONIC.to_string(), 0);
@@ -968,6 +1030,7 @@ mod tests {
                 transfer: 100,
                 ..Default::default()
             },
+            10,
         )
     }
 
@@ -985,7 +1048,7 @@ mod tests {
             (900, 1000, 1000),
         ];
         for (start, end, channel_capacity) in test_cases {
-            let (tx_sender, mut tx_receiver) = mpsc::channel::<TxEnvelope>(channel_capacity);
+            let (tx_sender, mut tx_receiver) = mpsc::channel::<SpamTx>(channel_capacity);
             let mut generator = make_generator(start, end, Some(tx_sender), 0);
 
             // When we run the generator briefly to fill up the channel
@@ -998,6 +1061,9 @@ mod tests {
             let mut per_sender_counts: HashMap<Address, usize> = HashMap::new();
             let mut counter = 0usize;
             while let Ok(envelope) = tx_receiver.try_recv() {
+                let SpamTx::Envelope(envelope) = envelope else {
+                    panic!("test mix generates only envelope txs");
+                };
                 let sender = envelope.recover_signer().expect("recover signer");
                 *per_sender_counts.entry(sender).or_default() += 1;
                 counter += 1;
@@ -1083,11 +1149,12 @@ mod tests {
                 legacy: 100,
                 ..Default::default()
             },
+            10,
         );
 
         let (envelope, _) = generator.next_tx().await?.expect("legacy tx");
         assert!(
-            matches!(envelope, TxEnvelope::Legacy(_)),
+            matches!(envelope, SpamTx::Envelope(TxEnvelope::Legacy(_))),
             "expected Legacy envelope, got {:?}",
             envelope
         );

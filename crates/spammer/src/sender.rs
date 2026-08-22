@@ -53,6 +53,7 @@ use tokio::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 use crate::generator::TxGenerator;
+use crate::generator::SpamTx;
 use crate::latency::{compute_tx_hash, timestamp_now, TxSubmitted};
 use crate::rate_limiter::RateLimiter;
 use crate::ws::{is_connection_error, WsClient, WsClientBuilder};
@@ -79,7 +80,7 @@ pub(crate) struct TxSenderConfig {
 pub(crate) enum TxSource {
     /// Fire-and-forget: receives txs from a separate generator task via channel.
     Channel {
-        rx: Receiver<TxEnvelope>,
+        rx: Receiver<SpamTx>,
         wait_response: bool,
     },
     /// Backpressure: owns the generator directly, waits for each response.
@@ -129,7 +130,7 @@ impl TxSender {
     pub async fn new_channel(
         id: usize,
         ws_client_builders: Vec<WsClientBuilder>,
-        tx_receiver: Receiver<TxEnvelope>,
+        tx_receiver: Receiver<SpamTx>,
         result_sender: Sender<Result<u64>>,
         rate_limiter: Arc<RateLimiter>,
         config: TxSenderConfig,
@@ -307,12 +308,10 @@ impl TxSender {
     /// A `request_id` of 0 means the error was already reported to the tracker.
     async fn dispatch_raw_tx(
         &mut self,
-        tx: TxEnvelope,
+        tx: SpamTx,
     ) -> Result<(u64, usize, u64, alloy_primitives::B256)> {
-        let tx_len = tx.encode_2718_len();
-
-        let mut buf = Vec::with_capacity(tx_len);
-        tx.encode_2718(&mut buf);
+        let buf = tx.to_2718_bytes();
+        let tx_len = buf.len();
 
         let tx_hash = compute_tx_hash(&buf);
         let payload = format!("0x{}", hex::encode(buf));
@@ -375,7 +374,7 @@ impl TxSender {
     /// result is successful. With `wait_response` enabled, this means only
     /// transactions accepted by the node are tracked. Without it, the node's
     /// response is not checked, so rejected transactions may still be tracked.
-    async fn send(&mut self, tx: TxEnvelope, wait_response: bool) -> Result<()> {
+    async fn send(&mut self, tx: SpamTx, wait_response: bool) -> Result<()> {
         // Capture timestamp before sending for accurate latency measurement
         let submitted_time = timestamp_now();
         let (request_id, node_idx, tx_len, tx_hash) = self.dispatch_raw_tx(tx).await?;
@@ -420,7 +419,7 @@ impl TxSender {
     /// Reports to result tracker in all cases. When latency tracking is
     /// enabled, records a [`TxSubmitted`] event on acceptance so the
     /// tracker can correlate submit time with finalized inclusion.
-    async fn send_and_wait(&mut self, tx: TxEnvelope) -> Result<SendOutcome> {
+    async fn send_and_wait(&mut self, tx: SpamTx) -> Result<SendOutcome> {
         let submitted_time = timestamp_now();
         let (request_id, node_idx, tx_len, tx_hash) = self.dispatch_raw_tx(tx).await?;
 
