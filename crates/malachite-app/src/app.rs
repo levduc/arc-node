@@ -165,6 +165,7 @@ async fn handle_consensus(
                 state,
                 engine,
                 payment_engine,
+                lean_shim,
                 height,
                 round,
                 proposer,
