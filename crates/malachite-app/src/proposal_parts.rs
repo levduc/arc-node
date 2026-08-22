@@ -138,11 +138,17 @@ pub async fn make_proposal_parts(
 
     // Framed payload bytes: [u64-LE len(evm)] [evm SSZ] [payment SSZ (optional)].
     // The length prefix lets the decoder split the two lanes; absent payment lane => no trailer.
-    let data = match (compact_payment, block.payment_payload.as_ref()) {
-        (true, Some(payment)) => {
-            arc_consensus_types::block::frame_lanes_compact(&block.execution_payload, payment)
+    let data = if let Some(lean) = block.lean_payload.as_ref() {
+        // Lean lane (ARC_PAYMENT_LEAN_LANE): the payment section is the raw
+        // lean block bytes; receivers strict-decode + recompute the commitment.
+        arc_consensus_types::block::frame_lanes_lean(&block.execution_payload, &lean.bytes)
+    } else {
+        match (compact_payment, block.payment_payload.as_ref()) {
+            (true, Some(payment)) => {
+                arc_consensus_types::block::frame_lanes_compact(&block.execution_payload, payment)
+            }
+            _ => frame_lanes(&block.execution_payload, block.payment_payload.as_ref()),
         }
-        _ => frame_lanes(&block.execution_payload, block.payment_payload.as_ref()),
     };
 
     // Init
@@ -761,6 +767,64 @@ mod tests {
 
         let assembled = assemble_block_from_parts(&parts, None, None).await.unwrap();
         assert_eq!(assembled.valid_round, Round::Nil);
+    }
+
+    /// LEAN lane wire round-trip: a block carrying lean_payload must stream via
+    /// frame_lanes_lean and assemble back byte-identical, with the SAME value_id
+    /// (= keccak(evm_hash ‖ recomputed lean commitment)) on both ends.
+    #[tokio::test]
+    async fn assemble_block_round_trips_lean_payment() {
+        use arc_consensus_types::block::LeanLanePayload;
+        // Canonical lean block bytes: 1 tx of 4 bytes on a synthetic parent.
+        let mut lb = Vec::new();
+        lb.extend_from_slice(alloy_primitives::B256::repeat_byte(0xAB).as_slice());
+        lb.extend_from_slice(&5u64.to_le_bytes());
+        lb.extend_from_slice(&123_456u64.to_le_bytes());
+        lb.extend_from_slice(&1u32.to_le_bytes());
+        lb.extend_from_slice(&4u32.to_le_bytes());
+        lb.extend_from_slice(&[0x50, 0x01, 0x02, 0x03]);
+        let lean = LeanLanePayload::new(lb).expect("valid lean bytes");
+
+        let evm_payload = crate::block::tests_payload_helper(0x11, vec![]);
+        let (keys, _) = make_validator_set(1);
+        let signing_key = &keys[0];
+        let proposer = Address::from_public_key(&signing_key.public_key());
+
+        let block = ConsensusBlock {
+            height: Height::new(9),
+            round: Round::new(0),
+            valid_round: Round::Nil,
+            proposer,
+            validity: Validity::Valid,
+            execution_payload: evm_payload.clone(),
+            signature: None,
+            payment_payload: None,
+            lean_payload: Some(lean.clone()),
+        };
+
+        let provider = LocalSigningProvider::new(signing_key.clone());
+        let (raw_parts, _sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
+        let parts = ProposalParts::new(raw_parts).unwrap();
+
+        let assembled = assemble_block_from_parts(&parts, None, None).await.unwrap();
+        let assembled_lean = assembled.lean_payload.as_ref().expect("lean lane survives");
+        assert_eq!(assembled_lean.bytes, lean.bytes, "lean bytes byte-identical");
+        assert_eq!(
+            assembled_lean.commitment(),
+            lean.commitment(),
+            "recomputed commitment identical"
+        );
+        assert_eq!(assembled.payment_payload, None);
+        assert_eq!(
+            assembled.value_id(),
+            block.value_id(),
+            "value_id identical across the wire"
+        );
+        assert_ne!(
+            assembled.value_id(),
+            assembled.block_hash(),
+            "value_id must bind the lean lane, not collapse to the EVM hash"
+        );
     }
 
     /// Dual-EL: a block carrying BOTH an EVM and a payment payload must round-trip
