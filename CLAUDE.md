@@ -594,6 +594,17 @@ ceiling, in-EL contention) was the binding term — this moves it off the voters
   crawls; longer deadline = more crawling, not more txs (the 6-10× build-ingress inflation).
   REVERTED to 150ms. **Standing sustained record: 9.0-9.6k @300M** (raw fetch + multi-source).
   20k goes through: wired builder link, lean/FIFO pool (WS4), fan-out type — not knobs.
+- **🎯 LEAN LANE NODE (increment 2b', agent, ~/reth-fork `29179e3`): 687,056 outputs/s
+  sustained (18.6k tx/s @ avg N=37), INGRESS-BOUND — single-threaded loop ceiling ~600k+.**
+  "reth as a mempool library": stock 2a pool unmodified + fan-out total-STF executor on a
+  flat map + append-only log w/ snapshots + derived receipts + arc_sendRawTxBatch (23k tx/s
+  offered through it). NO header/roots: commitment = keccak(parent‖number‖ts‖txs-hash).
+  Product config 150M/250ms: 105,762 outputs/s budget-bound, ~1.6µs/output. Per-stage vs
+  ledger: admission 1.08µs/out (33µs/tx ecrecover), execute 0.08-0.13 (7-13µs/tx), append+
+  fsync 0.04-0.13 (44µs/tx persist), log 30.1B/out (122B). Recovery 2.22M outputs/2.5s
+  digest-verified; crash gates green. 23 tests, workspace check green. CL shim SPECIFIED
+  not built (buildBlock/newBlock/getHead + value_id binding + deferred composition —
+  LEAN-NATIVE.md). Caveats: standalone/no consensus, one box, avg-N=37.
 - **LEAN FAN-OUT INCREMENT 2a DONE (agent, ~/reth-fork `lean-native-transfer` c6a54ad):**
   wire v2 = 72+28N (u64 gwei amounts; type byte 0x50 carries version): **35.2 B/output @N=10
   (3.47×), 28.7 @N=100 (4.25×)**; canonical bytes = 2718 bytes, decode-once w/ retained raw
