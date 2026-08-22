@@ -135,6 +135,11 @@ async fn on_process_synced_value(
     proposer: Address,
     value_bytes: Bytes,
 ) -> eyre::Result<Option<ProposedValue<ArcContext>>> {
+    tracing::info!(
+        %height, len = value_bytes.len(),
+        prefix = %alloy_primitives::hex::encode(&value_bytes[..8.min(value_bytes.len())]),
+        "ProcessSyncedValue: received frame"
+    );
     let (payload, payment_payload, lean_payload) =
         match arc_consensus_types::block::unframe_lanes_any(&value_bytes) {
             Ok(arc_consensus_types::block::LaneFrame::Full(evm, pay)) => (evm, pay, None),
@@ -263,7 +268,13 @@ async fn on_process_synced_value(
                 "stored Invalid but engine says Valid at height={height} — this is a bug"
             );
         }
-        return Ok(Some(ProposedValue::from(&existing)));
+        // Return the FRESH block's proposal, not the stored copy: the SSZ store
+        // drops lean bytes, so `existing.value_id()` collapses to the EVM hash
+        // and the framework would reject it against the certificate forever
+        // (observed live: val3's infinite sync-reject loop). The dedup's only
+        // job is skipping the persistence wait + duplicate store.
+        let _ = existing;
+        return Ok(Some(ProposedValue::from(&block)));
     }
 
     let proposal = ProposedValue::from(&block);

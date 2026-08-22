@@ -155,11 +155,17 @@ async fn get_decided_values(
         for h in &heights {
             let behind = latest.saturating_sub(h.as_u64());
             let lean_number = head.number.saturating_sub(behind);
-            if lean_number == 0 {
-                lean_bytes_by_height.push(None);
+            let bytes = if lean_number == 0 {
+                None
             } else {
-                lean_bytes_by_height.push(shim.get_block_bytes(lean_number).await?);
-            }
+                shim.get_block_bytes(lean_number).await?
+            };
+            info!(
+                height = h.as_u64(), latest, lean_head = head.number, lean_number,
+                got = bytes.is_some(),
+                "GetDecidedValues: lean lane mapping"
+            );
+            lean_bytes_by_height.push(bytes);
         }
     } else {
         lean_bytes_by_height = vec![None; heights.len()];
@@ -273,6 +279,13 @@ async fn get_raw_decided_value(
         }
         None => frame_lanes(&execution_payload, payment_payload.as_ref()),
     };
+    info!(
+        height = height.as_u64(),
+        len = value_bytes.len(),
+        prefix = %alloy_primitives::hex::encode(&value_bytes[..8.min(value_bytes.len())]),
+        lean = lean_lane.is_some(),
+        "GetDecidedValues: serving frame"
+    );
     let raw_value = RawDecidedValue {
         certificate: stored.certificate,
         value_bytes: value_bytes.into(),

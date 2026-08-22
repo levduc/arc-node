@@ -166,9 +166,43 @@ async fn on_get_value(
         })?;
 
     let mut block = match block {
-        Some(block) => {
+        // LEAN lane: never reuse a store-loaded block — the SSZ store drops
+        // lean bytes, so its value_id is wrong. Lean builds are microseconds;
+        // always build fresh.
+        Some(block) if lean_shim.is_none() => {
             info!(block_hash = %block.block_hash(), "✅ Using previously built block");
             block
+        }
+        Some(_) => {
+            info!("lean lane: ignoring previously built block (store drops lean bytes); rebuilding");
+            let previous_block = previous_block.ok_or_else(|| {
+                eyre!("No previous block available to rebuild at height={height} and round={round}")
+            })?;
+            let task = build_and_validate_block(
+                engine,
+                payment_engine,
+                payment_builder_engine,
+                lean_shim,
+                lean_budget_gas,
+                prebuilt_slot.clone(),
+                payment_exec_mode,
+                &metrics,
+                &store,
+                height,
+                round,
+                address,
+                previous_block,
+                &fee_recipient,
+            );
+            match tokio::time::timeout(timeout, task).await {
+                Ok(result) => result.wrap_err_with(|| {
+                    format!("Proposer failed to rebuild lean block at height={height} round={round}")
+                })?,
+                Err(_) => {
+                    error!(%height, %round, "⏰ Proposer timed out rebuilding lean block after {timeout:?}");
+                    return Ok(None);
+                }
+            }
         }
         None => {
             info!(%height, %round, "🌈 Building new block");
