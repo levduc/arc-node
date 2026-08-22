@@ -520,6 +520,14 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**✅ 2 BLK/S UNDER LOAD: HOLDS — 50M lean budget = 1.97 blk/s, 354/354 budget-full blocks,
+14,080 outputs/s sustained (2026-08-22 night).** The frontier, all points budget-full/chain-
+limited: 50M -> 1.97/s / 14.1k outs/s / ~0.5s · 300M N=10 -> 0.62/s / 26.0k / 1.6s · 300M
+N=50 -> 0.44/s / 24.6k / 2.3s. Same law as the reth lane (height = floor + per-output x n);
+budget is the latency/throughput dial. vs reth lane at the same 2 blk/s + 50M: ~4.6k tps ->
+14.1k payments/s at 1.4k sigs/s admission (~10x less admission work per payment). Operating
+recommendation: 50M for the 2 blk/s product point, 300M for the ~26k throughput point.
+
 **🏁 FLEET N-SWEEP MEASURED — I5 DONE (2026-08-22 night): outputs/s PLATEAUS ~25k, per-OUTPUT
 bound (~40us/output), fan-out advantage fully banked by N=10.** 4-machine fleet, fixed stack,
 governed batch feeders (ws spammers = admission-vs-build contention, only 240 txs/blk; the
