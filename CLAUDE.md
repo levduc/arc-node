@@ -520,6 +520,28 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**⚙️ LEAN-LANE INTEGRATION UNDERWAY (2026-08-22, branch `lean-lane-integration`, plan =
+docs/lean-lane-integration.md):** wiring the lean lane node (~/reth-fork lean-lane-node)
+behind Malachite as the payment EL, flag ARC_PAYMENT_LEAN_LANE (default off byte-identical).
+DONE: I1 fork shim (arc_buildBlock/newBlock/getBlockBytes, --shim mode; 10k-block two-node
+lockstep gate PASS incl. mid-stream kill/restart — first run caught the genesis-only-funding
+rule; 1.22M fuzz cases 0 panics) · I2 arc types (LEAN_LANE_BIT=1<<62 framing, strict
+decode_lean_block, LeanLanePayload, cross-pin test vs lean-node vectors byte-identical) ·
+**COMMITMENT V2 (SECURITY, found writing the equivocation tests): txs_hash must bind the
+FRAMED tx section (bytes[48..]), not the concatenated bodies — concat-only binding allowed
+same-commitment divergent-state via boundary re-framing + total-STF no-ops (sync-peer
+exploitable). Both sides adopted; regression tests both repos.** · I3a/b ConsensusBlock.
+lean_payload + value_id via payment_lane_commitment + assembly/emission arms + wire
+round-trip test. REMAINING: LeanShim client + get_value/decided/sync handler arms (I3),
+single-machine 4-validator gate (I4), fleet number (I5). Lean gas metric: gas=21000+5000N,
+budget env ARC_PAYMENT_LEAN_BUDGET_GAS, start 300M ≈ 42k outputs/blk for the 2 blk/s target
+(measured knee in I4 sweep decides).
+**🪤 CRATE-NAME LANDMINE (cost 8 masked errors): the local CL crate is `arc-node-consensus`
+— `cargo check -p arc-malachitebft-app` silently checks the GIT malachite framework dep and
+prints 'Finished' with zero work. All -p arc-malachitebft-app checks/tests this campaign
+validated the wrong package (code was still compiled by docker workspace builds). Always
+`-p arc-node-consensus`.**
+
 **🧾 LAB NOTEBOOK WORKFLOW (2026-08-20, user-directed):** day-by-day experiment log with
 figures lives at **`2026.arc.payment.highway.claude/lab-notebook.tex`** (append-only; one
 section/day; every attempt gets PASS/FAIL/RETRACTED; figures only where they explain a
