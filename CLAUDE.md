@@ -520,6 +520,28 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**🎯 CADENCE SOLVED — 1.94 blk/s AT THE PACER TARGET (2026-08-22 morning, shim v1.1 stack):
+0.58 -> 1.94 blk/s, 7s-mode GONE (1 slow height in 1,162), anchor failures 24-174/10min -> 0/0/0/0.**
+The morning's 0.58 was a CHAIN of glue bugs, not lean fundamentals: (5) stash clear() wiped
+next-height entries validated during decide(H) -> every anchor entered the peer-fetch race,
+whose loser was late for its next proposer turn -> laggard role MIGRATED between validators
+(fix d5909c3: remove only decided key). (6) fail-fast anchor turned lag into restart-height
+churn (fix 09e06f9: Engine-API SYNCING semantics — new_block returns Valid|Syncing,
+wait-and-poll 30s). (7) tip-linkage validation rejected sync replays of HISTORIC lean blocks
+once the self-healed node ran ahead of a lagging validator's consensus -> value-sync wedged
+(fix 7f18196: already-canonical branch — valid iff byte-identical to our chain at that
+number; conflicts still halt). (8) debug_assert panicked when the FIXED code flipped a
+persisted wrong Invalid (fix 63f6cfe: stale verdict from older binary — warn + trust the
+certificate). ALSO: docker restart mid-height can hit malachite WAL "Round cannot go
+backwards" crash-loop — heal = wipe <val>/malachite/wal/* (root container), node value-syncs back.
+**ARCHITECTURE (user directive "robust EL, minimal CL, plug-and-play"): fork shim v1.1
+(`50f0039` lean-prune): --peers, push-on-append gossip, SYNCING queue (512) + background
+peer backfill; 3-node kill/restart gate converges with ZERO external feeding. CL = thin
+4-verb client; contract in docs/lean-lane-integration.md (bc3ed09); validation-time
+catch-up + CL peer-fetch fallback are CANDIDATE REMOVALS after v1.1 soaks.**
+LANDMINE: CL image deploys need docker compose --force-recreate (docker restart keeps the
+OLD image); after recreate re-connect arc_testnet_host-access + restart.
+
 **🌙 OVERNIGHT CAMPAIGN 1 (2026-08-22, branch `lean-lane-integration`, commit `da922f2`): N-SWEEP
 MEASURED + 4 LIVENESS BUGS FOUND & FIXED + 4h EVM-load soak clean.**
 - **N-SWEEP (single box, 300M budget, governed feeders, all arms budget-full 97-100%):**
