@@ -89,6 +89,7 @@ pub async fn handle(
         payment_builder_engine,
         lean_shim,
         lean_budget_gas,
+        state.lean_undecided.clone(),
         prebuilt_slot,
         payment_exec_mode,
         compact_payment,
@@ -142,6 +143,14 @@ async fn on_get_value(
     payment_builder_engine: Option<&Engine>,
     lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     lean_budget_gas: u64,
+    lean_undecided: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                arc_consensus_types::BlockHash,
+                arc_consensus_types::block::LeanLanePayload,
+            >,
+        >,
+    >,
     prebuilt_slot: crate::builder_prebuild::PrebuiltSlot,
     payment_exec_mode: PaymentExecMode,
     compact_payment: bool,
@@ -243,6 +252,20 @@ async fn on_get_value(
     };
 
     let proposed_value = LocallyProposedValue::from(&block);
+
+    // LEAN lane: the PROPOSER stashes its own build immediately. The stash was
+    // otherwise written only at proposal-part assembly (self-delivery) — and
+    // when decide beats the looped-back parts (measured on the fleet: every
+    // val1-proposed height anchored via a 5s grace + CL peer-fetch, 35 polls,
+    // pinning the whole chain to ~10s on those heights), the proposer's own
+    // decide has no bytes to anchor with. Build-time stashing removes the race
+    // by construction; assembly/sync inserts stay as harmless overwrites.
+    if let Some(lane) = block.lean_payload.clone() {
+        lean_undecided
+            .lock()
+            .expect("lean_undecided mutex poisoned")
+            .insert(block.value_id(), lane);
+    }
 
     debug!(
         %height, %round,
