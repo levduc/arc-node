@@ -552,6 +552,16 @@ pub async fn validate_consensus_block(
                         .await;
                         return Ok(Validity::Invalid);
                     }
+                    // Vote-gap execution (shim v1.3): stage the block now so
+                    // the decide anchor promotes instead of executing on the
+                    // critical path. Fire-and-forget — staging is speculative;
+                    // failure (older node, races) just means the anchor takes
+                    // the full path. Never blocks the vote.
+                    let stage_shim = shim.clone();
+                    let stage_bytes = lane.bytes.clone();
+                    tokio::spawn(async move {
+                        let _ = stage_shim.stage_block(&stage_bytes).await;
+                    });
                 }
                 Err(e) => {
                     // Unreachable past the shim's ~15s transport retry: the

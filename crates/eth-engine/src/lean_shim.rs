@@ -181,6 +181,24 @@ impl LeanShim {
         }
     }
 
+    /// Vote-gap execution (shim v1.3): ask the node to validate + execute the
+    /// block into a STAGED entry without appending, so the decide-time
+    /// new_block promotes instantly instead of executing on the critical path
+    /// (~230ms/2.6MB block measured). Fire-and-forget semantics at call sites:
+    /// staging is speculative — any failure (older node without the verb,
+    /// SYNCING, transport) just means the anchor takes the full path.
+    pub async fn stage_block(&self, block_bytes: &[u8]) -> eyre::Result<()> {
+        let _ = self
+            .call(
+                "arc_stageBlock",
+                json!({
+                    "blockBytes": base64::engine::general_purpose::STANDARD.encode(block_bytes),
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_head(&self) -> eyre::Result<LeanHead> {
         let r = self.call("arc_getHead", json!({})).await?;
         Ok(LeanHead {

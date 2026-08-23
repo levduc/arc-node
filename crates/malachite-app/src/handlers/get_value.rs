@@ -451,6 +451,14 @@ pub async fn build_block(
                 commitment = %lane.commitment(),
                 "🪶 built lean payment block"
             );
+            // Vote-gap execution (shim v1.3): the proposer stages its own
+            // build so its decide anchor promotes instantly. Fire-and-forget —
+            // failure just means the anchor takes the full path.
+            let stage_shim = shim.clone();
+            let stage_bytes = lane.bytes.clone();
+            tokio::spawn(async move {
+                let _ = stage_shim.stage_block(&stage_bytes).await;
+            });
             Some(lane)
         }
         None => None,
