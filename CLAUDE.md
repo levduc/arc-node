@@ -520,6 +520,21 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**🏆 v1.3.1 DEPLOYED — 2 BLK/S POINT NOW 83,286 OUTPUTS/S (2026-08-23 morning).** Awaited-
+promote (fork `5cc4536`: anchors await in-flight stagings, 2s guard; race gate 8/8 byte-
+identical): anchor 145->95->**44ms median (p90 67)**. Fresh-chain knee ladder, EVERY window
+100%% budget-full: 150M/55.5k@1.93 · 175M/64.8k@1.93 · **225M/83.3k@1.93** · 250M/89.0k@1.86
+-> knee ~225-250M; marginal transport ~0.21-0.23us/B = RETH PARITY ACHIEVED; height barely
+couples to size now (pacer floor dominates). 2blk/s point 54.1k -> 83.3k (+55%%) in one
+increment. N-SWEEP AT 2BLK/S (byte-normalized ~824KB, v1.3): N=100 54.1k · N=50 54.1k ·
+N=10 45.0k · N=5 37.5k · (N=1 ~16k predicted, arm measures the feeder — skipped) — outputs/s
+= bytes/height / bytes-per-output; packing saturates at N>=50 (28-29B floor). **6H BOTH-LANE
+SOAK PASS: 37/37 slices, perfect 4-way lean agreement every slice, 0 watchdog alerts, 47k
+heights @1.93** (lean load 1.6h then the FANOUT AMOUNT DRAIN cliff — spammer's random output
+amounts bankrupt senders ~4.4k txs even at 10x funding; TODO --fanout-amount flag for
+endurance; EVM load full window). watchdog.sh (30s samples -> ⚠️ STALL lines in report
+within 60s) now standard alongside every run.
+
 **🎯 2 BLK/S SQUEEZE ON v1.3: 54,143 OUTPUTS/S — 283/283 BUDGET-FULL (2026-08-23).** 150M/
 N=100 sustained w/ governed ingress: 1.89 blk/s, avg 28,700/28,790 outs/blk (99.7%%), height
 530ms = pacer+30 => 150M IS the 2 blk/s knee on this stack (200M would run ~610ms/1.6 blk/s).
