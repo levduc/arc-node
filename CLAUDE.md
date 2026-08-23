@@ -520,6 +520,27 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**🚚 TRANSPORT CAMPAIGN (2026-08-23, "match reth first" — user-directed): gossip redundancy
+KILLED (shim v1.2), residual = CL value-sync feedback loop.** Height decomposition of drain
+heights (val2, 1.65MB N=100 blocks, 1.48s median): **stream+assemble 843ms (57%, p90 4.8s!)**
+· votes 195ms · anchor (ecrecover+exec+fsync) 145ms · validate 23ms — signatures are
+irrelevant (575/block); TRANSPORT is the wall. NIC forensics (alien2/wifi): v1.1 moved
+**11.2 MB per 1.65MB block** (RX 5.24 + TX 5.93/blk) — push-on-append gossip = every node
+POSTs the full block (base64 2.2MB) to 3 peers, 100%% redundant on a healthy chain (every CL
+anchors its own node). **Fix: shim v1.2 (fork `6f3b9e4`) announce/pull** — ~100B announcement
+{commitment,number}; unknown -> pull/backfill from announcer; bandwidth gate: in-sync peers
+exchange ZERO block bytes; 3-node kill/restart still self-heals (validated live: val4 healed
+via announce->backfill on deploy). RESULT: drain cadence 1.00->1.32 blk/s, RX 5.24->3.43.
+**RESIDUAL (open): CL value-sync feedback** — under load val1+val2 fall behind ~every height
+(122+170 syncs/4min) and get served FULL 1.65MB both-lane frames (val4's CL served 160/3min =
+1.5MB/s = the remaining 4.45MB/blk TX). Loop: stream tail -> missed round -> value-sync ->
+extra bytes -> worse tail. reth-era fleet moved 2.9MB blocks at 1.0s heights on the same
+machines — matching it needs the sync-storm broken (why do healthy validators miss rounds at
+0.7s heights: stream vs round-timeout race) and/or compact proposals. Lean drain best so far
+~29-45k outputs/s (window-variance ±2x from wifi); replay bench: lean EL alone = 2.1-2.5
+Ggas/s / 404k outputs/s / 2.48us/output (lean-replay-bench.py, 6,589 blocks byte-identical).
+Tx wire: 72+28N B (N=10: 352B/35.2B per payment; floor 28B/output).
+
 **✅ 2 BLK/S UNDER LOAD: HOLDS — 50M lean budget = 1.97 blk/s, 354/354 budget-full blocks,
 14,080 outputs/s sustained (2026-08-22 night).** The frontier, all points budget-full/chain-
 limited: 50M -> 1.97/s / 14.1k outs/s / ~0.5s · 300M N=10 -> 0.62/s / 26.0k / 1.6s · 300M
