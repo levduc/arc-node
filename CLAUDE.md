@@ -520,6 +520,14 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**🏆 77,845 OUTPUTS/S @ RETH-SIZE BLOCKS — GAP FULLY EXPLAINED (2026-08-23): equal 2.59MB
+blocks, 1,155ms/blk, 2.24 MB/s = 77%% of reth's 2.9 — the 230ms residual ≈ EXACTLY the
+synchronous anchor exec (reth's 23.5k had vote-gap deferred exec; lean anchors at decide;
+145ms@1.65MB scales to ~230@2.59). Minus anchor: 925ms -> 2.8 MB/s = 97%% parity. Same
+malachite byte-pipe both lanes => parity is the ceiling; lean wins on payments/byte (4.25x):
+**3.3x payments/s at 3%% of the admission cost.** NEXT INCREMENT (scoped, proven pattern):
+lean deferred anchor — arc_stageBlock at validation (vote-gap exec), anchor = promote.
+
 **🏆 75,585 OUTPUTS/S — LEAN DRAIN RECORD, 3.2x THE RETH LANE'S BEST (2026-08-23, v1.2 +
 CLEAN chain).** 158/158 FULL 57,500-output blocks (300M, N=100, 1.65MB), 761ms/blk, 1.31 blk/s,
 **2.17 MB/s consensus bytes = 75%% of reth's 2.9** — but 4.25x payments/byte => 3.2x payments/s
