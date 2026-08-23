@@ -520,6 +520,16 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**📌 N=1 ARM CLOSED THE SWEEP (2026-08-23): 9,331 tx/s @1.75 blk/s, blocks 43%% full —
+ADMISSION-bound (pending 11.5k, queued 24.8k as promotion raced a 26k tx/s batch feed),
+NOT chain-bound: at N=1 the lean lane rediscovers the reth lane's ~10k signature ceiling
+exactly. Full sweep row completes the argument: N=1 9.3k/9.3k · N=5 7.5k/37.5k · N=10
+4.5k/45k · N=50 1.1k/54.1k · N=100 0.54k/54.1k (83.3k on v1.3.1) [tx/s / payments/s].
+LANDMINES REPEATED TONIGHT (now 3x — treat as PROTOCOL): any surviving feeder advances
+nonces during corpus generation => corpus born stale => queued-forever (VERIFY chain static
+via 2 nonce reads 10s apart before -l generation; validate corpus with a 1-tx submit ->
+pending==1 gate before mass feed).
+
 **🏆 v1.3.1 DEPLOYED — 2 BLK/S POINT NOW 83,286 OUTPUTS/S (2026-08-23 morning).** Awaited-
 promote (fork `5cc4536`: anchors await in-flight stagings, 2s guard; race gate 8/8 byte-
 identical): anchor 145->95->**44ms median (p90 67)**. Fresh-chain knee ladder, EVERY window
