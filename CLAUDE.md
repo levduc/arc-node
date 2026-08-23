@@ -520,6 +520,19 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**⚡ v1.3 DEFERRED ANCHOR DEPLOYED + EL BENCH AT 1.03M OUTPUTS/S (2026-08-23).** Shim v1.3
+(fork `85feeeb`): arc_stageBlock = vote-gap exec into a staged entry, arc_newBlock promotes
+(byte-identical differential gate, 30/30); CL client `dee057e` = two fire-and-forget stage
+calls (validation + proposer build), fail-safe. MEASURED: anchor 145->95ms median — staging
+wins only ~half the races (stage exec ~230ms@2.9MB vs vote gap ~195ms). NEXT (scoped,
+v1.3.1): anchor AWAITS in-flight staging instead of re-executing (<=35ms wait beats 230ms
+redo) -> the ~2.8-2.9 MB/s parity line. REPLAY BENCH on N=100 chain (10,300 blocks
+byte-identical): **4,346 Mgas/s aggregate; FULL 300M blocks 70ms/blk = 5,364 Mgas/s =
+1,029,627 outputs/s = 0.97us/output** (2.5x the N=10-era bench — import is sig-bound; N=100
+= 1 ecrecover per 100 outputs). LADDER: EL 1.03M -> BFT 77.8k -> 2blk/s point 23k.
+NOTE: drain re-runs need EVERY node's pool deep (val3 shallow => 64/113 full muddied one
+window; corpora are consumed by ~2 drains — regenerate per campaign).
+
 **🏆 77,845 OUTPUTS/S @ RETH-SIZE BLOCKS — GAP FULLY EXPLAINED (2026-08-23): equal 2.59MB
 blocks, 1,155ms/blk, 2.24 MB/s = 77%% of reth's 2.9 — the 230ms residual ≈ EXACTLY the
 synchronous anchor exec (reth's 23.5k had vote-gap deferred exec; lean anchors at decide;
