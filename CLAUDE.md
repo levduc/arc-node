@@ -520,6 +520,16 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**🎯 2 BLK/S SQUEEZE ON v1.3: 54,143 OUTPUTS/S — 283/283 BUDGET-FULL (2026-08-23).** 150M/
+N=100 sustained w/ governed ingress: 1.89 blk/s, avg 28,700/28,790 outs/blk (99.7%%), height
+530ms = pacer+30 => 150M IS the 2 blk/s knee on this stack (200M would run ~610ms/1.6 blk/s).
+2.35x the morning's 23k at the same cadence (announce/pull + deferred anchor + clean-state
+law widened the 500ms height budget). ~542 sigs/s admission for 54k payments/s at 0.5s
+blocks — ~12x the reth lane's 4.6k tps at equal cadence+budget. GOTCHA: local compose uses
+SINGLE quotes on env values — regex with ["\'"]? or values silently keep old budget (mixed-
+budget fleet = blocks exceeding "budget", cost one window); corpora survive ~2 drain feeds
+then supply-starve windows (61%% fullness artifact) — regenerate per campaign.
+
 **⚡ v1.3 DEFERRED ANCHOR DEPLOYED + EL BENCH AT 1.03M OUTPUTS/S (2026-08-23).** Shim v1.3
 (fork `85feeeb`): arc_stageBlock = vote-gap exec into a staged entry, arc_newBlock promotes
 (byte-identical differential gate, 30/30); CL client `dee057e` = two fire-and-forget stage
