@@ -59,37 +59,6 @@ for i in 2 3 4; do
 done
 say "census ok (4 machines)"
 
-# --------------------------------------------------------- set the budget
-if [ "$LANE" = lean ]; then
-  say "lean budget -> $GAS"
-  python3 -c "
-import re,sys
-p='.quake/soak4/compose.yaml'; s=open(p).read()
-open(p,'w').write(re.sub(r'(ARC_PAYMENT_LEAN_BUDGET_GAS:\s*[\'\"]?)\d+([\'\"]?)', r'\g<1>$GAS\g<2>', s))" || die "compose rewrite"
-  docker compose -f .quake/soak4/compose.yaml up -d --force-recreate validator1_cl >/dev/null 2>&1
-  for i in 2 3 4; do
-    h=${HOSTS[$((i-2))]}
-    timeout 90 tailscale ssh papaduck@"$h" "python3 -c \"import re;p='/home/papaduck/arc-fleet/soak4/compose-val$i.yaml';s=open(p).read();open(p,'w').write(re.sub(r'BUDGET_GAS: .[0-9]+.','BUDGET_GAS: \\\"$GAS\\\"',s))\" && docker compose -f /home/papaduck/arc-fleet/soak4/compose-val$i.yaml up -d --force-recreate validator${i}_cl >/dev/null 2>&1" 2>/dev/null
-  done
-  sleep 12
-  got=$(docker exec validator1_cl env 2>/dev/null | grep -o 'BUDGET_GAS=[0-9]*' | cut -d= -f2)
-  [ "$got" = "$GAS" ] || die "val1 budget reads $got"
-else
-  say "evm gas limit -> $GAS (governance tx, priced above base fee)"
-  bf=$(curl -s -m8 -X POST $EVM_RPC -H 'content-type: application/json' \
-      --data '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}' \
-      | python3 -c "import sys,json;print(int(json.load(sys.stdin)['result']['baseFeePerGas'],16))")
-  mx=$((bf*4))
-  cast send $PC "updateFeeParams((uint64,uint64,uint64,uint256,uint256,uint256))" \
-    "(20,200,5000,1,1000000000000,$GAS)" --private-key "$CTRL_KEY" --rpc-url $EVM_RPC \
-    --timeout 90 --gas-price $mx --priority-gas-price $((mx/2)) >/dev/null 2>&1
-  sleep 8
-  got=$(curl -s -m8 -X POST $EVM_RPC -H 'content-type: application/json' \
-      --data '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}' \
-      | python3 -c "import sys,json;print(int(json.load(sys.stdin)['result']['gasLimit'],16))")
-  [ "$got" = "$GAS" ] || die "gasLimit reads $got"
-fi
-
 # --------------------------------------------------------------- load
 pkill -9 -f 'release/spammer' 2>/dev/null || true
 pkill -9 -f 'lean-feeder.p[y]' 2>/dev/null || true
@@ -97,17 +66,7 @@ for h in "${HOSTS[@]}"; do
   timeout 45 tailscale ssh papaduck@"$h" "pkill -9 -f 'arc-spamme[r]' 2>/dev/null; pkill -9 -f 'lean-feeder.p[y]' 2>/dev/null; true" 2>/dev/null
 done
 
-if [ "$LANE" = evm ]; then
-  # reth gossips: local spammers suffice. 6 x 2500/s covers ~100M blocks.
-  for i in 0 1 2 3 4 5; do
-    setsid ./target/release/spammer ws --targets ws://127.0.0.1:8546 -r 2500 -g 4 -a 160 \
-      --account-offset $((i*160)) -t $((WINDOW+300)) --chain-id 1337 --mix transfer=100 -l \
-      >/tmp/lb-evm-$i.log 2>&1 &
-    disown; sleep 1
-  done
-  say "6 evm spammers up; warming 60s"
-  sleep 60
-else
+if [ "$LANE" = lean ]; then
   # pool wipe (staggered restarts), retried until 4/4 empty
   say "wiping lean pools"
   pid=$(ss -ltnp 2>/dev/null | grep ':8560 ' | grep -oP 'pid=\K[0-9]+' | head -1)
@@ -139,6 +98,51 @@ else
     sleep 10
   done
   say "pools wiped: $ok/4"; [ $ok -ge 4 ] || die "pools not empty"
+fi
+
+# --------------------------------------------------------- set the budget
+if [ "$LANE" = lean ]; then
+  say "lean budget -> $GAS"
+  python3 -c "
+import re,sys
+p='.quake/soak4/compose.yaml'; s=open(p).read()
+open(p,'w').write(re.sub(r'(ARC_PAYMENT_LEAN_BUDGET_GAS:\s*[\'\"]?)\d+([\'\"]?)', r'\g<1>$GAS\g<2>', s))" || die "compose rewrite"
+  docker compose -f .quake/soak4/compose.yaml up -d --force-recreate validator1_cl >/dev/null 2>&1
+  for i in 2 3 4; do
+    h=${HOSTS[$((i-2))]}
+    timeout 90 tailscale ssh papaduck@"$h" "python3 -c \"import re;p='/home/papaduck/arc-fleet/soak4/compose-val$i.yaml';s=open(p).read();open(p,'w').write(re.sub(r'BUDGET_GAS: .[0-9]+.','BUDGET_GAS: \\\"$GAS\\\"',s))\" && docker compose -f /home/papaduck/arc-fleet/soak4/compose-val$i.yaml up -d --force-recreate validator${i}_cl >/dev/null 2>&1" 2>/dev/null
+  done
+  sleep 12
+  got=$(docker exec validator1_cl env 2>/dev/null | grep -o 'BUDGET_GAS=[0-9]*' | cut -d= -f2)
+  [ "$got" = "$GAS" ] || die "val1 budget reads $got"
+else
+  say "evm gas limit -> $GAS (governance tx, priced above base fee)"
+  bf=$(curl -s -m8 -X POST $EVM_RPC -H 'content-type: application/json' \
+      --data '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}' \
+      | python3 -c "import sys,json;print(int(json.load(sys.stdin)['result']['baseFeePerGas'],16))")
+  mx=$((bf*4))
+  cast send $PC "updateFeeParams((uint64,uint64,uint64,uint256,uint256,uint256))" \
+    "(20,200,5000,1,1000000000000,$GAS)" --private-key "$CTRL_KEY" --rpc-url $EVM_RPC \
+    --timeout 90 --gas-price $mx --priority-gas-price $((mx/2)) >/dev/null 2>&1
+  sleep 8
+  got=$(curl -s -m8 -X POST $EVM_RPC -H 'content-type: application/json' \
+      --data '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}' \
+      | python3 -c "import sys,json;print(int(json.load(sys.stdin)['result']['gasLimit'],16))")
+  [ "$got" = "$GAS" ] || die "gasLimit reads $got"
+fi
+
+
+if [ "$LANE" = evm ]; then
+  # reth gossips: local spammers suffice. 6 x 2500/s covers ~100M blocks.
+  for i in 0 1 2 3 4 5; do
+    setsid ./target/release/spammer ws --targets ws://127.0.0.1:8546 -r 2500 -g 4 -a 160 \
+      --account-offset $((i*160)) -t $((WINDOW+300)) --chain-id 1337 --mix transfer=100 -l \
+      >/tmp/lb-evm-$i.log 2>&1 &
+    disown; sleep 1
+  done
+  say "6 evm spammers up; warming 60s"
+  sleep 60
+else
 
   # chain must be STATIC before -l corpus generation
   a=$(head -1 $FUND | awk '{print $1}')
@@ -195,6 +199,26 @@ else
   say "feeders up at ${rate}/s/node; warming 60s"
   sleep 60
 fi
+
+# ------------------------------------------------- health gate (pre-measure)
+# A CL that booted while its lean node was down parks in "Manual intervention
+# required" and never proposes again: agreement checks still pass, but its 1/4
+# of rounds burn full timeouts (measured 2026-08-24: val1 failed 108/108 turns,
+# cadence 0.68 vs 1.94). Catch it before spending a measurement window.
+say "health gate"
+for i in 1 2 3 4; do
+  if [ $i -eq 1 ]; then
+    parked=$(docker logs validator1_cl --since 20m 2>&1 | grep -c 'Manual intervention required' || true)
+    live=$(docker logs validator1_cl --since 60s 2>&1 | wc -l)
+  else
+    h=${HOSTS[$((i-2))]}
+    parked=$(timeout 45 tailscale ssh papaduck@"$h" "docker logs validator${i}_cl --since 20m 2>&1 | grep -c 'Manual intervention required'" 2>/dev/null | tail -1 | tr -dc '0-9')
+    live=$(timeout 45 tailscale ssh papaduck@"$h" "docker logs validator${i}_cl --since 60s 2>&1 | wc -l" 2>/dev/null | tail -1 | tr -dc '0-9')
+  fi
+  [ "${parked:-0}" = "0" ] || die "val$i CL is PARKED (booted with its lean node down) — restart it"
+  [ "${live:-0}" -gt 10 ] || die "val$i CL emitted ${live:-0} log lines in 60s (hung / not participating)"
+done
+say "health gate ok (4 CLs live, none parked)"
 
 # ------------------------------------------------------------- measure
 say "measuring ${WINDOW}s (silent)"
