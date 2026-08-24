@@ -38,8 +38,14 @@ if [ "$LANE" = lean ]; then N=${3:-100}; WINDOW=${4:-600}; else N=1; WINDOW=${3:
 OUT=${OUT:-/tmp/lane-bench.jsonl}
 HOSTS=(ginnythui papaduck papaduck-alien2)
 IPS=(100.124.148.61 100.85.150.119 100.70.62.92 100.86.97.40)
-LEAN_BIN=/home/papaduck/reth-fork/target/release/lean-lane-node
-FUND=/home/papaduck/lean-fund.txt
+# Repo-local by default: the lean lane now lives in THIS workspace
+# (crates/lean-lane-node), so `cargo build --release -p lean-lane-node` is all a
+# fresh machine needs — no reth fork required. Override for an external build.
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+LEAN_BIN=${LEAN_BIN:-$REPO_ROOT/target/release/lean-lane-node}
+FUND=${FUND:-$HOME/lean-fund.txt}
+[ -x "$LEAN_BIN" ] || { echo "lean binary missing: $LEAN_BIN  (cargo build --release -p lean-lane-node)"; exit 1; }
+[ -s "$FUND" ] || { echo "fund file missing: $FUND  (experiments/dual-el/gen-lean-fund.sh)"; exit 1; }
 EVM_RPC=http://127.0.0.1:8545
 PC=0x3600000000000000000000000000000000000001
 CTRL_KEY=${CTRL_KEY:-0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97}

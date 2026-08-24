@@ -6,6 +6,8 @@ members = [
     "crates/test/checks",
     "crates/test/framework",
     "crates/test/integration",
+    "crates/lean-native",
+    "crates/lean-lane-node",
 ]
 exclude = ["crates/test"]
 
@@ -211,6 +213,11 @@ reth-storage-api = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0"
 reth-tasks = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", default-features = false }
+rayon = "1.10"
+reth-db-models = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", default-features = false }
+reth-storage-errors = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", default-features = false }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", tag = "v2.3.0", default-features = false }
 
 # revm
 revm = { version = "40.0.3", default-features = false }
