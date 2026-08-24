@@ -520,6 +520,21 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**📊 DEFINITIVE 10-MIN FAN-OUT SWEEP (2026-08-23 evening, v1.3.1, byte-normalized ~825KB,
+EVERY block 100%% full, chart /tmp/overnight/fanout-sweep.svg + notebook):**
+| N | cadence | tps | ops | block KB |  | 1 | 0.67(!) | 3,229 | 3,229 | 500 | · | 5 | 1.85 |
+7,185 | 35,927 | 840 | · | 10 | 1.94 | 4,543 | 45,427 | 823 | · | 20 | 1.94 | 2,529 | 50,590 |
+825 | · | 50 | 1.93 | 1,083 | 54,172 | 827 | · | 100 | 1.93 | 555 | 55,534 | 826 |
+KEY: N=1 blocks were FULL yet heights stretched to 1.5s — the SIGNATURE cost (4,807 sigs/blk)
+binds, not bytes: N=1 consented FEWER raw txs (3,229) than N=5 (7,185). Chain-wide signature
+ceiling ≈ 7k sigs/s; ops rises with N as B/payment falls, saturating ~55k at the 28B floor.
+SWEEP-RUNNER LESSONS (each cost a kill/rerun): bash bare `wait` blocks on backgrounded
+long-lived jobs (disown daemons, wait on PIDs); runner-watchdog thresholds must exceed the
+longest LEGITIMATE silent step (or the step must heartbeat); generate corpora ON each machine
+(90MB tailscale ships = 30min wifi stalls); VERIFY REMOTE EFFECTS not exit codes (ssh expiry
+mid-campaign silently quarter-fed 3 arms — remote-corpus-linecount gate now aborts loudly);
+node-recovery replay time grows with chain length (wipe-check retry window must scale).
+
 **📌 N=1 ARM CLOSED THE SWEEP (2026-08-23): 9,331 tx/s @1.75 blk/s, blocks 43%% full —
 ADMISSION-bound (pending 11.5k, queued 24.8k as promotion raced a 26k tx/s batch feed),
 NOT chain-bound: at N=1 the lean lane rediscovers the reth lane's ~10k signature ceiling
