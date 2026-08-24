@@ -520,6 +520,25 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**📦 REPO IS NOW SELF-CONTAINED FOR THE LEAN LANE (2026-08-24, `1bdfd39`): the lane is TWO
+CRATES IN THIS WORKSPACE — `crates/lean-native` + `crates/lean-lane-node` — building against
+the SAME upstream reth `v2.3.0` git tag the workspace already used. NO FORK NEEDED TO RUN.**
+Why it was possible: a diff of ~/reth-fork against upstream v2.3.0 shows insertions ONLY in
+our own two crates — the vendored reth crates were pruned (deletions) but never edited; the
+single reth source edit (chain-state/in_memory.rs set_pending_block_chain) belongs to the EVM
+lane's ARC_SPECULATIVE_BUILD work and is inert for the lean path. Added 5 workspace deps
+(reth-execution-types, reth-db-models, reth-storage-errors, reth-trie-common, rayon).
+VERIFIED: 38 lean tests pass in-repo, release binary builds, and it produces the IDENTICAL
+genesis commitment `0xef24da0138bf3715...` the fork binary produced all campaign.
+`~/reth-fork` is now history/experiments only — nothing in this repo depends on it.
+**`experiments/dual-el/gen-lean-fund.sh`** regenerates the genesis fund file from the
+spammer's own derivation **m/44'/60'/1'/0/i (note the 1', NOT 0')** — address set verified
+byte-identical to the file used in every measurement. lane-bench.sh now defaults to the
+repo-local binary + ~/lean-fund.txt (override LEAN_BIN / FUND).
+**Fresh-machine recipe: `docs/lean-lane-setup.md`.** REMAINING PORTABILITY GAP: fleet
+scripts still hardcode this fleet's 4 tailscale hosts/IPs and /home/papaduck paths — lift
+HOSTS/IPS/datadir-root into an env file before running elsewhere (single-machine needs none).
+
 **🏁 CAMPAIGN CLOSE (2026-08-24 evening) — N=1 CLEARS 6.4k, FAN-OUT MECHANISM DOCUMENTED,
 FLEET TORN DOWN.** Final measured picture at the 2 blk/s target (v1.3.1, 4-machine fleet):
 | config | cadence | tx/s | payments/s | full |
