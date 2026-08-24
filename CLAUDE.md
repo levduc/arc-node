@@ -520,6 +520,28 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**⚖️ EVM-vs-LEAN BACK-TO-BACK + 2 RETRACTIONS (2026-08-24).** Same fleet/hour, 2 blk/s target:
+**EVM(reth) 50M 4,165tps@1.75 (100%% full) · 75M 5,972@1.69 (98%%) · 100M 6,032@1.47 (68%%,
+delivery-bound) — 50M was NOT the EVM ceiling, lane saturates ~6k tps. LEAN N=1 62M
+4,609tps@1.93 (100%% full) = RETH PARITY within 1%% (reth historical 4,563-4,673@1.92).
+LEAN N=100 150M 55,534 payments/s@1.93 on 555 sigs/s.** => lanes are EQUAL at one-sig-per-
+payment; the 9-12x is bought entirely by fan-out.
+**RETRACTION 1: the "N=1 collapses to 0.67 blk/s, builder p90 4.1s" finding (2026-08-23) was
+measured on a SICK VALIDATOR** — val1's CL had degenerated into a pure sync-follower (675
+sync-decides/30s, never proposing), killing every 4th round; CL restart -> 1.97 blk/s and the
+arm tripled. OPS RULE: census must count PROPOSALS PER VALIDATOR — a sync-follower CL is
+invisible to agreement checks and costs ~25%% cadence.
+**RETRACTION 2 (user-caught): the sweep's N=1 row was NOT byte-normalized** (248KB vs N=5's
+840KB) so its tps was not comparable. Re-run at 214M (8,230 tx/blk): 1.81 blk/s but only 30%%
+full — at N=1 the harness cannot SUPPLY 15.6k single-sig tx/s, so N=1 capacity is a LOWER
+BOUND (>=4.6k), not a ceiling. Fullness now travels with every number.
+**🔧 `experiments/dual-el/lane-bench.sh` (commit ac167bc) — ONE TRIGGER, both lanes:**
+`./lane-bench.sh evm 50000000` · `./lane-bench.sh lean 150000000 100 600` -> JSON row.
+Bakes in every gate this campaign paid for: container census, retried pool wipe, chain-static
+check before -l generation, corpus pending-probe, per-machine corpus gen, remote-EFFECT
+verification (ssh exit codes lie), fullness reporting, uninvolved-validator sampling.
+STOP hand-rolling per-arm shell — extend this script instead.
+
 **📊 DEFINITIVE 10-MIN FAN-OUT SWEEP (2026-08-23 evening, v1.3.1, byte-normalized ~825KB,
 EVERY block 100%% full, chart /tmp/overnight/fanout-sweep.svg + notebook):**
 | N | cadence | tps | ops | block KB |  | 1 | 0.67(!) | 3,229 | 3,229 | 500 | · | 5 | 1.85 |
