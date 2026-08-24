@@ -182,11 +182,15 @@ else
       | python3 -c 'import sys,json;print(json.load(sys.stdin)["result"]["pending"])' 2>/dev/null || echo 0)
   [ "${p:-0}" -ge 1 ] || die "corpus probe: tx did not go pending (stale nonces)"
 
-  rate=$(( btx*2/4 + btx/2 ))   # per-node offer ≈ its share of 2 blk/s + headroom
-  setsid python3 experiments/dual-el/lean-feeder.py http://127.0.0.1:8560 /tmp/lb-corp-0.txt 30000 $rate $((WINDOW+200)) >/tmp/lb-feed.log 2>&1 &
+  # per-node offer ≈ its share of 2 blk/s + headroom; pool target scales with
+  # block size (a flat target throttles big-block/high-tx-count arms)
+  rate=$(( btx*2/4 + btx/2 ))
+  ptarget=$(( btx*4 ))
+  [ $ptarget -lt 30000 ] && ptarget=30000
+  setsid python3 experiments/dual-el/lean-feeder.py http://127.0.0.1:8560 /tmp/lb-corp-0.txt $ptarget $rate $((WINDOW+200)) >/tmp/lb-feed.log 2>&1 &
   disown
   for h in "${HOSTS[@]}"; do
-    timeout 60 tailscale ssh papaduck@"$h" "(setsid nohup python3 /home/papaduck/lean-feeder.py http://127.0.0.1:8560 /tmp/lb-corp.txt 30000 $rate $((WINDOW+200)) >> /home/papaduck/lb-feed.log 2>&1 < /dev/null &); true" 2>/dev/null
+    timeout 60 tailscale ssh papaduck@"$h" "(setsid nohup python3 /home/papaduck/lean-feeder.py http://127.0.0.1:8560 /tmp/lb-corp.txt $ptarget $rate $((WINDOW+200)) >> /home/papaduck/lb-feed.log 2>&1 < /dev/null &); true" 2>/dev/null
   done
   say "feeders up at ${rate}/s/node; warming 60s"
   sleep 60
