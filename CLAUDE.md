@@ -520,6 +520,41 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**🏁 CAMPAIGN CLOSE (2026-08-24 evening) — N=1 CLEARS 6.4k, FAN-OUT MECHANISM DOCUMENTED,
+FLEET TORN DOWN.** Final measured picture at the 2 blk/s target (v1.3.1, 4-machine fleet):
+| config | cadence | tx/s | payments/s | full |
+| EVM 50M | 1.75 | 4,165 | 4,165 | 100%% |
+| EVM 75M | 1.69 | 5,972 | 5,972 | 98%% |
+| EVM 100M | 1.47 | 6,032 | 6,032 | 68%% (delivery) |
+| lean N=1 100M | **1.96** | **6,401** | 6,401 | 85%% (headroom left) |
+| lean N=100 150M | 1.93 | 555 | **55,534** | 100%% |
+=> at one payment per signature the lanes are EQUALS (~6k, both hitting the ecrecover/
+coordination wall); the 9x is bought ENTIRELY by fan-out. Fan-out sweep (fixed ~830KB
+blocks): N=5 35,927 · N=10 45,427 · N=20 50,590 · N=50 54,172 · N=100 55,534 payments/s —
+saturates by N=50 at the 28B/payment wire floor.
+**THE N=1 UNLOCK WAS A HARNESS BUG, NOT A LANE LIMIT (user-caught):** pre-signed corpus
+delivers **29,301 tx/s from ONE thread**, but lean-feeder.py's governor counted QUEUED txs
+(nonces ahead of chain) toward pool depth and paused the feed while the builder — which
+draws only from PENDING — still had room. Same ~4.5k landed at 62M AND 214M budgets = the
+signature of a supply-side throttle. Fix (`32128c4`): watch pending only, batch 2k->4k,
+pool target scales with block size. N=1: 4,609 -> 5,214 (80M) -> **6,401 (100M)**.
+**MECHANISM (notebook fig 5, per 100 payments):** signatures 100->1 · ecrecover 3.3ms->33us ·
+mempool entries 100->1 · wire 10,000B->2,872B · execution UNCHANGED (~1us/payment) but
+conflict-free by construction (fan-out atomic under one sender => senders partition; recipient
+side = commutative credits => deterministic parallel merge, no optimistic aborts). Fan-out does
+NOT make single payments faster — it removes the per-TRANSACTION overhead around them.
+**🔧 HARNESS: `experiments/dual-el/lane-bench.sh` IS THE ENTRY POINT** (`ac167bc`, `cf3676f`):
+`./lane-bench.sh evm 75000000` · `./lane-bench.sh lean 150000000 100 600` -> JSON row.
+Gates: container census, pool wipe BEFORE CL recreate (ordering bug: a CL that boots while
+its lean node is down parks in Manual-intervention and fails 100%% of its proposer turns while
+blocks still read 100%% full — cost 2 arms), pre-measure CL health gate (live + unparked),
+chain-static check, corpus pending-probe, per-machine corpus gen, remote-EFFECT verification,
+fullness on every row, uninvolved-validator sampling. STOP hand-rolling per-arm shell.
+**ARTIFACT CLASS TO WATCH:** a validator can look healthy (containers up, agreement passing,
+blocks 100%% full) while contributing NOTHING — parked CL, or a CL degenerated into a pure
+sync-follower (decides by fetching, never proposes). Both cost ~25%% cadence and were only
+found by per-validator PROPOSER-TURN attribution. Always attribute failed round-0s by proposer.
+
 **⚖️ EVM-vs-LEAN BACK-TO-BACK + 2 RETRACTIONS (2026-08-24).** Same fleet/hour, 2 blk/s target:
 **EVM(reth) 50M 4,165tps@1.75 (100%% full) · 75M 5,972@1.69 (98%%) · 100M 6,032@1.47 (68%%,
 delivery-bound) — 50M was NOT the EVM ceiling, lane saturates ~6k tps. LEAN N=1 62M
