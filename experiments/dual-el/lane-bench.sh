@@ -32,16 +32,19 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 LANE=${1:?usage: lane-bench.sh evm|lean <gas> [N] [window_s]}
 GAS=${2:?gas budget, e.g. 150000000}
 if [ "$LANE" = lean ]; then N=${3:-100}; WINDOW=${4:-600}; else N=1; WINDOW=${3:-600}; fi
 OUT=${OUT:-/tmp/lane-bench.jsonl}
-HOSTS=(ginnythui papaduck papaduck-alien2)
-IPS=(100.124.148.61 100.85.150.119 100.70.62.92 100.86.97.40)
+# Topology from fleet.env (copy fleet.env.example). Falls back to the original
+# 4-machine fleet so existing invocations keep working.
+CFG="$REPO_ROOT/experiments/dual-el/fleet.env"
+if [ -f "$CFG" ]; then . "$CFG"; HOSTS=("${FLEET_HOSTS[@]:1}"); IPS=("${FLEET_IPS[@]}");
+else HOSTS=(ginnythui papaduck papaduck-alien2); IPS=(100.124.148.61 100.85.150.119 100.70.62.92 100.86.97.40); fi
 # Repo-local by default: the lean lane now lives in THIS workspace
 # (crates/lean-lane-node), so `cargo build --release -p lean-lane-node` is all a
 # fresh machine needs — no reth fork required. Override for an external build.
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 LEAN_BIN=${LEAN_BIN:-$REPO_ROOT/target/release/lean-lane-node}
 FUND=${FUND:-$HOME/lean-fund.txt}
 [ -x "$LEAN_BIN" ] || { echo "lean binary missing: $LEAN_BIN  (cargo build --release -p lean-lane-node)"; exit 1; }

@@ -76,8 +76,35 @@ before CL recreate, chain-static check, corpus probe, per-machine corpus
 generation, remote-effect verification, CL health gate, fullness on every row) —
 extend this script rather than hand-rolling per-experiment shell.
 
-## Still machine-specific (the remaining porting work)
+## Verify a fresh machine in one command
 
-`lane-bench.sh` and the fleet launchers hardcode this fleet's four tailscale
-hostnames/IPs and `/home/papaduck` paths. To run elsewhere, lift `HOSTS`/`IPS`
-and the datadir root into an env file. Single-machine runs need none of that.
+```bash
+./experiments/dual-el/lean-smoke.sh        # ~1 min
+```
+
+Boots three lean nodes on loopback, drives them with a stand-in for the CL
+(round-robin `arc_buildBlock` → `arc_newBlock` on all three), feeds real signed
+fan-out transactions, and asserts all three converge on one commitment at the
+expected height with non-empty blocks. No docker, no fleet, no fork. If this
+passes, the lane works on that machine.
+
+## Multi-machine
+
+```bash
+cp experiments/dual-el/fleet.env.example experiments/dual-el/fleet.env   # edit hosts/IPs
+./experiments/dual-el/deploy-lean.sh --check    # what is stale where
+./experiments/dual-el/deploy-lean.sh            # build + ship, sha-verified
+```
+
+`deploy-lean.sh` ships the lean binary, the spammer, `lean-feeder.py` and the
+fund file to every host in `fleet.env`, verifying each by **sha after transfer**
+— tailscale ssh returns success when its session check has expired, so exit
+codes cannot be trusted. `lane-bench.sh` reads the same file for topology.
+
+## Still machine-specific
+
+The historical fleet launchers under `experiments/dual-el/fleet/`
+(`demo-fleet*.sh`, `gen-fleet.py`, …) still hardcode this fleet's hostnames and
+`/home/papaduck` paths; they are kept as campaign history. The live path —
+`lean-smoke.sh`, `deploy-lean.sh`, `lane-bench.sh`, `gen-lean-fund.sh` — is
+parameterised.
