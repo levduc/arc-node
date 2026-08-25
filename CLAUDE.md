@@ -520,6 +520,23 @@ demo'd. Commits 7d081ce..2a2e06d + requests-hash fix. CAVEATS: n=1/size/arm; tot
 in the EL (byzantine proposer = synchronized attributable halt, not fork); experiment-only.
 Record: docs/deferred-exec-100k.md. Next rungs: compact blocks (~18µs/tx transport), lagged root.
 
+**✅ SELF-CONTAINMENT COMPLETED + VERIFIED (2026-08-24, `a598120`/`f007c73`):**
+· **`experiments/dual-el/lean-smoke.sh`** = the proof. Boots 3 lean nodes on loopback, drives
+  them with a stand-in CL (round-robin arc_buildBlock -> arc_newBlock on all), feeds real
+  signed fan-out txs, asserts convergence. **PASS: 40 heights, 9,856 txs, 98,560 payments,
+  3/3 at one commitment — no docker, no fleet, no fork.** Run this first on any new machine.
+· **`gen-lean-fund.sh`** regenerates genesis funding (m/44'/60'/1'/0/i — the 1' matters);
+  address set verified identical to the campaign file.
+· **`fleet.env(.example)`** holds hosts/IPs/paths; `lane-bench.sh` reads it (falls back to the
+  original fleet). **`deploy-lean.sh`** builds + ships binary/spammer/feeder/fund to every
+  host, **sha-verified AFTER transfer** (tailscale ssh returns success when its session check
+  expired — only the artifact proves the ship). Validated live: --check flagged the remotes as
+  carrying the old fork binary + pre-fix feeder, deploy then brought all three current.
+· GOTCHA banked: RPC bodies must go through FILES, never argv — a budget-full block's base64
+  is ~1 MB and trips "Argument list too long" (killed the first smoke run).
+· Legacy `fleet/demo-fleet*.sh` etc. still hardcode this fleet — kept as history, not the
+  live path.
+
 **📦 REPO IS NOW SELF-CONTAINED FOR THE LEAN LANE (2026-08-24, `1bdfd39`): the lane is TWO
 CRATES IN THIS WORKSPACE — `crates/lean-native` + `crates/lean-lane-node` — building against
 the SAME upstream reth `v2.3.0` git tag the workspace already used. NO FORK NEEDED TO RUN.**
