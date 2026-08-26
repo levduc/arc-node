@@ -76,7 +76,7 @@ pub(crate) async fn load(
     let config = spammer::Config {
         max_num_accounts: std::cmp::min(num_extra_accounts, config.max_num_accounts),
         csv_dir: Some(csv_dir),
-        ..*config
+        ..(*config).clone()
     };
 
     let spammer = Spammer::new(target_ws_urls, &config).await?;

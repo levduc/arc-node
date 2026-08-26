@@ -296,6 +296,7 @@ impl FromStr for TxTypeMix {
     }
 }
 
+#[derive(Clone)]
 pub struct Config {
     /// Number of transaction generators to run in parallel
     pub num_generators: usize,
