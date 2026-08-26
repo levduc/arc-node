@@ -298,3 +298,68 @@ timeouts must then be sized for the expensive height.
 Endurance testing (12 h+ at the operating point, with `--fanout-amount` so
 senders do not bankrupt) should run in the background of whichever item is
 active; it is the cheapest way to keep the numbers trustworthy.
+
+## 8. Mixed-N workload + parallel recovery (planned 2026-08-25, decisions: Duc)
+
+**Decisions.** Stay at 2 blk/s. Default mix = **equal-by-tx** over N ∈ {1,5,10,50,100}
+(each N is 20 % of *transactions*; avg N ≈ 33). Keep one **equal-by-payments** stress
+mix (each N carries 20 % of *payments*; tx counts skew to N=1). Parallelize
+**recovery only** — the bench shows ecrecover gains 7–8× from rayon while parallel
+*execution* is neutral-to-slower (0.33→0.57 µs/out at N=1), so execution stays serial.
+
+**Why they belong together.** Pure N=100 blocks carry ~290 sigs (serial recovery
+~9 ms — irrelevant). The by-payments mix at 225M carries ~5,700 sigs → ~170 ms serial
+recovery, which blows the ~200 ms vote gap and loses the staging race; parallel is
+~22 ms. Mixed workloads are where parallel recovery stops being optional.
+
+### Work items
+
+- **P1 spammer**: `--fanout-outputs` accepts `1:20,5:20,10:20,50:20,100:20`
+  (weights = tx share). Sampling is **deterministic by tx index** (cycle a weighted
+  pattern, no RNG) so a corpus is reproducible byte-for-byte and realized shares are
+  exact. Single-value spec unchanged.
+- **P2 node**: `decode_block_txs` gains a parallel-recovery path
+  (`recover_all_parallel`), env-gated `LEAN_PARALLEL_RECOVERY=1`, default off.
+  Skip-invalid semantics and item order must be byte-identical to serial.
+- **P3 harness**: `lane-bench.sh` accepts a mix spec; the measure step computes
+  **fullness by gas** (Σ 21000+5000·Nᵢ from per-tx output counts, which the parser
+  already reads) and adds `avg_n` and `sigs_blk` to every JSON row.
+- **P4 smoke**: `lean-smoke.sh --mixed` arm (see V4/V5 below).
+
+### Verification ladder — all local until the last step
+
+Every claim gets a test at the cheapest level that can falsify it. A step runs only
+after the one above it passes.
+
+- **V1 — corpus determinism (unit, seconds).** Same spec → byte-identical corpus
+  (sha256), exact 20 % tx share per N, per-tx fee = lean_fee(Nᵢ). Falsifies: P1.
+- **V2 — admission (smoke node, seconds).** Submit a mixed corpus sample; require
+  `pending == submitted` (no underpriced/malformed rejections across N values).
+  Falsifies: fee/pool arithmetic under mixed N.
+- **V3 — recovery differential (unit, seconds).** For mixed blocks *with invalid
+  txs interleaved*: parallel decode+recover returns the identical item vector
+  (order, skips, senders) as serial. This is the consensus-critical gate for P2.
+- **V4 — replay invariance (local, ~1 min).** Drive the *same block bytes* into two
+  fresh nodes — flag off vs flag on — and require the **same head commitment**. A
+  live restatement of V3 through the real node path.
+- **V5 — convergence under mixed load (local, ~2 min).** `lean-smoke.sh --mixed`:
+  3 loopback nodes, mixed corpus, N heights → 3/3 nodes one commitment, blocks
+  non-empty, measured avg N ≈ 33 ± 2, gas-fullness ≈ 100 %. Falsifies: P3
+  accounting and any mixed-load wire/pool issue.
+- **V6 — the mechanism, live (single-machine testnet, ~1 evening).** Full stack on
+  one box (4 CLs + 4 EVM ELs + 4 lean nodes — the demo topology). Six 10-min arms
+  at 2 blk/s / 225M: {pure-100, mixed-by-tx, mixed-by-payments} × {serial,
+  parallel}. **Pass** = the serial/parallel gap appears *only* where predicted:
+  - pure-100 and mixed-by-tx: serial ≈ parallel (recovery ≤ 40 ms either way);
+  - mixed-by-payments: serial arm loses staging races (anchor p50 rises, possibly
+    cadence dips); parallel arm restores the pure-100 profile.
+  Caveat recorded with the numbers: one box shares CPU among 4 validators, so
+  *absolute* throughput is not fleet-comparable — but serial-vs-parallel on the
+  same box is a controlled comparison, which is what V6 claims.
+- **V7 — no-regression + fleet numbers (fleet, optional last).** Pure N=100 must
+  reproduce the campaign row within the known ±15 % band, then one mixed-by-tx
+  fleet arm for the §5-grade number. Only this step needs tailscale.
+
+**Adoption rule.** `LEAN_PARALLEL_RECOVERY` flips to default-on only after V3–V6
+pass and one soak (≥2 h mixed load, local) shows zero divergence; the flag stays
+for one release as the rollback.

@@ -78,3 +78,25 @@ Append-only, one entry per session, newest at the bottom. Convention in
 
 **Open (next session)**
 - Run the cadence experiment (roadmap §7.2) before building per-lane cadence.
+
+## 2026-08-25 (later) — mixed-N + parallel-recovery plan; bench side-by-side
+
+**Measured (offline bench, this box, 16 rayon threads, 100k outputs/config)**
+- ecrecover serial→parallel: N=1 30.3→3.9 µs/out (7.8×) · N=10 3.1→0.39 · N=100
+  0.36→0.05. Execution serial→parallel: N=1 0.33→0.57 (SLOWER), N≥10 ~equal.
+  ⇒ parallelize recovery only; execution stays serial.
+- Verified in source: vote-gap staging IS wired (payload.rs:563 → arc_stageBlock;
+  anchor ladder 145→95→44 ms already measured). Node's decode_block_txs +
+  apply_block are both serial today; lean-native's rayon paths are unused.
+
+**Decided (Duc)**
+- Stay at 2 blk/s. Mixed-N default = equal-by-tx over {1,5,10,50,100}; keep
+  equal-by-payments as the stress mix. Focus next on verification; local first.
+
+**Planned** — roadmap §8: P1 spammer weighted `--fanout-outputs`, P2 env-gated
+parallel recovery in decode_block_txs, P3 lane-bench mix spec + fullness-by-gas +
+avg_n/sigs_blk, P4 smoke --mixed. Verification ladder V1–V7 (V1–V6 fully local;
+only V7 touches the fleet). Adoption rule: flag default-on only after V3–V6 + 2 h
+local soak with zero divergence.
+
+**Open** — implement P1→P4, run V1→V6.
