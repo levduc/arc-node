@@ -4,7 +4,7 @@ cl.config.execution_persistence_backpressure = true
 
 # Consensus-ceiling sweep: let the proposer build big blocks (default 100ms caps
 # gas/block at ~140M). 400ms + wait-for-payload fills toward the 500M gas limit.
-el.config.arc.builder.deadline = 500
+el.config.arc.builder.deadline = 2000
 el.config.arc.builder.wait-for-payload = true
 
 # Each validator uses a distinct fee recipient so we can tell which validator
