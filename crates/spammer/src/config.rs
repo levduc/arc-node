@@ -319,8 +319,9 @@ pub struct Config {
     pub max_time: u64,
     /// Size of transaction input data in bytes
     pub tx_input_size: usize,
-    /// Recipients per lean fan-out tx (tx type 0x50, --mix fanout=..)
-    pub fanout_outputs: usize,
+    /// Recipients per lean fan-out tx (tx type 0x50, --mix fanout=..).
+    /// Single N ("10") or weighted mix "N:W,..." — see cli.rs.
+    pub fanout_outputs: String,
     pub fresh_recipients: bool,
     pub recipient_pool: Option<(u64, u64)>,
     /// Maximum number of transactions to send per account (0 for no limit)
@@ -457,7 +458,7 @@ mod tests {
             recipient_pool: None,
             max_time: 0,
             tx_input_size: 0,
-            fanout_outputs: 10,
+            fanout_outputs: "10".to_string(),
             max_txs_per_account: 0,
             silent: false,
             show_pool_status: false,

@@ -36,6 +36,16 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 LANE=${1:?usage: lane-bench.sh evm|lean <gas> [N] [window_s]}
 GAS=${2:?gas budget, e.g. 150000000}
 if [ "$LANE" = lean ]; then N=${3:-100}; WINDOW=${4:-600}; else N=1; WINDOW=${3:-600}; fi
+# N may be a weighted mix spec "1:20,5:20,10:20,50:20,100:20" (weights = tx
+# share; passed to the spammer verbatim). AVG_N drives corpus/budget sizing.
+case "$N" in
+  *:*) AVG_N=$(python3 -c "
+import sys
+pairs=[p.split(':') for p in '$N'.split(',')]
+w=sum(int(b) for _,b in pairs)
+print(f'{sum(int(a)*int(b) for a,b in pairs)/w:.2f}')") ;;
+  *)   AVG_N=$N ;;
+esac
 OUT=${OUT:-/tmp/lane-bench.jsonl}
 # Topology from fleet.env (copy fleet.env.example). Falls back to the original
 # 4-machine fleet so existing invocations keep working.
@@ -165,18 +175,18 @@ else
   [ "$n1" = "$n2" ] || die "chain not static ($n1 -> $n2): a feeder is alive"
 
   # corpus: sized to the window, generated ON each machine, verified by effect
-  per_tx=$((21000+5000*N)); btx=$((GAS/per_tx))
+  per_tx=$(python3 -c "print(int(21000+5000*$AVG_N))"); btx=$((GAS/per_tx))
   need=$(( btx*2*WINDOW/4 + 100000 )); gen=$(( need/8000 + 30 ))
   say "corpus target ~$need tx/partition (~${gen}s gen), block budget ${btx} tx"
   rm -f /tmp/lb-corp-0.txt
   ( SPAM_DUMP_FILE=/tmp/lb-corp-0.txt timeout $((gen+90)) ./target/release/spammer ws \
       --targets ws://127.0.0.1:8560 -r 9000 -g 4 -a 200 --account-offset 0 -t $gen \
-      --chain-id 1338 --mix fanout=100 --fanout-outputs $N -l >/dev/null 2>&1
+      --chain-id 1338 --mix fanout=100 --fanout-outputs "$N" -l >/dev/null 2>&1
     cat /tmp/lb-corp-0.txt.[0-9]* > /tmp/lb-corp-0.txt 2>/dev/null; rm -f /tmp/lb-corp-0.txt.[0-9]* ) &
   g0=$!; gp=""
   for i in 1 2 3; do
     h=${HOSTS[$((i-1))]}
-    ( timeout $((gen+200)) tailscale ssh papaduck@"$h" "rm -f /tmp/lb-corp.txt /tmp/lb-corp.txt.*; SPAM_DUMP_FILE=/tmp/lb-corp.txt timeout $((gen+90)) /home/papaduck/arc-spammer ws --targets ws://127.0.0.1:8560 -r 9000 -g 4 -a 200 --account-offset $((i*200)) -t $gen --chain-id 1338 --mix fanout=100 --fanout-outputs $N -l >/dev/null 2>&1; cat /tmp/lb-corp.txt.* > /tmp/lb-corp.txt 2>/dev/null; rm -f /tmp/lb-corp.txt.*; wc -l < /tmp/lb-corp.txt" 2>/dev/null | tail -1 ) &
+    ( timeout $((gen+200)) tailscale ssh papaduck@"$h" "rm -f /tmp/lb-corp.txt /tmp/lb-corp.txt.*; SPAM_DUMP_FILE=/tmp/lb-corp.txt timeout $((gen+90)) /home/papaduck/arc-spammer ws --targets ws://127.0.0.1:8560 -r 9000 -g 4 -a 200 --account-offset $((i*200)) -t $gen --chain-id 1338 --mix fanout=100 --fanout-outputs \"$N\" -l >/dev/null 2>&1; cat /tmp/lb-corp.txt.* > /tmp/lb-corp.txt 2>/dev/null; rm -f /tmp/lb-corp.txt.*; wc -l < /tmp/lb-corp.txt" 2>/dev/null | tail -1 ) &
     gp="$gp $!"
   done
   wait $g0 $gp 2>/dev/null
@@ -233,7 +243,9 @@ say "health gate ok (4 CLs live, none parked)"
 say "measuring ${WINDOW}s (silent)"
 python3 - "$LANE" "$GAS" "$N" "$WINDOW" "$OUT" <<'PY'
 import json, sys, time, urllib.request, base64
-lane, gas, N, window, out = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
+lane, gas, N, window, out = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4]), sys.argv[5]
+# N may be a mix spec string; nothing below does arithmetic on it (evm lane
+# still gets per-tx 21000 for its own fullness math).
 # sample from an UNINVOLVED wired validator (val2) — never the loaded local node
 def rpc(url, m, p):
     r = urllib.request.Request(url, data=json.dumps({"jsonrpc":"2.0","id":1,"method":m,"params":p}).encode(),
@@ -243,28 +255,31 @@ if lane == "evm":
     U="http://127.0.0.1:8545"
     h0=int(rpc(U,"eth_blockNumber",[]),16); t0=time.time(); time.sleep(window)
     h1=int(rpc(U,"eth_blockNumber",[]),16); dt=time.time()-t0
-    txs=full=b=0
+    txs=full=b=0; gas_sum=0
     for n in range(h0+1,h1+1):
         blk=rpc(U,"eth_getBlockByNumber",[hex(n),False])
-        txs+=len(blk["transactions"]); b+=1
-        full += 1 if int(blk["gasUsed"],16) >= 0.95*gas else 0
-    per=21000; btx=gas//per; ops=txs
+        txs+=len(blk["transactions"]); b+=1; gu=int(blk["gasUsed"],16); gas_sum+=gu
+        full += 1 if gu >= 0.95*gas else 0
+    ops=txs
 else:
     U="http://100.85.150.119:8560"
     h0=rpc(U,"arc_getHead",{})["number"]; t0=time.time(); time.sleep(window)
     h1=rpc(U,"arc_getHead",{})["number"]; dt=time.time()-t0
-    txs=ops=b=full=0; per=21000+5000*N; btx=gas//per
+    # Mix-safe accounting: fullness by GAS (sum 21000+5000*N_i per tx), which
+    # is exact for any N distribution; sigs_blk = txs (one signature each).
+    txs=ops=b=full=0; gas_sum=0
     for n in range(h0+1,h1+1):
         bb=base64.b64decode(rpc(U,"arc_getBlockBytes",{"number":n})["blockBytes"])
-        ntx=int.from_bytes(bb[48:52],'little'); off=52; o=0
+        ntx=int.from_bytes(bb[48:52],'little'); off=52; o=0; g=0
         for _ in range(ntx):
             l=int.from_bytes(bb[off:off+4],'little'); off+=4
-            o+=int.from_bytes(bb[off+5:off+7],'little'); off+=l
-        txs+=ntx; ops+=o; b+=1
-        full += 1 if ntx >= 0.95*btx else 0
+            no=int.from_bytes(bb[off+5:off+7],'little'); o+=no; g+=21000+5000*no; off+=l
+        txs+=ntx; ops+=o; b+=1; gas_sum+=g
+        full += 1 if g >= 0.95*gas else 0
 row=dict(lane=lane,N=N,gas=gas,blocks=b,secs=round(dt),cadence=round(b/dt,2),
-         tps=round(txs/dt),ops=round(ops/dt),avg_txs_blk=txs//max(b,1),budget_txs_blk=btx,
-         fullness_pct=round(100*(txs/max(b,1))/btx) if btx else 0)
+         tps=round(txs/dt),ops=round(ops/dt),avg_txs_blk=txs//max(b,1),
+         sigs_blk=txs//max(b,1),avg_n=round(ops/max(txs,1),1),
+         fullness_pct=round(100*(gas_sum/max(b,1))/gas))
 print(json.dumps(row))
 open(out,"a").write(json.dumps(row)+"\n")
 PY

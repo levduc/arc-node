@@ -354,7 +354,7 @@ impl Spammer {
             config.guzzler_fn_weights,
             config.erc20_fn_weights,
             config.tx_type_mix,
-            config.fanout_outputs,
+            config.fanout_outputs.clone(),
         );
 
         if config.preinit_accounts {
@@ -428,7 +428,7 @@ impl Spammer {
                 config.guzzler_fn_weights,
                 config.erc20_fn_weights,
                 config.tx_type_mix,
-            config.fanout_outputs,
+            config.fanout_outputs.clone(),
             )
             .with_query_nonces_on_init(true);
 

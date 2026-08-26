@@ -29,6 +29,7 @@ serde_json.workspace = true
 base64 = "0.22"
 eyre.workspace = true
 secp256k1 = { workspace = true, features = ["std", "recovery", "global-context", "rand"] }
+rayon.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

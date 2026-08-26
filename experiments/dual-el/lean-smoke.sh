@@ -13,8 +13,11 @@
 # Exit 0 = the lane works from a clean checkout on this machine.
 set -uo pipefail
 cd "$(cd "$(dirname "$0")/../.." && pwd)" || exit 1
+MIXED=0
+if [ "${1:-}" = "--mixed" ]; then MIXED=1; shift; fi
 HEIGHTS=${1:-40}
 PORTS=(8571 8572 8573)
+MIX_SPEC="1:20,5:20,10:20,50:20,100:20"   # equal-by-tx (roadmap §8)
 RUN=$(mktemp -d /tmp/lean-smoke.XXXXXX)
 FUND=${FUND:-$RUN/fund.txt}
 BIN=target/release/lean-lane-node
@@ -79,9 +82,11 @@ done
 say "genesis agreed: ${g:0:18}..."
 
 # --------------------------------------------------------------- load
-say "feeding fan-out transactions (N=$N)"
+FANOUT_ARG=$N
+[ "$MIXED" = 1 ] && FANOUT_ARG="$MIX_SPEC"
+say "feeding fan-out transactions (--fanout-outputs $FANOUT_ARG)"
 "$SPAM" ws --targets "ws://127.0.0.1:${PORTS[0]}" -r 2000 -g 2 -a 200 --account-offset 0 \
-  -t 12 --chain-id $CHAIN --mix fanout=100 --fanout-outputs $N -l >/dev/null 2>&1
+  -t 12 --chain-id $CHAIN --mix fanout=100 --fanout-outputs "$FANOUT_ARG" -l >/dev/null 2>&1
 pend=$(rpc "${PORTS[0]}" txpool_status '{}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["result"]["pending"])')
 [ "${pend:-0}" -gt 0 ] || { echo "FAIL: no transactions reached the pool"; exit 1; }
 say "pool: $pend pending"
@@ -106,14 +111,15 @@ for h in $(seq 1 "$HEIGHTS"); do
   stat=$(python3 - "$RUN/.blk" <<'PY'
 import base64,sys
 import json
-bb=base64.b64decode(json.load(open(sys.argv[1]))['blockBytes']); ntx=int.from_bytes(bb[48:52],'little'); off=52; o=0
+bb=base64.b64decode(json.load(open(sys.argv[1]))['blockBytes']); ntx=int.from_bytes(bb[48:52],'little'); off=52; o=0; g=0
 for _ in range(ntx):
     l=int.from_bytes(bb[off:off+4],'little'); off+=4
-    o+=int.from_bytes(bb[off+5:off+7],'little'); off+=l
-print(f"{ntx} {o}")
+    n=int.from_bytes(bb[off+5:off+7],'little'); o+=n; g+=21000+5000*n; off+=l
+print(f"{ntx} {o} {g}")
 PY
 )
   txs=$((txs + $(echo $stat | cut -d' ' -f1))); outs=$((outs + $(echo $stat | cut -d' ' -f2)))
+  gas=$((${gas:-0} + $(echo $stat | cut -d' ' -f3)))
 done
 
 # ------------------------------------------------------------- verdict
@@ -128,7 +134,37 @@ say "heads: ${heads[*]}  distinct commitments: $uniq_c"
 [ "$uniq_c" = "1" ] || { echo "FAIL: nodes diverged"; exit 1; }
 [ "${heads[0]}" = "$HEIGHTS" ] || { echo "FAIL: expected head $HEIGHTS, got ${heads[0]}"; exit 1; }
 [ "$txs" -gt 0 ] || { echo "FAIL: all blocks were empty"; exit 1; }
+AVG_N=$(python3 -c "print(f'{$outs/$txs:.1f}')")
+if [ "$MIXED" = 1 ]; then
+  # equal-by-tx over {1,5,10,50,100} => avg N ~= 33.2 (V5 accounting check)
+  python3 -c "import sys; a=$outs/$txs; sys.exit(0 if 28 <= a <= 38 else 1)" \
+    || { echo "FAIL: avg N=$AVG_N outside [28,38] — mix not realized"; exit 1; }
+  say "avg N=$AVG_N (mix realized)"
+fi
+
+# ---- V4: replay invariance — a FRESH node with LEAN_PARALLEL_RECOVERY=1 must
+# reach the same head commitment from the same block bytes.
+RP=8574
+say "V4: replaying $HEIGHTS blocks into a parallel-recovery node on :$RP"
+LEAN_PARALLEL_RECOVERY=1 setsid "$BIN" run --datadir "$RUN/replay" --port $RP --bind 127.0.0.1 \
+  --chain-id $CHAIN --shim --fund-file "$FUND" \
+  --fund-balance 10000000000000000000 > "$RUN/replay.log" 2>&1 &
+disown
+ok=0; for _ in $(seq 1 30); do
+  rpc $RP arc_getHead '{}' | grep -q commitment && { ok=1; break; }; sleep 1; done
+[ $ok = 1 ] || { echo "FAIL: replay node did not start"; exit 1; }
+for h in $(seq 1 "$HEIGHTS"); do
+  rpc "${PORTS[0]}" arc_getBlockBytes "{\"number\":$h}" \
+    | python3 -c 'import sys,json;print(json.dumps({"blockBytes":json.load(sys.stdin)["result"]["blockBytes"]}))' > "$RUN/.rblk"
+  r=$(rpc_file $RP arc_newBlock "$RUN/.rblk")
+  echo "$r" | grep -q '"commitment"' || { echo "FAIL: V4 replay rejected block $h"; echo "$r" | head -c 200; exit 1; }
+done
+RC=$(rpc $RP arc_getHead '{}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["result"]["commitment"])')
+[ "$RC" = "${comms[0]}" ] || { echo "FAIL: V4 DIVERGENCE — parallel-recovery replay head $RC vs ${comms[0]}"; exit 1; }
+pid=$(ss -ltnp 2>/dev/null | grep ":$RP " | grep -oP 'pid=\K[0-9]+' | head -1)
+[ -n "${pid:-}" ] && kill -9 "$pid" 2>/dev/null
+say "V4 ok: parallel-recovery node reached identical commitment"
 echo
 echo "✅ PASS — lean lane runs from this repo alone"
-echo "   $HEIGHTS heights · $txs transactions · $outs payments · 3/3 nodes at ${comms[0]:0:18}..."
+echo "   $HEIGHTS heights · $txs transactions · $outs payments · avg N=$AVG_N · 3/3 nodes at ${comms[0]:0:18}..."
 echo "   (no docker, no fleet, no reth fork)"

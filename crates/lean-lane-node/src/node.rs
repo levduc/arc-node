@@ -802,6 +802,23 @@ pub struct RecoveryReport {
 /// in an appended block cannot occur (we wrote it), but total-STF posture is
 /// kept everywhere.
 pub fn decode_block_txs(txs: &[Vec<u8>]) -> Vec<(Address, LeanTx, B256)> {
+    if parallel_recovery_enabled() {
+        decode_block_txs_parallel(txs)
+    } else {
+        decode_block_txs_serial(txs)
+    }
+}
+
+/// `LEAN_PARALLEL_RECOVERY=1` opts in to rayon-parallel sender recovery
+/// (ecrecover is ~30 us/tx serial, ~8x faster parallel — offline bench
+/// 2026-08-25). Read once; default OFF until the differential + soak gates
+/// pass (roadmap §8 adoption rule).
+fn parallel_recovery_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("LEAN_PARALLEL_RECOVERY").is_ok_and(|v| v == "1"))
+}
+
+pub fn decode_block_txs_serial(txs: &[Vec<u8>]) -> Vec<(Address, LeanTx, B256)> {
     let mut items = Vec::with_capacity(txs.len());
     for bytes in txs {
         let Ok(env) = ArcTxEnvelope::decode_2718(&mut bytes.as_slice()) else { continue };
@@ -812,4 +829,27 @@ pub fn decode_block_txs(txs: &[Vec<u8>]) -> Vec<(Address, LeanTx, B256)> {
         }
     }
     items
+}
+
+/// Identical semantics to the serial path — same skips, same order (rayon's
+/// indexed par_iter + collect preserves input order; skipped entries collapse
+/// via flatten) — only the per-tx decode + ecrecover run on the thread pool.
+pub fn decode_block_txs_parallel(txs: &[Vec<u8>]) -> Vec<(Address, LeanTx, B256)> {
+    use rayon::prelude::*;
+    txs.par_iter()
+        .map(|bytes| {
+            let env = ArcTxEnvelope::decode_2718(&mut bytes.as_slice()).ok()?;
+            let signer = env.recover_signer().ok()?;
+            match env {
+                ArcTxEnvelope::Lean(lean) => {
+                    let hash = *lean.hash();
+                    Some((signer, lean.tx().clone(), hash))
+                }
+                _ => None,
+            }
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .flatten()
+        .collect()
 }

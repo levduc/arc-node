@@ -129,7 +129,11 @@ pub(crate) struct TxGenerator {
     max_txs_per_account: u64,
     query_latest_nonce: bool,
     tx_input_size: usize,
-    fanout_outputs: usize,
+    /// Per-tx output counts, cycled deterministically by nonce. A single-N
+    /// spec yields a 1-element pattern; a weighted mix ("1:20,5:20,...") yields
+    /// the weight-reduced cycle (e.g. [1,5,10,50,100]) so realized tx shares
+    /// are EXACT over every full cycle and corpora are reproducible.
+    fanout_pattern: Vec<usize>,
     fresh_recipients: bool,
     recipient_pool: Option<(u64, u64)>,
     fresh_ctr: std::sync::atomic::AtomicU64,
@@ -172,8 +176,10 @@ impl TxGenerator {
         guzzler_fn_weights: GuzzlerFnWeights,
         erc20_fn_weights: Erc20FnWeights,
         tx_type_mix: TxTypeMix,
-        fanout_outputs: usize,
+        fanout_outputs: String,
     ) -> Self {
+        let fanout_pattern = parse_fanout_spec(&fanout_outputs)
+            .unwrap_or_else(|e| panic!("--fanout-outputs {fanout_outputs:?}: {e}"));
         let size = signers_range.len();
         Self {
             id,
@@ -186,7 +192,7 @@ impl TxGenerator {
             max_txs_per_account,
             query_latest_nonce,
             tx_input_size,
-            fanout_outputs,
+            fanout_pattern,
             fresh_recipients,
             recipient_pool,
             fresh_ctr: std::sync::atomic::AtomicU64::new(
@@ -925,7 +931,7 @@ impl TxGenerator {
         let nonce32: u32 = nonce
             .try_into()
             .map_err(|_| eyre::eyre!("fanout: nonce {nonce} exceeds u32 (lean wire nonce)"))?;
-        let n = self.fanout_outputs.max(1);
+        let n = self.fanout_pattern[nonce as usize % self.fanout_pattern.len()].max(1);
         let outputs: Vec<(Address, u64)> = (0..n)
             .map(|k| {
                 let salt = nonce.wrapping_mul(1_000_003).wrapping_add(k as u64);
@@ -1030,7 +1036,7 @@ mod tests {
                 transfer: 100,
                 ..Default::default()
             },
-            10,
+            "10".to_string(),
         )
     }
 
@@ -1149,7 +1155,7 @@ mod tests {
                 legacy: 100,
                 ..Default::default()
             },
-            10,
+            "10".to_string(),
         );
 
         let (envelope, _) = generator.next_tx().await?.expect("legacy tx");
@@ -1206,5 +1212,83 @@ mod tests {
             );
         }
         Ok(())
+    }
+}
+
+
+/// Parse a `--fanout-outputs` spec: either a single N ("10") or a weighted mix
+/// "N:W,N:W,..." (weights = share of transactions). Returns the deterministic
+/// cycle pattern: weights reduced by their gcd, each N repeated its reduced
+/// weight, in spec order. Sampling `pattern[nonce % len]` then gives exact
+/// realized shares over every full cycle with zero randomness.
+pub fn parse_fanout_spec(spec: &str) -> std::result::Result<Vec<usize>, String> {
+    fn gcd(a: usize, b: usize) -> usize { if b == 0 { a } else { gcd(b, a % b) } }
+    let spec = spec.trim();
+    if !spec.contains(':') {
+        let n: usize = spec.parse().map_err(|_| format!("not a number: {spec:?}"))?;
+        if n == 0 || n > 10_000 { return Err(format!("N must be 1..=10000, got {n}")); }
+        return Ok(vec![n]);
+    }
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for part in spec.split(',') {
+        let (n, w) = part.split_once(':').ok_or_else(|| format!("bad pair {part:?} (want N:W)"))?;
+        let n: usize = n.trim().parse().map_err(|_| format!("bad N in {part:?}"))?;
+        let w: usize = w.trim().parse().map_err(|_| format!("bad weight in {part:?}"))?;
+        if n == 0 || n > 10_000 { return Err(format!("N must be 1..=10000, got {n}")); }
+        if w == 0 { return Err(format!("weight must be > 0 in {part:?}")); }
+        pairs.push((n, w));
+    }
+    let g = pairs.iter().fold(0usize, |acc, (_, w)| gcd(acc, *w));
+    let pattern: Vec<usize> =
+        pairs.iter().flat_map(|(n, w)| std::iter::repeat(*n).take(w / g)).collect();
+    if pattern.len() > 100_000 { return Err(format!("pattern too long ({})", pattern.len())); }
+    Ok(pattern)
+}
+
+#[cfg(test)]
+mod fanout_spec_tests {
+    use super::parse_fanout_spec;
+
+    #[test]
+    fn single_value() {
+        assert_eq!(parse_fanout_spec("10").unwrap(), vec![10]);
+        assert_eq!(parse_fanout_spec("1").unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn equal_by_tx_mix_reduces_by_gcd() {
+        assert_eq!(
+            parse_fanout_spec("1:20,5:20,10:20,50:20,100:20").unwrap(),
+            vec![1, 5, 10, 50, 100]
+        );
+    }
+
+    #[test]
+    fn weighted_mix_expands_in_order() {
+        assert_eq!(parse_fanout_spec("1:2,100:1").unwrap(), vec![1, 1, 100]);
+        assert_eq!(parse_fanout_spec("5:6,50:9").unwrap(),
+            vec![5, 5, 50, 50, 50]);
+    }
+
+    #[test]
+    fn exact_shares_over_cycle() {
+        let p = parse_fanout_spec("1:20,5:20,10:20,50:20,100:20").unwrap();
+        // simulate nonce-indexed sampling over 10 full cycles
+        let mut counts = std::collections::HashMap::new();
+        for nonce in 0..(p.len() * 10) {
+            *counts.entry(p[nonce % p.len()]).or_insert(0usize) += 1;
+        }
+        for n in [1usize, 5, 10, 50, 100] {
+            assert_eq!(counts[&n], 10, "N={n} share must be exactly 20%");
+        }
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(parse_fanout_spec("0").is_err());
+        assert!(parse_fanout_spec("10001").is_err());
+        assert!(parse_fanout_spec("1:0").is_err());
+        assert!(parse_fanout_spec("1:2,x:3").is_err());
+        assert!(parse_fanout_spec("").is_err());
     }
 }

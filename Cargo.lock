@@ -6989,6 +6989,7 @@ dependencies = [
  "eyre",
  "jsonrpsee",
  "lean-native",
+ "rayon",
  "reth-chainspec",
  "reth-db-models",
  "reth-ethereum-primitives",
