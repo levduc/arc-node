@@ -191,6 +191,25 @@ docs/campaign-log.md       full chronological history
 
 ---
 
+## 8. Session log — REQUIRED
+
+Every working session appends one dated entry to **`docs/worklog.md`** before it
+ends. This is how the work stays reviewable remotely (`git log -p docs/worklog.md`),
+so it is not optional and not a summary of the chat — it is the record:
+
+- **Changed** — what was edited/built, with commit hashes.
+- **Measured** — numbers *with cadence and fullness*, and the config that produced
+  them. A number without fullness is not a result (§6).
+- **Broke / retracted** — anything that failed, and any earlier claim this session
+  invalidated. Retractions are the most valuable lines in the file.
+- **Decided** — design decisions taken, with the reason.
+- **Open** — what the next session should pick up.
+
+Mark speculation as **BRAINSTORM** so it is never mistaken for measurement.
+Durable conclusions get promoted into this file (§5/§6); the worklog stays raw.
+
+---
+
 ## 8. Scope — what is done, what is next
 
 **Done and measured.** Dual-lane consensus with one certificate; fan-out transaction type;
@@ -213,12 +232,7 @@ characterised but unfixed. No formal safety argument for the multi-lane commitme
    stream, the p90 tail, *and* the value-sync storm at once. Byte-law estimate: ~10× fewer
    consensus bytes. Note honestly that this is Narwhal's separation applied to an existing BFT
    stack, not a new idea.
-3. **Formalisation, if publication is the goal** — the publishable contribution is *committing
-   multiple heterogeneous execution lanes under a single BFT certificate*: a proved
-   no-cross-lane-equivocation property, a liveness argument for total-STF structural voting,
-   and a safety lemma for stage→promote. Venue realism: AFT/ICBC as a systems paper today;
-   OPODIS only with the formal component.
-4. **Cheap robustness** — fold lean-node teardown into `clean-fleet.sh`; add per-validator
+3. **Cheap robustness** — fold lean-node teardown into `clean-fleet.sh`; add per-validator
    proposer-turn attribution to the health gate (it catches parked/hung CLs, not slow ones).
 
 **Explicitly parked** (measured, not promising): parallel execution (execution is ~1 µs/
