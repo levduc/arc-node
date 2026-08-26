@@ -128,3 +128,47 @@ local soak with zero divergence.
   mixed-by-payments} × {serial, parallel} — the mechanism test (gap must appear
   ONLY in mixed-by-payments serial). Then 2 h mixed soak before the flag
   defaults on. V7 (fleet no-regression + numbers) after that.
+
+## 2026-08-26 — V6 run: 4 clean arms, bypay unmeasurable on one box, 3 CL fatal classes found
+
+**Measured (single box, 5 validators, 225M, 10-min arms, burns self-reported)**
+| arm | cadence | payments/s | sigs/blk | anchor p50 | full | burns |
+| pure100-serial   | 2.41 | 103,799 | 431   | 39ms | 100% | ~0 |
+| pure100-parallel | 2.57 | 110,695 | 431   | 40ms | 100% | ~0 |
+| bytx-serial      | 2.21 |  88,405 | 1,202 | 39ms | 100% | ~0 |
+| bytx-parallel    | 2.52 | 100,514 | 1,202 | 41ms | 100% | tail-contaminated (understates if anything) |
+- Parallel recovery on clean arms: +6-14% cadence, anchors identical. Real but
+  modest at ≤1.2k sigs/blk. Consensus-identical (V3/V4) and safe.
+- **bypay (5.7k sigs/blk): UNMEASURABLE on this box — 3 attempts.** All burned
+  rounds attribute to val5 every time (331/498, 198/199, 205/205). Sequence:
+  bypay-scale feed starves val5's EVM EL -> PayloadStatus::Syncing at
+  validation -> CL treats it as FATAL -> docker restart-loop -> parks or wedges
+  as a stale-height crash-loop (sync-path validation also fatal). nice -12 on
+  all host-side load did not save it: once wedged, the crash-loop is
+  self-sustaining. Clean bypay verdict deferred to the fleet (V7).
+- Burn-adjusted (indicative only): successful bypay heights average ~0.95s vs
+  ~0.45s bytx — the sig-heavy workload is ~2x slower per height even ignoring
+  the sick validator.
+
+**Broke / found**
+- **THREE CL fatal-validation classes documented in one day** (all should fail
+  the ROUND, not the PROCESS): (1) lean shim unreachable at validation,
+  (2) EVM EL returns Syncing at validation, (3) sync-path validation failure.
+  Each converts a transient hiccup into a permanently wedged validator via the
+  restart-loop + boot-park. TOP robustness item for the CL.
+- compose template emits dual-EVM payment args unconditionally -> `make
+  testnet` cannot boot from a fresh checkout (payment-jwt.hex missing) — fixed
+  locally in the generated compose; template fix owed.
+- CL services lack extra_hosts host-gateway (only ELs have it).
+
+**Decided**
+- LEAN_PARALLEL_RECOVERY stays DEFAULT OFF: adoption rule required V6 pass;
+  clean arms show only modest gains and the stress arm is untested. Revisit at V7.
+- Every measurement row now carries a burns count (self-validating rows).
+
+**Open**
+- V7 on the fleet: bypay pair + no-regression band; then flag decision.
+- CL robustness: make validation-time dependency errors round-fatal only.
+- Single-box testnet left RUNNING (5 validators + 5 lean nodes, idle) for
+  further local arms; teardown = docker compose -f .quake/localdev/compose.yaml
+  down + pkill lean-lane-node.
