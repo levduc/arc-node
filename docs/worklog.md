@@ -100,3 +100,31 @@ only V7 touches the fleet). Adoption rule: flag default-on only after V3–V6 + 
 local soak with zero divergence.
 
 **Open** — implement P1→P4, run V1→V6.
+
+## 2026-08-25 (execution) — P1-P4 built, V1-V5 green, fork mirrored
+
+**Changed**
+- `a988b92` (arc): spammer weighted `--fanout-outputs "N:W,..."` (deterministic
+  nonce-indexed cycle, exact shares — 5 unit tests); node parallel recovery
+  behind `LEAN_PARALLEL_RECOVERY=1` (recovery only — bench showed parallel
+  execution is neutral-to-slower); V3 differential test (3 tests: mixed blocks
+  with garbage/truncated/empty/corrupted-sig entries → identical item vectors,
+  including agreement on the WRONG sender a corrupted sig recovers to);
+  `lean-smoke.sh --mixed` (V5 avg-N check + V4 replay-invariance node);
+  lane-bench mix spec + fullness-by-gas + sigs_blk/avg_n columns.
+- `96faa4d` (~/reth-fork, lean-prune): same node patch + test mirrored, builds,
+  3/3 tests green there too.
+
+**Measured (V-gates, all local)**
+- V1: 81 spammer tests pass (5 new). V3: 3/3 differential green in both repos.
+- V4+V5: `lean-smoke.sh --mixed 40` → 40 heights, 4,162 txs, 122,332 payments,
+  avg N=29.4 (band [28,38]), 3/3 nodes one commitment, and the fresh
+  parallel-recovery replay node reached the IDENTICAL head commitment.
+- Offline bench (16 threads): ecrecover 30.3→3.9 µs/out at N=1 (7.8×);
+  parallel execution 0.33→0.57 µs/out at N=1 (slower — stays serial).
+
+**Open**
+- V6: single-box full testnet, six 10-min arms {pure-100, mixed-by-tx,
+  mixed-by-payments} × {serial, parallel} — the mechanism test (gap must appear
+  ONLY in mixed-by-payments serial). Then 2 h mixed soak before the flag
+  defaults on. V7 (fleet no-regression + numbers) after that.
