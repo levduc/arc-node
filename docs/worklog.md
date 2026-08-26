@@ -50,3 +50,31 @@ Append-only, one entry per session, newest at the bottom. Convention in
 - Decisions needed: checkpoint state root (yes/no/how often); header `version` +
   `proposer` fields; invalid-tx fee policy.
 - Next up per `docs/roadmap.md`: beneficiary fix, then single-machine runner.
+
+**Decisions (Duc, same day)**
+- Checkpoint state root: **yes**, designed **lagged** (block N carries the root as
+  of the last boundary ≤ N−K) so neither proposing nor voting waits on it;
+  verification happens at execution, mismatch = attributable halt. Use an
+  incremental accumulator, not an O(n) walk — the flat state grows with users.
+- Header gains **`version` + `proposer`** (one wire-format break, done with the
+  checkpoint field).
+- Invalid-tx fee: **charge the proposer**; do not reject the block, do not halt.
+- Payment lane **may run at a different cadence** from the EVM lane (product is
+  fine with 1 or 0.5 blk/s for payments).
+
+**BRAINSTORM — cadence analysis (not measured, see roadmap §7)**
+- The lane is **pacer-bound, not capacity-bound** today: 150M→225M all sit at
+  ~518 ms/1.93 blk/s; only 250M slips (538 ms). Free +7 % by moving to 250M.
+- Local fit height ≈ 343 ms + 0.14 µs/B extrapolates 1 blk/s → 162 k payments/s,
+  but that same law underpredicts the measured 525M drain (710 ms predicted vs
+  **1,155 ms measured**, 1.6× off) — superlinearity above ~1.5 MB. Honest range
+  for 1 blk/s: **87 k–160 k, most likely ~110 k**. Must be measured, not assumed.
+- Agreement risk if cadence slows: **`propose` timeout is 3,000 ms and does not
+  scale automatically** — at 3–4.6 MB payloads a round can miss it and cadence
+  collapses. Timeouts are on-chain params; raise them with the cadence.
+- Per-lane cadence needs no new consensus machinery (`lean_payload` is already
+  `Option`, `commit_lanes(evm, None)` is the EVM-only case) — just a deterministic
+  `height % K` proposer rule, plus timeouts sized for the expensive height.
+
+**Open (next session)**
+- Run the cadence experiment (roadmap §7.2) before building per-lane cadence.

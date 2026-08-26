@@ -192,8 +192,101 @@ gitignore it or have the demos write to a scratch path.
 
 ---
 
+## 6. Decisions taken (2026-08-25, Duc)
+
+- **Checkpoint state root: YES.** Design it **lagged** so it stays off the
+  consensus path (below).
+- **Header gains `version` + `proposer`.** Wire-format break; do it once,
+  together with the checkpoint field.
+- **Invalid-tx fee: charge the proposer.** Do not reject the block, do not halt —
+  halting-freedom under total STF is kept.
+- **Payment-lane cadence may differ from the EVM lane** (product is fine with
+  1 blk/s or 0.5 blk/s for payments) — see §7 before building it.
+
+### Lagged checkpoint — why it is off the critical path
+
+Block *N* carries the state root **as of the last checkpoint boundary at or
+before N−K**, not its own post-state. Then:
+
+- the **proposer** already has that state (it was executed long ago) — nothing to
+  compute before proposing;
+- **validators vote structurally**, as they already do — no execution before the
+  vote;
+- verification happens when they execute in the vote gap / at the anchor. A
+  mismatch is an **attributable halt**, exactly the path that already exists for
+  execution divergence.
+
+So neither proposing nor voting waits on a root. Cost is once per K blocks; with
+K≈1024 that is once per ~8 minutes at 2 blk/s. Note the flat state grows with
+users, so an O(n) walk over millions of accounts is the wrong shape — use the
+incremental accumulator from `experiments/utxo-state` (~11 µs/update, flat in
+state size) rather than re-hashing the world at each boundary.
+
+---
+
+## 7. Cadence: what the data says before we build anything
+
+**The payment lane is currently pacer-bound, not capacity-bound.** Measured on
+v1.3.1 at the 500 ms target:
+
+| budget | outs/blk | blk/s | payments/s | MB/blk | MB/s | ms/blk |
+|---|---|---|---|---|---|---|
+| 150M | 28,700 | 1.93 | 55,391 | 0.82 | 1.59 | 518 |
+| 175M | 33,500 | 1.93 | 64,655 | 0.96 | 1.86 | 518 |
+| 200M | 38,300 | 1.94 | 74,302 | 1.10 | 2.13 | 515 |
+| 225M | 43,100 | 1.93 | 83,183 | 1.24 | 2.39 | 518 |
+| 250M | 47,900 | 1.86 | 89,094 | 1.37 | 2.56 | 538 |
+
+Heights sit at ~518 ms from 150M to 225M — that is the **pacer holding them**, not
+the chain straining. Only at 250M does the height start to slip. So there is
+free headroom at 2 blk/s we have not taken (+7 % by moving to 250M).
+
+**What slowing down might buy.** A local fit over the two capacity-bound points
+gives height ≈ 343 ms + 0.14 µs/byte, which extrapolates to 4.6 MB blocks at
+1 blk/s → ~162 k payments/s. **Do not trust that number**: the same law predicts
+710 ms for the 525M drain's 2.59 MB blocks, and we measured **1,155 ms** — it
+underpredicts by 1.6× at that size. Real superlinearity above ~1.5 MB (stream
+p90, slowest-peer gating, bigger sync frames). Correcting for it puts 1 blk/s
+nearer **~100–120 k payments/s**; if bytes/s is simply capped around 2.5 MB/s it
+is **neutral** (~87 k). Honest range: **87 k–160 k, most likely ~110 k.**
+
+**Effect on Malachite agreement — three real risks, one of them a footgun.**
+
+1. **Timeouts do not scale with cadence.** `propose` is 3,000 ms today. At 1 blk/s
+   with 3–4.6 MB payloads, stream+assemble can exceed it, the round fails, and
+   cadence collapses — the exact failure mode that cost this campaign several
+   runs. Timeouts are on-chain consensus params (same mechanism as
+   `targetBlockTimeMs`), so they are settable — **but they must be raised with the
+   cadence.** This is the first thing to get wrong.
+2. **Tail risk grows faster than size.** Vote rounds are gated by the slowest
+   peer; a bigger payload widens that tail (the wifi validator was the canary all
+   campaign).
+3. **Sync frames get bigger too.** A validator that misses a large height fetches
+   a large frame — the value-sync storm gets *worse* with block size, not better.
+
+**Per-lane cadence is already structurally supported**: `lean_payload` is an
+`Option`, and `commit_lanes(evm, None)` is the EVM-only case, so "lean block every
+K heights" is a deterministic proposer rule (`height % K`), not new consensus
+machinery. But it adds height-duration variance (cheap/expensive alternating), and
+timeouts must then be sized for the expensive height.
+
+**Recommended order — measure before designing:**
+
+1. Take the free headroom: **250M at 2 blk/s** (already measured: 89 k payments/s).
+2. **Measure global 1 blk/s** at 300/450/600M, N=100, 10-min windows, with
+   `propose` timeout raised proportionally. ~1 hour with `lane-bench.sh`. This
+   decides the question with data instead of extrapolation.
+3. Only if 1 blk/s wins clearly *and* the EVM lane must stay at 2 blk/s, implement
+   the skip-heights rule for per-lane cadence.
+4. Note that **compact proposals (§3.1) change this calculus entirely** — 10×
+   fewer consensus bytes puts the pacer back in charge at any cadence. If that
+   lands, slowing the chain may be solving a problem that disappears.
+
+---
+
 ## Suggested order
 
+0. **Cadence experiment (§7.1-7.2)** — one hour, decides a design question.
 1. **§2d beneficiary fix** — consensus-critical, small, no reason to wait.
 2. **§1 single-machine** — unblocks anyone else touching the project.
 3. **§2a/2b header decision** — wire-format break; everything else builds on it.
