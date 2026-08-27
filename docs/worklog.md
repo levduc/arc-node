@@ -280,3 +280,26 @@ Also answered (Duc): upstream reth DOES parallelize ecrecover — stages
 with execution — but as pipeline-embedded machinery, not a reusable API; our
 ~15-line rayon shim over reth's own per-tx recover IS the minimal reuse, pinned
 by the differential test.
+
+## 2026-08-26 (close) — pool fix validated; final at-target verdict: 3.0×
+
+**Fix validated.** max_account_slots 256→4096 (`1ddcea1`, fork-mirrored,
+deployed): feeder rejections **1,499,869 → 1** (of ~2.1M sent). Blocks back to
+100% full in BOTH modes. The spammer-cap → nonce-cascade diagnosis is proven by
+the cure.
+
+**Final at-target by-payments pair (225M, 2 blk/s pacer, fixed pool, 10-min):**
+| mode | cadence | tps | payments/s | full | anchor p50/p90 | burns |
+| serial   | 0.63 | 3,542  | 13,318 | 100% | 317/340ms | 103 (all val3) |
+| parallel | 1.86 | 10,504 | **39,484** | 100% | 103/124ms | 1 |
+**Parallel recovery is 3.0× at the product target.** With full 5,651-sig blocks,
+serial recovery puts ~170ms on every critical path: anchors triple, and the
+slowest validator (val3) misses its propose windows entirely — every one of its
+turns burns. This replaces the earlier 13.3k/17.2k rows (both supply-poisoned)
+and the "+30%" claim: at target the serial mode doesn't lose 30%, it loses the
+ability to hold cadence.
+
+**Superseded/retracted chain now fully resolved:** builder exonerated (10ms
+full-budget builds) → pool spammer-cap found → fix validated → true at-target
+numbers measured. The lane at 2 blk/s: 49.8k payments/s pure-100 · 39.5k at the
+realistic by-payments mix.
