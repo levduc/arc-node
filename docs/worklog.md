@@ -303,3 +303,36 @@ ability to hold cadence.
 full-budget builds) → pool spammer-cap found → fix validated → true at-target
 numbers measured. The lane at 2 blk/s: 49.8k payments/s pure-100 · 39.5k at the
 realistic by-payments mix.
+
+## 2026-08-27 — N=100 on the new stack: NOT parity yet; anchor regression isolated
+
+**Measured (rebuilt fleet, 2 blk/s pacer, parallel default, fixed pool, 10-min)**
+| arm | cadence | payments/s | full | anchor p50/p90 | burns | campaign ref |
+| N=100 @150M | 1.91 | 43,178 | 78% | 63/103ms | 3 | 55,534 @1.93 100% (−22%) |
+| N=100 @225M | 1.57 | 67,593 | 100% | 157/184ms | 6 | 83,286 @1.93 44ms (−19%) |
+Two DIFFERENT failure signatures: 150M is supply-shy (harness under-delivered;
+yesterday's serial noreg hit 90%/49.8k on the same fleet — pure-100 delivery at
+low rates has unpinned run-to-run variance). 225M is chain-slow: full blocks but
+637ms heights and anchors 3.6× the campaign's.
+**Anchor regression isolated in one probe: IDLE anchors are 153ms p50 —
+identical to loaded (157ms).** A fixed per-height cost on this rebuilt chain,
+independent of load/signatures. The anchor span covers both lanes' commit; lean
+promote is instant on empty blocks ⇒ prime suspect is EVM-lane FCU/persistence
+latency on a 110k-height-old chain (campaign chain: 23k heights, 44ms anchors).
+Also explains the 225M height stretch (518→637ms ≈ same adder).
+**Controlled comparisons unaffected** (both sides of every pair carried the same
+adder): serial-vs-parallel (3.0×/4.1×) and mixed-workload conclusions stand.
+"New-stack reproduces campaign rows" remains UNPROVEN — blocked on the EVM-lane
+fixed cost, not on the lean node.
+
+**Ops (cost a morning): tailscale expiry now aborts arms BEFORE state changes**
+— the 08:11 arms half-executed a budget flip (local CL restarted alone; wedge
+risk — chain got lucky) because remote halts silently no-op'd. Runner gained an
+ssh-effect preflight; health gate distinguishes UNREACHABLE from unhealthy.
+Watcher lesson ×2: append-only reports need run-anchored patterns (row-count
+conditions, not greps over history).
+
+**Open (next session)**
+1. EVM-lane anchor adder: profile FCU on the aged chain (fresh-chain A/B or
+   restart EVM ELs); then re-run the two N=100 arms for the parity verdict.
+2. 150M supply variance: instrument feeder acceptance during a pure-100 arm.
