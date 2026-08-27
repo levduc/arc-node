@@ -809,13 +809,15 @@ pub fn decode_block_txs(txs: &[Vec<u8>]) -> Vec<(Address, LeanTx, B256)> {
     }
 }
 
-/// `LEAN_PARALLEL_RECOVERY=1` opts in to rayon-parallel sender recovery
-/// (ecrecover is ~30 us/tx serial, ~8x faster parallel — offline bench
-/// 2026-08-25). Read once; default OFF until the differential + soak gates
-/// pass (roadmap §8 adoption rule).
+/// Rayon-parallel sender recovery, DEFAULT ON since 2026-08-26 (roadmap §8
+/// adoption rule satisfied: V3 differential + V4 replay invariance + V5 mixed
+/// convergence + V7 fleet mechanism run with zero burned rounds + 2 h mixed
+/// soak with zero divergence). Measured: 4.1x payments/s at a signature-heavy
+/// mix — serial recovery on the runtime threads was also starving admission.
+/// `LEAN_PARALLEL_RECOVERY=0` is the rollback for one release.
 fn parallel_recovery_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("LEAN_PARALLEL_RECOVERY").is_ok_and(|v| v == "1"))
+    *ON.get_or_init(|| std::env::var("LEAN_PARALLEL_RECOVERY").as_deref() != Ok("0"))
 }
 
 pub fn decode_block_txs_serial(txs: &[Vec<u8>]) -> Vec<(Address, LeanTx, B256)> {
