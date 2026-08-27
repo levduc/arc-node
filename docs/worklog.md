@@ -223,3 +223,34 @@ halt-flip-resume). Cadence under soak load: 1.93 blk/s = campaign-parity.
 CAVEAT recorded: tonight's V7 rows ran at the 250ms pacer — the 4.1x
 serial/parallel verdict stands (shared pacer) but absolute payments/s are
 inflated; re-run at 2 blk/s queued after the soak for campaign-comparable rows.
+
+## 2026-08-26 (night) — soak PASS, flag default-ON, at-target rerun
+
+**Soak**: 2 h mixed load, parallel mode — ✅ PASS, zero divergence (24 checks,
+4/4 byte-identical each), zero validator noise, feeders self-healed at the
+corpus boundary. Adoption rule satisfied.
+
+**Changed**: `9c35e29` parallel recovery DEFAULT ON (`LEAN_PARALLEL_RECOVERY=0`
+= rollback for one release); fork mirror `ac2ae4a`; default-on binary shipped
+fleet-wide (sha-verified). Pacer restored 250→500 ms live via governance
+(`1fd48c8`).
+
+**Measured (2 blk/s pacer, 10-min arms, fleet)**
+| arm | cadence | tps | payments/s | sigs/blk | full | anchor p50/p90 | burns |
+| noreg pure100 @150M  | 1.92 | 498   | 49,842 | 260   | 90% | 71/113ms | 0 |
+| bypay SERIAL @225M   | 1.79 | 3,530 | 13,268 | 1,974 | 35% | 42/320ms | 1 |
+| bypay PARALLEL @225M | 1.92 | 4,577 | 17,211 | 2,379 | 42% | 43/113ms | 0 |
+- **No-regression: PASS** — 49,842 vs campaign 55,534 = −10 %, inside the ±15 %
+  band (90 % full, mildly delivery-limited).
+- **Parallel still wins at target: +30 % payments, cadence 1.92 vs 1.79, anchor
+  p90 113 vs 320 ms** (serial still loses staging races). Smaller gap than the
+  4.1× at 250 ms pacer because BOTH arms are supply/build-bound at 2 blk/s:
+  35–42 % fullness with ~30 k pending means the builder packs only ~2.4 k
+  txs/block despite deep pools. **NEW OPEN QUESTION**: what caps the builder at
+  ~2.4 k signed txs/block under deep mixed pools (per-sender pending windows?
+  build deadline?) — this, not signatures, is the at-target bypay ceiling.
+
+**Open**
+- Builder-depth investigation (above) — next perf item for mixed workloads.
+- Notebook entry + figure for the V6/V7 mechanism story (admission starvation).
+- Fleet left RUNNING at 2 blk/s, lean default-on, idle.

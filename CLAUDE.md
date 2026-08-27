@@ -117,6 +117,17 @@ Fan-out sweep at fixed ~830 KB blocks: N=5 → 35,927 · N=10 → 45,427 · N=20
 Drain (zero ingress) ceiling: **83,286 outputs/s**; lean EL alone imports at **1.03 M
 outputs/s** (`lean-replay-bench.py`).
 
+**Mixed-N + parallel recovery (2026-08-26, V6/V7):** the spammer takes weighted mixes
+(`--fanout-outputs "1:20,5:20,..."`); `LEAN_PARALLEL_RECOVERY` is **default-on** (=0 rolls
+back) after the full gate ladder: at a signature-heavy mix (equal payments per N), parallel
+recovery is **4.1×** payments/s unpaced — serial ecrecover on the runtime threads was also
+starving admission — and +30 % at the 2 blk/s target where both arms are build-bound
+(builder packs only ~2.4 k signed txs/block over deep pools: open question). Fleet ops rules
+learned: change ALL CLs together (halt-flip-resume — a lone CL restart wedges permanently:
+sync deadlock + ±128 serving window); enable lean only from height 1 (the enable-boundary
+height is unserveable); consensus params (pacer, timeouts) change LIVE via governance with
+no restarts.
+
 ### The four durable findings
 
 1. **Execution is not the bottleneck.** The EL is 7–15 % of a height on *both* lanes. The lean
