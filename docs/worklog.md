@@ -214,3 +214,12 @@ local soak with zero divergence.
 - Soak verdict -> flag flip -> mirror to reth-fork.
 - CL robustness list grew: round-fatal validation errors (3 classes), sync
   request-pipeline deadlock, ±128 serving window, boundary-height serving.
+
+**Pacer restored to product target (user directive: match original arc).** The
+regenerated genesis carried targetBlockTimeMs=250 (4 blk/s); master pins 500
+(genesis.test.ts). Fixed LIVE via on-chain governance (updateConsensusParams,
+no restarts — consensus params are the one fleet reconfiguration that needs no
+halt-flip-resume). Cadence under soak load: 1.93 blk/s = campaign-parity.
+CAVEAT recorded: tonight's V7 rows ran at the 250ms pacer — the 4.1x
+serial/parallel verdict stands (shared pacer) but absolute payments/s are
+inflated; re-run at 2 blk/s queued after the soak for campaign-comparable rows.
