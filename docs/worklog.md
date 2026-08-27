@@ -254,3 +254,29 @@ fleet-wide (sha-verified). Pacer restored 250→500 ms live via governance
 - Builder-depth investigation (above) — next perf item for mixed workloads.
 - Notebook entry + figure for the V6/V7 mechanism story (admission starvation).
 - Fleet left RUNNING at 2 blk/s, lean default-on, idle.
+
+## 2026-08-26 (late) — RETRACTION: no builder ceiling; it was the pool's spammer cap
+
+Diagnostic chain (each step evidenced):
+1. Offline single node, 40k-deep by-payments pool, direct arc_buildBlock:
+   **8,653 txs, 100% of 225M, in 10-12ms**, five blocks straight → builder exonerated.
+2. Fleet 3-min probe, fresh corpora, same rates: **1.90 blk/s, 5,649 txs/blk,
+   100% full** → the lane sustains the full by-payments budget at target.
+3. The at-target arm's feeder log: **62% of 2.4M sends rejected**. Per-tx error
+   sampling: dominant "transaction nonce is not consistent" (cascade), trigger
+   "rejected due to <sender> being identified as a spammer" = upstream reth
+   `SpammerExceededCapacity` — per-sender slot cap. One capped tx opens a nonce
+   gap; every later nonce of that sender then rejects; the sender's remaining
+   ~12k corpus txs are dead. Avalanche across senders → 35-42% fullness.
+CONSEQUENCES: the at-target bypay rows (13.3k/17.2k) understate the lane — both
+arms equally supply-poisoned, so the serial-vs-parallel comparison stands but
+absolutes don't. True at-target by-payments ≈ **10.8k tps / ~41k payments/s at
+100% full** (probe; 10-min confirm pending). FIXES: raise/configure
+max_account_slots for lean pool senders; harness rule: per-sender in-flight
+depth must stay under the slot cap (deep-nonce corpora + governed feeders can
+trip it); ROADMAP §2c mempool notes gain this as a measured landmine.
+Also answered (Duc): upstream reth DOES parallelize ecrecover — stages
+(SenderRecoveryStage rayon workers) + engine-tree streaming recovery overlapped
+with execution — but as pipeline-embedded machinery, not a reusable API; our
+~15-line rayon shim over reth's own per-tx recover IS the minimal reuse, pinned
+by the differential test.

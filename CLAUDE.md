@@ -145,9 +145,14 @@ no restarts.
 5. **Per-signature work must stay off the node's runtime threads.** Serial ecrecover in the
    block-receive path didn't just slow staging — it starved *admission* on the same tokio
    runtime. Rayon-parallel recovery (default-on since 2026-08-26) is **4.1×** payments/s at a
-   signature-heavy mix unpaced, +30 % at the 2 blk/s target — where both modes become
-   *build*-bound: the builder packs only ~2.4 k signed txs/block over ~30 k-deep mixed pools
-   (the open at-target ceiling). Parallel *execution* stays off: measured neutral-to-slower.
+   signature-heavy mix unpaced, +30 % at the 2 blk/s target. **RETRACTED (2026-08-26): the
+   "builder ceiling" claim.** Offline, the builder packs 100 % of a 225 M budget from a 40 k
+   pool in 10–12 ms. The at-target 35–42 % fullness was a POOL artifact: reth's per-sender
+   slot cap (`SpammerExceededCapacity`) flags high-nonce-depth benchmark senders as spammers,
+   and one dropped tx then poisons the sender's whole remaining corpus via nonce-cascade
+   ("nonce is not consistent") — 62 % of the feed bounced. With fresh corpora the same fleet
+   runs the by-payments mix at **100 % fullness, 1.90 blk/s, 5,649 txs/blk** (3-min probe;
+   10-min confirm pending). Parallel *execution* stays off: measured neutral-to-slower.
 
 ---
 
