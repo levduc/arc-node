@@ -110,6 +110,8 @@ At the **2 blk/s product target**, all blocks 100 % of budget unless noted:
 | lean, N=1, 100M | 1.96 | 6,401 | 6,401 (85 % full — headroom left) |
 | lean, N=100, 150M | 1.93 | 555 | **55,534** |
 | lean, N=100, 225M | 1.93 | 833 | **83,286** |
+| lean, mixed-by-payments (avg N=3.8), 225M, serial recovery | 1.79 | 3,530 | 13,268 (35 % full) |
+| lean, mixed-by-payments (avg N=3.8), 225M, **parallel recovery** | 1.92 | 4,577 | **17,211** (42 % full) |
 
 Fan-out sweep at fixed ~830 KB blocks: N=5 → 35,927 · N=10 → 45,427 · N=20 → 50,590 · N=50 →
 54,172 · N=100 → 55,534 payments/s. Saturates by N=50 at the 28 B/payment wire floor.
@@ -140,6 +142,12 @@ no restarts.
    amortises the per-*transaction* costs (signature, mempool entry, envelope) — not the
    per-payment ones. Per 100 payments: 100→1 signatures, 3.3 ms→33 µs ecrecover, 100→1 pool
    entries, 10,000→2,872 wire bytes; execution unchanged but conflict-free by construction.
+5. **Per-signature work must stay off the node's runtime threads.** Serial ecrecover in the
+   block-receive path didn't just slow staging — it starved *admission* on the same tokio
+   runtime. Rayon-parallel recovery (default-on since 2026-08-26) is **4.1×** payments/s at a
+   signature-heavy mix unpaced, +30 % at the 2 blk/s target — where both modes become
+   *build*-bound: the builder packs only ~2.4 k signed txs/block over ~30 k-deep mixed pools
+   (the open at-target ceiling). Parallel *execution* stays off: measured neutral-to-slower.
 
 ---
 
