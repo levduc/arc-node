@@ -172,3 +172,45 @@ local soak with zero divergence.
 - Single-box testnet left RUNNING (5 validators + 5 lean nodes, idle) for
   further local arms; teardown = docker compose -f .quake/localdev/compose.yaml
   down + pkill lean-lane-node.
+
+## 2026-08-26 (evening) — V7 on the fleet: mechanism CONFIRMED, 4.1x at the sig-heavy mix
+
+**Measured (4-machine fleet, 10-min arms, burns=0 on ALL arms)**
+| arm | cadence | tps | payments/s | sigs/blk | full | anchor p50/p90 |
+| noreg pure100 @150M   | 3.44 | 979    | 97,851 | 284   | 99% | 44/68ms |
+| bypay SERIAL @225M    | 3.16 | 3,542  | 13,303 | 1,120 | 20% | 8/249ms |
+| bypay PARALLEL @225M  | 3.19 | 14,454 | 54,350 | 4,523 | 80% | 42/65ms |
+- **Identical feeders/offer/cadence; parallel recovery = 4.1x payments and tps at
+  the by-payments mix.** Serial's bottleneck expresses as 20%-full blocks (the
+  node cannot process signatures fast enough to keep blocks full) + anchor p90
+  249ms (staging loses races when blocks do fill). Parallel: 80% full, p90 65ms.
+- Mechanism refinement: serial decode+ecrecover runs on the node's runtime
+  threads, so it also STARVES ADMISSION (same offer, 4x less landed). Parallel
+  recovery moves that work to rayon and unblocks the whole node.
+- No-regression: per-block content matches the campaign row (284 vs 287 tx/blk
+  at 150M, 99-100% full). CADENCE IS NOT COMPARABLE: this rebuilt chain runs
+  ~3.4 blk/s idle-and-loaded (no 500ms pacer in the regenerated genesis);
+  campaign rows were paced at 2 blk/s. Per-height throughput is the comparable
+  quantity and it reproduces.
+
+**Broke / found (the road to clean arms — each now a rule)**
+- **Single-CL restart on a live chain = permanent wedge**: chain keeps 3/4
+  quorum, restarted CL must sync, sync request pipeline deadlocks, gap passes
+  the ±128 serving window, unrecoverable. RULE: all CLs change together
+  (halt-flip-resume) — implemented in the V7 runner's budget flip.
+- **The lean-enable boundary height is UNSERVEABLE** (GetDecidedValues: "no lean
+  block reproduces the certificate") — any validator syncing across it wedges.
+  RULE: lean on from height 1; never enable mid-chain.
+- kill+launch merged into one ssh call re-hit the pkill-matches-own-shell
+  landmine (3rd occurrence) — cost V7 arm 1.
+- soak4.toml was an uncommitted local file; my localdev4-based restore initially
+  carried deadline=2000 (fixed to 500 from generated-compose evidence).
+
+**Decided**
+- 2h mixed soak running (parallel mode, divergence-checked 4/4 every 5 min).
+  If PASS: LEAN_PARALLEL_RECOVERY flips DEFAULT ON per roadmap §8 adoption rule.
+
+**Open**
+- Soak verdict -> flag flip -> mirror to reth-fork.
+- CL robustness list grew: round-fatal validation errors (3 classes), sync
+  request-pipeline deadlock, ±128 serving window, boundary-height serving.
