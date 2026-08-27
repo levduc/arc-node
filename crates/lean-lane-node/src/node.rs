@@ -193,7 +193,14 @@ impl LaneNode {
             pending_limit: big,
             basefee_limit: big,
             queued_limit: big,
-            max_account_slots: 256,
+            // 256 was too small for payment-lane senders: with per-node pools
+            // governed to ~30k txs over ~200 senders, drain is BURSTY (a node's
+            // pool empties only on its own proposer turns), so per-sender depth
+            // variance crossed 256 -> reth flags the sender as a spammer
+            // (ExceededSenderTransactionsCapacity) and DROPS the tx; the nonce
+            // gap then poisons the sender's whole remaining stream. Measured
+            // 2026-08-26: 62% of a 2.4M-tx feed bounced, blocks 35-42% full.
+            max_account_slots: 4096,
             ..Default::default()
         };
         let pool = Pool::new(
