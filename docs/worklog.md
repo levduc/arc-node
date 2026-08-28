@@ -336,3 +336,38 @@ conditions, not greps over history).
 1. EVM-lane anchor adder: profile FCU on the aged chain (fresh-chain A/B or
    restart EVM ELs); then re-run the two N=100 arms for the parity verdict.
 2. 150M supply variance: instrument feeder acceptance during a pure-100 arm.
+
+## 2026-08-27 (evening) — parity chase concluded: 150M in-band, 225M −16% with one residual
+
+**Root cause of the "not parity" scare found: the rebuilt fleet was running
+quake's DEFAULT latency emulation (+64-131ms tc shaping) on top of real
+tailscale WAN.** The lost original soak4.toml was a perf scenario
+(latency_emulation=false — cf. nightly-perf.toml); the localdev4-based restore
+re-enabled it silently. Fixed in the committed scenario; stripped live from all
+24 containers (verified noqueue).
+
+**Final N=100 rows (new stack, tc stripped, parallel default, fixed pool):**
+| arm | cadence | payments/s | full | anchor p50 | campaign | delta |
+| 150M-r2 | 1.77 | 50,703 | 100% | 127ms* | 55,534 | −8.7% ✅ in band |
+| 225M-r3 | 1.62 | 70,037 | 100% | 156ms | 83,286 | −16% ❌ just outside |
+(*150M-r2 ran pre-strip; likely improves.) The 225M residual is one number:
+**anchor 156ms vs the campaign's 44ms under load** (idle is 73ms) — ~+100ms per
+height ≈ the whole cadence gap. Signature: staging losing races / slow promote
+on this environment. tc strip moved loaded anchors not at all (155→156), so the
+residual is NOT network shaping. OPEN: instrument stage/promote timings.
+
+**New failure class + heal (afternoon):** rapid lean-node restarts height-SPLIT
+the consensus — validators scattered across 3-4 adjacent heights, each voting
+alone (1/4), permanent no-quorum deadlock. HEAL: stop ALL CLs together, start
+together — small gaps (≤128) sync and converge (verified: 1.96 blk/s after).
+RULE: don't restart lean nodes back-to-back; runner gained SKIP_LEANUP for arms
+whose environment is already correct. Health gate's chain-advance check made
+patient (240s — post-restart recovery grows with chain length; a 15s sample
+false-aborted twice).
+
+**Session demonstrated (summary for review):** mixed-N workloads end-to-end;
+parallel recovery proven (3.0×/4.1×) and default-on after the full gate ladder
++ 2h soak; reth spammer-cap bug found+fixed (rejections 1.5M→1); N=100 parity
+re-established at 150M on the self-contained stack; and a robustness catalogue
+(3 CL fatal classes, single-CL-restart wedge, lean-boundary serving, ssh-expiry
+half-flips, height-split deadlock) each with a written rule.
