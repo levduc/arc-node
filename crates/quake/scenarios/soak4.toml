@@ -1,3 +1,5 @@
+# Perf fleet scenario: NO latency emulation (real tailscale WAN only).
+latency_emulation = false
 # 4-validator localdev scenario (reth-2.3 + Malachite consensus demo).
 # Malachite BFT tolerates f=1 fault with 3f+1=4 validators.
 cl.config.execution_persistence_backpressure = true
