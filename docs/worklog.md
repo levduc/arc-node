@@ -371,3 +371,11 @@ parallel recovery proven (3.0×/4.1×) and default-on after the full gate ladder
 re-established at 150M on the self-contained stack; and a robustness catalogue
 (3 CL fatal classes, single-CL-restart wedge, lean-boundary serving, ssh-expiry
 half-flips, height-split deadlock) each with a written rule.
+
+## 2026-08-27 (late) — lab handout is now the full notebook, newest-first
+
+lean-lane-handout.tex (Duc's tufte template) now carries the complete log:
+3-page current-state digest, then every dated entry 08-27→08-17 reverse-chron,
+then Part 0 history. Two new entries written for 08-26/27 (previously
+worklog-only). 30 pages, zero serious overfulls, render-checked. Raw
+append-only record unchanged in lab-notebook.tex.
