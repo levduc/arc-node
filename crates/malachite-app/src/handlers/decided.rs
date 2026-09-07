@@ -420,7 +420,20 @@ async fn anchor_lean_lane(
                  (local lean head {head}, {fed_from_peers} peer blocks fed) — halting"
             ));
         }
-        let head = shim.get_head().await.wrap_err("lean lane: get_head failed")?;
+        // Node briefly AWAY (restart ~10 s): wait it out under the same
+        // deadline instead of failing the height on the first miss. A
+        // Decision::Failure here restarts the height every ~15 s for as long
+        // as the node is down, and made this validator late for its next
+        // proposer turn.
+        let head = match shim.get_head().await {
+            Ok(h) => h,
+            Err(e) if arc_eth_engine::transient::is_transient(&e) => {
+                warn!("lean lane: node unreachable at anchor ({e:#}); waiting");
+                tokio::time::sleep(POLL).await;
+                continue;
+            }
+            Err(e) => return Err(e.wrap_err("lean lane: get_head failed")),
+        };
         // ALREADY-CANONICAL (sync replay of a historic height): when the lean
         // node ran ahead of this validator's consensus (v1.1 gossip), the
         // decided lean block is in our past — the certificate binds THAT
@@ -444,6 +457,11 @@ async fn anchor_lean_lane(
                              canonical chain at height={height} — halting",
                             lane.decoded.number
                         ));
+                    }
+                    Err(e) if arc_eth_engine::transient::is_transient(&e) => {
+                        warn!("lean lane: node unreachable at historic anchor ({e:#}); waiting");
+                        tokio::time::sleep(POLL).await;
+                        continue;
                     }
                     Err(e) => return Err(e.wrap_err("lean lane: historic anchor read failed")),
                 }

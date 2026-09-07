@@ -95,10 +95,15 @@ impl LeanShim {
         }
         let response: Value = sent
             .ok_or_else(|| {
-                eyre!(
-                    "lean shim: {method} request failed after {ATTEMPTS} attempts: {:#}",
-                    last_err.expect("no response implies an error")
-                )
+                // Past the retry budget the node is genuinely AWAY — mark it
+                // transient so handlers skip / re-request instead of dying.
+                eyre::Report::new(crate::transient::TransientDependencyError::new(
+                    "lean lane node",
+                    format!(
+                        "lean shim: {method} request failed after {ATTEMPTS} attempts: {:#}",
+                        last_err.expect("no response implies an error")
+                    ),
+                ))
             })?
             .json()
             .await

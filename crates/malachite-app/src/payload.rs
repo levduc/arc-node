@@ -27,6 +27,9 @@ use arc_consensus_types::Address;
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
 use arc_eth_engine::rpc::EngineApiRpcError;
+use arc_eth_engine::transient::TransientDependencyError;
+/// Re-exported for the handlers: "no verdict right now" vs a real failure.
+pub use arc_eth_engine::transient::is_transient;
 
 use crate::block::ConsensusBlock;
 use crate::metrics::app::{AppMetrics, InvalidPayloadSource};
@@ -255,9 +258,16 @@ async fn validate_payload(
                     %height,
                     "Unexpected payload status: {status:?}",
                 );
-                Err(eyre::eyre!(
-                    "unexpected {status:?} status from engine for block {block_hash} at height {height}"
-                ))
+                // SYNCING/ACCEPTED = the EL is BEHIND, not wrong: transient.
+                // Handlers answer it with "no verdict" (skip the round /
+                // re-request) — never with process death.
+                Err(TransientDependencyError::new(
+                    "execution engine",
+                    format!(
+                        "unexpected {status:?} status from engine for block {block_hash} at height {height}"
+                    ),
+                )
+                .into())
             }
         },
         Err(e) => {
@@ -276,11 +286,12 @@ async fn validate_payload(
                 });
             }
 
-            // Unrelated internal error in the call stack.
+            // Transport-level failure (EL down / restarting): the client is
+            // AWAY, not wrong — transient. The cause text is kept in the detail.
             let msg = format!(
                 "call to EngineAPI::new_payload failed when validating block: {block_hash}",
             );
-            Err(e.wrap_err(msg))
+            Err(TransientDependencyError::new("execution engine", format!("{msg}: {e:#}")).into())
         }
     }
 }
@@ -885,6 +896,10 @@ mod tests {
             msg.contains("call to EngineAPI::new_payload failed"),
             "error message should describe the failure, got: {msg}",
         );
+        assert!(
+            is_transient(&err),
+            "an engine transport failure is the client being AWAY: transient"
+        );
     }
 
     #[tokio::test]
@@ -921,6 +936,10 @@ mod tests {
                 payload.payload_inner.payload_inner.block_number,
             );
             assert_eq!(got_msg, want_err_msg);
+            assert!(
+                is_transient(&result),
+                "SYNCING/ACCEPTED must classify as transient (EL behind, not wrong)"
+            );
         }
     }
 
@@ -1038,6 +1057,38 @@ mod tests {
             "error should contain the original message, \
              got: {err}",
         );
+        assert_eq!(metrics.get_invalid_payloads_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn validate_consensus_block_keeps_transient_marker_through_propagation() {
+        let mut validator = MockPayloadValidator::new();
+        validator.expect_validate_payload().returning(|_| {
+            Err(TransientDependencyError::new("execution engine", "unexpected SYNCING").into())
+        });
+
+        let mut store = MockInvalidPayloadsRepository::new();
+        store.expect_append().times(0);
+
+        let metrics = AppMetrics::default();
+        let block = test_block();
+        let err = validate_consensus_block(
+            &validator,
+            None,
+            None,
+            &block,
+            &store,
+            &metrics,
+            PaymentExecMode::Gated,
+            None,
+        )
+        .await
+        .expect_err("a transient error must propagate as Err (no verdict), never as Invalid");
+
+        assert!(is_transient(&err), "marker lost in validate_consensus_block: {err:#}");
+        // ...and through the wrap_err layer every handler adds on the way up.
+        let wrapped = err.wrap_err("Payload validation failed on block built from synced value");
+        assert!(is_transient(&wrapped), "marker lost under wrap_err: {wrapped:#}");
         assert_eq!(metrics.get_invalid_payloads_count(), 0);
     }
 

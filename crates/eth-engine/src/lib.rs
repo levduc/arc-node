@@ -22,11 +22,13 @@ pub mod lean_shim;
 pub mod persistence_meter;
 pub mod retry;
 pub mod rpc;
+pub mod transient;
 
 mod abi_utils;
 
 mod constants;
 pub use constants::INITIAL_RETRY_DELAY;
+pub use transient::{is_transient, TransientDependencyError};
 
 #[cfg(any(test, feature = "mocks"))]
 pub mod mocks {

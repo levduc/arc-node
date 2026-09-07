@@ -76,6 +76,25 @@ pub async fn handle(
     .await
     {
         Ok(proposal) => proposal,
+        // A dependency is briefly AWAY or BEHIND (lean node restarting, EL
+        // SYNCING): no verdict is possible right now. Reply None — malachite
+        // treats that as ValueProcessingError and RE-REQUESTS the height —
+        // and keep the process alive. Returning Err here was the reflex that
+        // killed every wedged validator of the 2026-08 campaign: process
+        // death, docker restart into the same outage, permanent park.
+        Err(e) if crate::payload::is_transient(&e) => {
+            tracing::warn!(
+                %height, %round, %proposer,
+                "ProcessSyncedValue: transient dependency error — replying None so sync re-requests: {e:#}"
+            );
+            state
+                .metrics()
+                .inc_transient_dependency_skips(crate::metrics::app::TransientSkipSource::Sync);
+            if let Err(send_err) = reply.send(None) {
+                error!("🔴 ProcessSyncedValue: Failed to send reply: {send_err:?}");
+            }
+            return Ok(());
+        }
         Err(e) => {
             error!(%height, %round, %proposer, "ProcessSyncedValue failed: {e:#}");
             if let Err(send_err) = reply.send(None) {

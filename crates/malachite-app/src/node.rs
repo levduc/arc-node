@@ -33,6 +33,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use backon::{BackoffBuilder, Retryable};
 use bytesize::ByteSize;
 use eyre::Context;
 use rand::rngs::OsRng;
@@ -735,9 +736,24 @@ impl App {
             }
             let shim = arc_eth_engine::lean_shim::LeanShim::new(env_config.payment_lean_rpc.clone())
                 .with_peers(env_config.payment_lean_peer_rpcs.clone());
-            let head = shim.get_head().await.wrap_err(
-                "ARC_PAYMENT_LEAN_LANE=1 but the lean lane node is unreachable at boot",
-            )?;
+            // Same patience as the EVM engine connect (config.rs): retry
+            // forever with a warning. Parking after one ~15 s try was OUR
+            // asymmetry — a CL rebooted by docker into a lean-node restart
+            // window parked permanently (every fleet park of 2026-08-26/27).
+            let retry_policy = backon::ConstantBuilder::new()
+                .with_delay(arc_eth_engine::INITIAL_RETRY_DELAY)
+                .without_max_times()
+                .build();
+            let head = (|| shim.get_head())
+                .retry(retry_policy)
+                .notify(|e, dur| {
+                    warn!(
+                        "ARC_PAYMENT_LEAN_LANE=1 but the lean lane node is unreachable at boot: \
+                         {e:#}, retrying in {dur:?}..."
+                    )
+                })
+                .await
+                .wrap_err("ARC_PAYMENT_LEAN_LANE=1 but the lean lane node is unreachable at boot")?;
             tracing::info!(
                 url = %shim.url(), number = head.number, commitment = %head.commitment,
                 "🪶 Connected to LEAN payment lane node"
