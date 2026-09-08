@@ -472,3 +472,48 @@ to the honest justification. Three live runs to get one clean.
 - Track B items (checkpoint root, header version+proposer, charge-proposer,
   beneficiary, tx propagation) are listed as open decisions in the guide, not started.
 - Metric scrape `<none>` on :29002 in the Track A test still unexplained.
+
+## 2026-09-07 (night) — local lean testnet via quake; v0.1.0 tagged; e2e on main base
+
+**Changed**
+- `lean-lane-v0.1` (worktree `~/arc-lean-v0.1`, tag `lean-lane-v0.1.0`, 9 commits on
+  origin/main bd4ab47): + `quake: cl_env passthrough` (c11f59a — manifest-level and
+  per-node extra env for CL containers, rendered into compose; CL gets
+  host.docker.internal) · + `local lean testnet` (scripts/lean-testnet.sh, Makefile
+  testnet-lean{,-load,-status,-down}, crates/quake/scenarios/localdev-lean.toml, docs
+  §4b). The spammer commit got a fixup: quake links the spammer lib and needed
+  `..(*config).clone()` + the new SpammerArgs fields (was a compile break in the series).
+- `~/lean-lane`: single branch `main` (renamed from master), tag `v0.1.0` (d1dd733);
+  README says how to clone over tailscale ssh from this machine. No hosted remote yet.
+- Docker images `arc_consensus:latest` / `arc_execution:latest` now built from the
+  v0.1 tree (main base). The branch images are kept as `:lean-branch`.
+
+**Measured** (5 validators on this machine, quake localdev-lean, latency emulation on,
+100 M lean budget, main-based images)
+- `up`: EL and lean at height 5 on all five within ~30 s, identical lean commitments.
+- 3-min fan-out load, 1,500 tx/s, N=10, 200 accounts, spread over all 5 lean nodes:
+  349 blocks in 181 s = **1.93 blk/s**; 269,094 / 270,410 sent txs included =
+  **1,487 tx/s, 14,867 payments/s**; per-block txs min/med/max 175/757/1384; gas
+  **median 54 % of budget, 1 block ≥95 %, 0 empty** → delivery-bound (spammer rate),
+  NOT a chain ceiling; pools empty at end. 5/5 lean nodes byte-identical at 388 and 484.
+- CL health: restarts 0, parked 0, transient 0, Invalid 0 on all five; the only ERRORs
+  are boot-time p2p dial refusals before peers were up.
+- This is the first run of the lean lane on the **main base** (reth 1.11.3). It closes
+  the "compiled but not fleet-run on main" caveat for a single machine; the 4-machine
+  fleet numbers remain branch-only.
+
+**Broke / retracted**
+- `make genesis` (hardhat) fails in a fresh worktree without submodules — quake start
+  hit the same; `git submodule update --init --recursive` fixes it. Noted, not a code bug.
+- The spammer commit alone broke `quake` compilation in the series (fixed via fixup).
+
+**Decided**
+- Generic `cl_env` in quake instead of lane-specific quake code; the lane scenario is
+  pure TOML.
+- Scenario has no full node (mixed-flag fleets fail closed by design).
+
+**Open**
+- Push targets: neither repo has a remote it can push to from here; user to decide.
+- A chain-bound number on this base needs the spammer at ≥3k tx/s or N≥50 (this run
+  was 54 % full). `make testnet-lean-load LOAD_RATE=3000 FANOUT=50` is the next probe.
+- `lean-lane-node run --help` still starts a node instead of printing help.
