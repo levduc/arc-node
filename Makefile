@@ -237,6 +237,22 @@ testnet-test: ## Run tests against running testnet (optionally SPEC=group:name t
 testnet-down: ## Stop testnet
 	$(QUAKE) stop
 
+.PHONY: testnet-lean
+testnet-lean: build-docker ## Start local testnet WITH the lean payment lane (host lean nodes + localdev-lean.toml)
+	$(SCRIPTS)/lean-testnet.sh up
+
+.PHONY: testnet-lean-load
+testnet-lean-load: ## Send fan-out load to the lean testnet (LOAD_SECS, LOAD_RATE, FANOUT)
+	$(SCRIPTS)/lean-testnet.sh load
+
+.PHONY: testnet-lean-status
+testnet-lean-status: ## Heights and lean-lane agreement across validators
+	$(SCRIPTS)/lean-testnet.sh status
+
+.PHONY: testnet-lean-down
+testnet-lean-down: ## Stop the lean testnet (quake stop + lean nodes)
+	$(SCRIPTS)/lean-testnet.sh down
+
 .PHONY: testnet-clean
 testnet-clean: ## Remove testnet artifacts
 	# Remove Docker Compose build containers that don't get cleaned up by 'docker compose down'

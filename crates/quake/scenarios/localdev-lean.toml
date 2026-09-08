@@ -1,0 +1,38 @@
+# localdev with the LEAN PAYMENT LANE on: 5 validators, each CL driving a
+# lean-lane node that runs on the host (scripts/lean-testnet.sh starts them on
+# 8561..8565). No full node: a lane-disabled CL cannot decode lane-framed
+# values (docs/lean-lane-integration.md §4), so every node in a lane-enabled
+# fleet must carry the flag.
+#
+#   make testnet-lean          # lean nodes + this scenario
+#   make testnet-lean-down
+
+cl.config.execution_persistence_backpressure = true
+
+# Every CL: lane on, per-block lean budget, and the peer lean nodes used for
+# validation/decide-time catch-up. `host.docker.internal` is the host from
+# inside the containers (CL containers get the extra_hosts entry).
+[cl.env]
+ARC_PAYMENT_LEAN_LANE = "1"
+ARC_PAYMENT_LEAN_BUDGET_GAS = "100000000"
+ARC_PAYMENT_LEAN_PEER_RPCS = "http://host.docker.internal:8561,http://host.docker.internal:8562,http://host.docker.internal:8563,http://host.docker.internal:8564,http://host.docker.internal:8565"
+
+[nodes.validator1]
+cl_suggested_fee_recipient = "0x1111111111111111111111111111111111111111"
+cl.env = { ARC_PAYMENT_LEAN_RPC = "http://host.docker.internal:8561" }
+
+[nodes.validator2]
+cl_suggested_fee_recipient = "0x2222222222222222222222222222222222222222"
+cl.env = { ARC_PAYMENT_LEAN_RPC = "http://host.docker.internal:8562" }
+
+[nodes.validator3]
+cl_suggested_fee_recipient = "0x3333333333333333333333333333333333333333"
+cl.env = { ARC_PAYMENT_LEAN_RPC = "http://host.docker.internal:8563" }
+
+[nodes.validator4]
+cl_suggested_fee_recipient = "0x4444444444444444444444444444444444444444"
+cl.env = { ARC_PAYMENT_LEAN_RPC = "http://host.docker.internal:8564" }
+
+[nodes.validator5]
+cl_suggested_fee_recipient = "0x5555555555555555555555555555555555555555"
+cl.env = { ARC_PAYMENT_LEAN_RPC = "http://host.docker.internal:8565" }

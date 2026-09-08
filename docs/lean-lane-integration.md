@@ -139,6 +139,27 @@ dropped, rounds time out) rather than diverging. Changing consensus parameters
 (pacer, timeouts) still works live via governance; changing the lane flag does
 not.
 
+## 4b. Local testnet (quake)
+
+```bash
+git clone <lean-lane repo> ../lean-lane      # next to this checkout, or set LEAN_LANE_DIR
+make testnet-lean                            # docker images + 5 host lean nodes + quake localdev-lean.toml
+make testnet-lean-load LOAD_SECS=180         # fan-out load through the lean nodes
+make testnet-lean-status                     # EL/lean heights + byte-level lean agreement
+make testnet-lean-down
+```
+
+`scripts/lean-testnet.sh` starts one lean node per validator on the host
+(`8561..8565`, `--bind 0.0.0.0`, peered with each other, one shared fund
+file), then runs quake with `crates/quake/scenarios/localdev-lean.toml`. That
+scenario uses quake's `cl.env` tables to set
+`ARC_PAYMENT_LEAN_LANE=1`, the budget, the peer list and each validator's own
+`ARC_PAYMENT_LEAN_RPC=http://host.docker.internal:856N` (the series adds the
+`extra_hosts` entry to CL containers in the local compose template). There is
+no full node in the scenario: a lane-disabled CL cannot decode lane-framed
+values (§4). `up` is always fresh on both chains and regenerates the whole
+testnet directory, on purpose.
+
 ## 5. Measured (development branch, 4 heterogeneous validators over tailscale, 500 ms pacer, blocks 100 % of budget)
 
 | config | blk/s | tx/s | payments/s |
