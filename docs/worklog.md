@@ -379,3 +379,33 @@ lean-lane-handout.tex (Duc's tufte template) now carries the complete log:
 then Part 0 history. Two new entries written for 08-26/27 (previously
 worklog-only). 30 pages, zero serious overfulls, render-checked. Raw
 append-only record unchanged in lab-notebook.tex.
+
+## 2026-09-07 — Track A: CL round-fatal, boot patience — LIVE PASS
+
+**Changed** (`cb17d36`, local): `TransientDependencyError` marker in eth-engine
+(downcast through wrap_err, never string-matching), attached at both sources
+(lean shim past retry budget; engine SYNCING/ACCEPTED + transport). Sync-path
+handler: transient → reply None (malachite re-requests) + metric, never Err to
+the loop. Decide anchor: transient get_head waits out the deadline. Lean boot:
+retries forever like the EVM connect. Live-proposal + proposer paths already
+tolerated errors (unchanged). 289/289 unit tests + 6 new. cli_db_migrate's one
+failure is environmental (this box has ~/.arc/consensus/store.db).
+Also `54be3a3`: lean node bounded RPC bind retry (surfaced by the test; the
+incident itself was a test-script port bug — see Broke).
+
+**Measured — `experiments/dual-el/cl-transient-live-test.sh`** (single box, 5
+validators, lean from height 1, mixed load):
+- S1 kill val3 lean node 60 s under load: CL3 restarts 0→0, parked 0, fatal 0,
+  chain 278→596 during the outage, 3 transient warns, val3 caught up to 599. ✅
+- S2 restart CL3 while its node is STILL down: 2 boot-retry lines, parked 0;
+  node back → CL3 reconnected, heights carry 4–5 signatures again. ✅
+- Metric scrape on :29002 returned nothing — check the prometheus rendering
+  (`_total` suffix?) next run; the 3 warn lines prove the arm fired.
+
+**Broke / retracted**: my FIN_WAIT explanation for the bind failures was
+WRONG — the test script's `local i=$1 P=$((8560+i))` evaluated before `i` was
+assigned (bash), relaunching "val3" on val5's port. Bind-retry commit reworded
+to the honest justification. Three live runs to get one clean.
+
+**Open**: metric endpoint check; v0.1 restructure in progress (worktrees
+~/arc-lean-v0.1-work / ~/arc-lean-v0.1, lean repo ~/lean-lane).
