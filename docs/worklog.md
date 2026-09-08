@@ -409,3 +409,66 @@ to the honest justification. Three live runs to get one clean.
 
 **Open**: metric endpoint check; v0.1 restructure in progress (worktrees
 ~/arc-lean-v0.1-work / ~/arc-lean-v0.1, lean repo ~/lean-lane).
+
+## 2026-09-07 (later) — v0.1 packaging: clean CL series on main + standalone lean repo
+
+**Changed**
+- Worktree `~/arc-lean-v0.1-work` (branch `lean-lane-v0.1-work`, d437585): subtractive
+  cut of this branch — second reth engine (payment_engine), builder prebuild, compact
+  proposals, deferred-exec mode, second-EL CLI/config fields, the 8s→120s engine
+  timeouts, unrelated Cargo feature drift all removed; lean lane + Track A compile and
+  all CL suites pass on the reth-2.3.0 base. Scaffolding only; not the deliverable.
+- Worktree `~/arc-lean-v0.1` (branch `lean-lane-v0.1`, based on origin/main bd4ab47,
+  reth v1.11.3): the CL delta re-applied on main as seven commits —
+  da22eae types (dual-lane block, framing, commit_lanes) · 856d249 consensus-db
+  (keyed by value_id) · 8463fc5 eth-engine (LeanShim client + TransientDependencyError) ·
+  06bb4a2 CL lean arms behind ARC_PAYMENT_LEAN_LANE · 95eb551 value-sync env tunables ·
+  d259ef3 spammer fan-out (optional) · b074b28 docs/lean-lane-integration.md.
+  37 files, +2964 −182 (CL proper: 25 files, ~+2.2k). Each message carries the
+  design reasoning per handler. Not pushed (user preference).
+- New in the series vs this branch: `encode_value`/`decode_value` in types/block.rs.
+  Flag off now emits/parses the EVM payload's SSZ **exactly as main** (unit test
+  `encode_value_flag_off_is_stock_ssz`); flag on keeps the frame on every value
+  as run on the fleet. Format is chosen by the node's flag, never sniffed.
+- Standalone lean repo `~/lean-lane` (37ffaaf): lean-native + lean-lane-node +
+  its own spammer copy (arc-version dep removed), `scripts/lean-smoke.sh` runs from
+  the repo alone, README, docs/integration.md (contract), docs/setup.md. Cargo.lock
+  pinned to the measured dependency set (alloy-json-rpc 2.1.0; newer needs rustc 1.94).
+
+**Measured**
+- `~/lean-lane/scripts/lean-smoke.sh`: PASS — 40 heights, 9,856 txs, 98,560 payments,
+  avg N=10.0, 3/3 nodes at one commitment, replay-invariance leg ok (loopback,
+  50 M budget, no fullness figure — a smoke test, not a benchmark).
+- v0.1 series on main: `cargo test` for arc-node-consensus / arc-eth-engine /
+  arc-consensus-types / arc-consensus-db all green (263/176/85/82/31/19 …) except
+  `cli_db_migrate::test_migrate_command_without_home_flag`, which passes with an
+  isolated HOME (pre-existing: this machine has ~/.arc/consensus/store.db).
+- No fleet run this session; the fleet was torn down at the end of the Track A test.
+
+**Broke / retracted**
+- "Flag off = byte-identical to stock" was **false on the wire** on this branch:
+  `frame_lanes` always emitted the 8-byte prefix, so a flag-off node differed from
+  main's raw SSZ. Fixed in the v0.1 series only (encode/decode by flag). This branch
+  still has the always-prefixed form; it only matters for mixing with main-built nodes.
+- The v0.1 series is compiled and unit-tested on main, **not fleet-run on main**.
+  All numbers in §5 come from this branch (reth 2.3.0).
+- The lean node's `run --help` starts a node with defaults instead of printing help
+  (hand-rolled arg parser) — it ran for 10 min in the lean repo during doc writing;
+  killed, stray `lean-lane-data/` removed and gitignored. Not fixed.
+
+**Decided**
+- Wire mode by flag rather than sniffing: a raw SSZ payload's first 8 bytes could
+  collide with a valid prefix at ~2^-24 per block; unacceptable for consensus.
+- Per-file-group commits, with Track A described inside the arms commit rather than
+  split out by hunk (it is interleaved in the same functions); the review guide in
+  docs/lean-lane-integration.md is the per-change map.
+- Lean repo carries its own spammer instead of depending on arc's.
+
+**Open**
+- Fleet-run the v0.1 series on the main base (needs the EVM-lane docker images from
+  main + the lean repo binaries) before calling it shipped; `lane-bench.sh` here still
+  assumes this branch's paths.
+- `lean-lane-node run --help` should print help; the `bench` subcommand needs the same.
+- Track B items (checkpoint root, header version+proposer, charge-proposer,
+  beneficiary, tx propagation) are listed as open decisions in the guide, not started.
+- Metric scrape `<none>` on :29002 in the Track A test still unexplained.
