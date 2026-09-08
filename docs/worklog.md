@@ -517,3 +517,49 @@ to the honest justification. Three live runs to get one clean.
 - A chain-bound number on this base needs the spammer at ≥3k tx/s or N≥50 (this run
   was 54 % full). `make testnet-lean-load LOAD_RATE=3000 FANOUT=50` is the next probe.
 - `lean-lane-node run --help` still starts a node instead of printing help.
+
+## 2026-09-07 (late night) — sustained probe; series rebased onto new main (reth v2.2.0); e2e again
+
+**Changed**
+- `lean-lane-v0.1` rebased from bd4ab47 (reth 1.11.3) onto origin/main 97f8da0
+  (v0.8.0 sync, reth v2.2.0; 138 upstream files touched incl. types/block.rs, the
+  validation path, spammer). Now **6 commits** (2fd4fd4 types · e24daef consensus-db ·
+  e7ed8bc eth-engine · 03a5e76 CL arms · docs · local testnet), tag
+  `lean-lane-v0.1.0` MOVED to the new tip (never pushed). Safety branch of the old
+  series: `lean-lane-v0.1-pre-rebase`.
+- Dropped from the series: value-sync env tunables (upstream now has
+  `ARC_SYNC_REQUEST_TIMEOUT`/`ARC_SYNC_BATCH_SIZE`), the arc spammer fan-out commit
+  (upstream rewrote the spammer; the lean repo's copy drives the lane), the quake
+  `cl_env` commit (upstream has `cl.env`/`el.env` tables). Kept: +2 template lines so
+  CL containers resolve host.docker.internal.
+- Adapted to upstream's refactor: `self_reported_block_hash` + `value_id()` in the
+  vote path, `establish_block_validity(.., lean_shim, ..)`, transient → upstream's
+  `SyncedValueOutcome::LocalTransientError` (+ my counter), `ExtendedCommitCertificate`
+  sync form kept. `TransientDependencyError` is now a `wrap_err` context over the
+  real cause so upstream's `EngineApiRpcError::try_from` still finds it (one upstream
+  test caught this); `is_transient` checks both the context chain and the source chain.
+- lean-testnet.sh: `up` now runs `quake clean --all` (a compose file rendered by an
+  older quake carried `--arc.denylist.enabled`, which the new EL rejects) and refuses a
+  non-fresh EVM chain; `load` has POOL_TARGET.
+
+**Measured** (this machine, 5 validators, latency emulation on, 100 M lean budget)
+- Pre-rebase base, 10 min, 3,000 tx/s offered, N=50, pool-target 1,500, 800 accounts:
+  110–119 heights/min all along, 1,135 consecutive blocks at 369 txs = **100 % full**,
+  418,815 txs / 20.9 M payments (~1.9 blk/s, ~700 tx/s, ~35k payments/s), 0 restarts.
+- Rebased series on main 97f8da0 (reth v2.2.0), 4 min same load: **117–119
+  heights/min**, every block 369 txs = 100 % full, 181,424 / 182,900 txs included
+  (9.07 M payments), 5/5 lean nodes identical, 0 restarts/parks/transient/Invalid.
+- Tests on the rebased tree: 403/99/194/106/31/20/1 green; only the environmental
+  `cli_db_migrate` test fails (passes with isolated HOME).
+
+**Broke / retracted**
+- `quake start --force` neither wipes data nor necessarily re-renders compose: two
+  separate `up` failures (fresh lean chain under an old EVM chain; stale EL flags).
+- A `git stash push -- <path>` taken mid-rebase popped back with the whole staged
+  index and conflicted; recovered by checkout + re-extracting the single file.
+- This branch (`lean-lane-integration`) is NOT rebased; it stays the measured
+  reth-2.3.0 campaign tree. Fleet scripts here still assume it.
+
+**Open**
+- Fleet run of the v0.1 series from the new main (needs the 3 remotes rebuilt from it).
+- Push targets for both repos (arc origin refuses; lean repo has no remote).
