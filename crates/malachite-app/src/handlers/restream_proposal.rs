@@ -55,7 +55,13 @@ pub async fn handle(
         let stream_id = state.next_stream_id(block.height, block.round);
         let signing_provider = state.signing_provider();
 
-        restream_proposal(&channels.network, stream_id, signing_provider, &block).await
+        // Restream framing MUST match the ORIGINAL stream: the stored Fin
+        // signature covers the originally framed bytes. With a uniform fleet
+        // flag this holds (proposer's flag == ours). In a mixed-flag fleet a
+        // cross-format restream fails signature verification at receivers —
+        // fail-safe (proposal dropped, round times out), documented limitation.
+        let lean_lane = state.env_config().payment_lean_lane;
+        restream_proposal(&channels.network, stream_id, signing_provider, &block, lean_lane).await
     } else {
         error!(%height, %round, %valid_round, "No block found to restream");
 
@@ -68,6 +74,7 @@ pub async fn restream_proposal(
     stream_id: StreamId,
     signing_provider: &impl SigningProvider<ArcContext>,
     block: &ConsensusBlock,
+    lean_lane: bool,
 ) -> eyre::Result<()> {
     let (height, round) = (block.height, block.round);
 
@@ -84,7 +91,8 @@ pub async fn restream_proposal(
         block.size_bytes(), block.payload_size()
     );
 
-    let (stream_messages, _signature) = prepare_stream(stream_id, signing_provider, block)
+    let (stream_messages, _signature) =
+        prepare_stream(stream_id, signing_provider, block, lean_lane)
         .await
         .wrap_err_with(|| {
             format!(
@@ -148,6 +156,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: ExecutionPayloadV3::arbitrary(&mut u).unwrap(),
             signature: None,
+            lean_payload: None,
         }
     }
 
@@ -229,14 +238,14 @@ mod tests {
         let signing_provider = LocalSigningProvider::new(PrivateKey::generate(&mut rng));
         let mut block = create_dummy_block(Height::new(10), Round::new(2), Round::Nil);
 
-        let (_, signature) = make_proposal_parts(&signing_provider, &block)
+        let (_, signature) = make_proposal_parts(&signing_provider, &block, false)
             .await
             .unwrap();
         block.signature = Some(signature);
 
         mock.expect_publish_proposal_part().returning(|_| Ok(()));
 
-        let result = restream_proposal(mock, stream_id, &signing_provider, &block).await;
+        let result = restream_proposal(mock, stream_id, &signing_provider, &block, false).await;
 
         assert!(result.is_ok());
     }
@@ -254,7 +263,7 @@ mod tests {
             "block must start without a signature"
         );
 
-        let result = restream_proposal(mock, stream_id, &signing_provider, &block).await;
+        let result = restream_proposal(mock, stream_id, &signing_provider, &block, false).await;
 
         let err = result.expect_err("restreaming a signatureless block should fail");
         assert!(
@@ -293,9 +302,10 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: payload,
             signature: None,
+        lean_payload: None,
         };
 
-        let (raw_first, first_sig) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (raw_first, first_sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
         let first_parts = ProposalParts::new(raw_first).unwrap();
         let expected_first = resolve_expected_proposer(&selector, &validator_set, &first_parts);
         assert!(validate_proposal_parts(&first_parts, expected_first, &provider).await);
@@ -318,7 +328,7 @@ mod tests {
 
         assert_eq!(block_to_restream.signature, Some(first_sig));
 
-        let (raw_restream, _) = make_proposal_parts(&provider, &block_to_restream)
+        let (raw_restream, _) = make_proposal_parts(&provider, &block_to_restream, false)
             .await
             .unwrap();
         let restream_parts = ProposalParts::new(raw_restream).unwrap();

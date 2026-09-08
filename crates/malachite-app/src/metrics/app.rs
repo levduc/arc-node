@@ -114,6 +114,10 @@ pub struct Inner {
     /// labelled by source (engine reject, assembly failure, sync decode).
     invalid_payloads_count: Family<InvalidPayloadSourceLabel, Counter>,
 
+    /// Number of times a handler answered a TRANSIENT dependency error (lean
+    /// node restarting, EL SYNCING) with "no verdict" instead of dying, by site.
+    transient_dependency_skips: Family<TransientSkipSourceLabel, Counter>,
+
     /// Number of prevotes downgraded to nil because the proposer's header
     /// timestamp was too far ahead of local time, labelled by the path that saw
     /// the proposal (live arrival vs buffered/round-start).
@@ -181,6 +185,7 @@ impl Inner {
             height_restart_count: Counter::default(),
             sync_fell_behind_count: Counter::default(),
             invalid_payloads_count: Family::default(),
+            transient_dependency_skips: Family::default(),
             clock_skew_nil_vote_count: Family::default(),
             transient_validation_errors_count: Family::default(),
             binding_halt_count: Family::default(),
@@ -333,6 +338,12 @@ impl AppMetrics {
                 "invalid_payloads_count",
                 "Number of invalid payloads observed and persisted for forensics",
                 metrics.invalid_payloads_count.clone(),
+            );
+
+            registry.register(
+                "transient_dependency_skips",
+                "Transient dependency errors answered with no-verdict instead of process death",
+                metrics.transient_dependency_skips.clone(),
             );
 
             registry.register(
@@ -641,6 +652,20 @@ impl AppMetrics {
             .get()
     }
 
+    /// A transient dependency error was answered with "no verdict" at `source`.
+    pub fn inc_transient_dependency_skips(&self, source: TransientSkipSource) {
+        self.transient_dependency_skips
+            .get_or_create(&TransientSkipSourceLabel::new(source))
+            .inc();
+    }
+
+    #[cfg(test)]
+    pub fn get_transient_dependency_skips(&self, source: TransientSkipSource) -> u64 {
+        self.transient_dependency_skips
+            .get_or_create(&TransientSkipSourceLabel::new(source))
+            .get()
+    }
+
     /// Observe the number of pending proposal parts
     pub fn observe_pending_proposal_parts_count(&self, count: usize) {
         self.pending_proposal_parts_count.set(count as i64);
@@ -928,6 +953,34 @@ impl TransientValidationSourceLabel {
     }
 }
 
+/// Where a transient dependency error was tolerated instead of being fatal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransientSkipSource {
+    /// Value-sync path: replied `None`, so the sync actor re-requests the height.
+    Sync,
+}
+
+impl TransientSkipSource {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Sync => "sync",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct TransientSkipSourceLabel {
+    source: &'static str,
+}
+
+impl TransientSkipSourceLabel {
+    fn new(source: TransientSkipSource) -> Self {
+        Self {
+            source: source.as_str(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct VersionInfoLabel {
     pub version: &'static str,
@@ -975,6 +1028,15 @@ mod tests {
     use prometheus_client::encoding::text::encode;
     use prometheus_client::metrics::gauge::Gauge;
     use prometheus_client::registry::Registry;
+
+    #[test]
+    fn transient_dependency_skips_count_per_source() {
+        let metrics = AppMetrics::default();
+        assert_eq!(metrics.get_transient_dependency_skips(TransientSkipSource::Sync), 0);
+        metrics.inc_transient_dependency_skips(TransientSkipSource::Sync);
+        metrics.inc_transient_dependency_skips(TransientSkipSource::Sync);
+        assert_eq!(metrics.get_transient_dependency_skips(TransientSkipSource::Sync), 2);
+    }
 
     #[test]
     fn test_address_label_preserves_legacy_format() {

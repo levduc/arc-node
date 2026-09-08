@@ -48,6 +48,7 @@ pub async fn run(
     mut state: State,
     channels: Channels<ArcContext>,
     engine: Engine,
+    lean_shim: Option<arc_eth_engine::lean_shim::LeanShim>,
     rx_app_req: Receiver<AppRequest>,
     cancel_token: CancellationToken,
     graceful_shutdown: CancellationToken,
@@ -75,6 +76,7 @@ pub async fn run(
             &mut state,
             channels,
             &engine,
+            lean_shim.as_ref(),
             status_tx,
             &mut app_req_task,
         ))
@@ -164,6 +166,7 @@ async fn go(
     state: &mut State,
     mut channels: Channels<ArcContext>,
     engine: &Engine,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     status_tx: watch::Sender<StatusSnapshot>,
     app_req_task: &mut JoinHandle<eyre::Result<Never>>,
 ) -> eyre::Result<Never> {
@@ -174,7 +177,7 @@ async fn go(
             msg = channels.consensus.recv() => match msg {
                 Some(msg) => {
                     // Abort on error to shut down the application.
-                    handle_consensus(msg, state, &mut channels, engine).await
+                    handle_consensus(msg, state, &mut channels, engine, lean_shim).await
                         .wrap_err("Error handling consensus message")?;
 
                     // Skip the publish when nothing changed: most consensus messages
@@ -212,6 +215,7 @@ async fn handle_consensus(
     state: &mut State,
     channels: &mut Channels<ArcContext>,
     engine: &Engine,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
 ) -> eyre::Result<()> {
     match msg {
         // Consensus is ready.
@@ -236,7 +240,8 @@ async fn handle_consensus(
         } => {
             let _guard = state.metrics.start_msg_process_timer("StartedRound");
 
-            started_round::handle(state, engine, height, round, proposer, role, reply_value).await;
+            started_round::handle(state, engine, lean_shim, height, round, proposer, role, reply_value)
+                .await;
         }
 
         // Request to build a local value to propose.
@@ -255,6 +260,7 @@ async fn handle_consensus(
                 state,
                 channels.network.clone(),
                 engine,
+                lean_shim,
                 height,
                 round,
                 timeout,
@@ -271,7 +277,7 @@ async fn handle_consensus(
                 .metrics
                 .start_msg_process_timer("ReceivedProposalPart");
 
-            received_proposal_part::handle(state, engine, from, part, reply).await;
+            received_proposal_part::handle(state, engine, lean_shim, from, part, reply).await;
         }
 
         // Notification that consensus has decided a value.
@@ -294,7 +300,7 @@ async fn handle_consensus(
 
             info!(%height, %round, %value_id, %signatures, "🎉 Consensus has decided on value");
 
-            decided::handle(state, engine, certificate, reply).await?;
+            decided::handle(state, engine, lean_shim, certificate, reply).await?;
         }
 
         // Notification that a height has been finalized.
@@ -335,6 +341,7 @@ async fn handle_consensus(
             process_synced_value::handle(
                 state,
                 engine,
+                lean_shim,
                 height,
                 round,
                 proposer,
@@ -348,7 +355,7 @@ async fn handle_consensus(
         AppMsg::GetDecidedValues { range, reply } => {
             info!(range = %DisplayRange(&range), "Received sync request");
 
-            get_decided_values::handle(state, engine, range, reply).await?;
+            get_decided_values::handle(state, engine, lean_shim, range, reply).await?;
         }
 
         // Request for the earliest height available in the block store.

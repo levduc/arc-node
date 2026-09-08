@@ -28,6 +28,9 @@ use arc_eth_engine::deadline::EngineDeadline;
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
 use arc_eth_engine::rpc::EngineApiRpcError;
+use arc_eth_engine::transient::TransientDependencyError;
+/// Re-exported for the handlers: "no verdict right now" vs a real failure.
+pub use arc_eth_engine::transient::is_transient;
 
 use crate::block::ConsensusBlock;
 use crate::metrics::app::{AppMetrics, InvalidPayloadSource};
@@ -278,9 +281,16 @@ async fn validate_payload(
                     %height,
                     "Unexpected payload status: {status:?}",
                 );
-                Err(eyre::eyre!(
-                    "unexpected {status:?} status from engine for block {block_hash} at height {height}"
-                ))
+                // SYNCING/ACCEPTED = the EL is BEHIND, not wrong: transient.
+                // Handlers answer it with "no verdict" (skip the round /
+                // re-request) — never with process death.
+                Err(TransientDependencyError::new(
+                    "execution engine",
+                    format!(
+                        "unexpected {status:?} status from engine for block {block_hash} at height {height}"
+                    ),
+                )
+                .into())
             }
         },
         Err(e) => {
@@ -296,11 +306,13 @@ async fn validate_payload(
                 }
             }
 
-            // Internal failures provide no deterministic payload verdict.
+            // Internal failures provide no deterministic payload verdict: the
+            // client is AWAY (down / restarting), not wrong — transient. The
+            // cause text is kept in the detail.
             let msg = format!(
                 "call to EngineAPI::new_payload failed when validating block: {block_hash}",
             );
-            Err(e.wrap_err(msg))
+            Err(e.wrap_err(TransientDependencyError::new("execution engine", msg)))
         }
     }
 }
@@ -327,38 +339,198 @@ async fn validate_payload(
 ///   `SYNCING`/`ACCEPTED` status, etc.).
 pub async fn validate_consensus_block(
     payload_validator: &impl PayloadValidator,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     block: &ConsensusBlock,
     store: &impl InvalidPayloadsRepository,
     metrics: &AppMetrics,
 ) -> eyre::Result<Validity> {
+    // EVM lane (validated via the mockable validator).
     let result = payload_validator
         .validate_payload(&block.execution_payload)
         .await?;
 
-    match result {
-        PayloadValidationResult::Valid => Ok(Validity::Valid),
-        PayloadValidationResult::Invalid { reason } => {
-            warn!(
-                height = %block.height,
-                round = %block.round,
-                block_hash = %block.self_reported_block_hash(),
-                proposer = %block.proposer,
-                reason = %reason,
-                "Engine rejected payload, storing for forensics",
-            );
-            metrics.inc_invalid_payloads_count(InvalidPayloadSource::EngineReject);
-            let invalid = InvalidPayload::new_from_block(block, &reason);
-            if let Err(e) = store.append(invalid).await {
-                error!(
-                    height = %block.height,
-                    round = %block.round,
-                    block_hash = %block.self_reported_block_hash(),
-                    proposer = %block.proposer,
-                    "Failed to persist invalid-payload forensic record: {e}",
-                );
-            }
-            Ok(Validity::Invalid)
+    if let PayloadValidationResult::Invalid { reason } = result {
+        record_invalid_payload(block, &reason, store, metrics).await;
+        return Ok(Validity::Invalid);
+    }
+
+    // LEAN payment lane: validation is STRUCTURAL + linkage only. The lean
+    // node has no forkchoice — arc_newBlock appends PERMANENTLY — so undecided
+    // blocks are never fed to it; execution happens once, inline, at the
+    // decide anchor (affordable: ~us/output on the flat map). Safety comes
+    // from total STF (invalid tx = no-op, a byzantine proposer can never
+    // halt the lane) + the certificate binding the recomputed commitment.
+    if let Some(lane) = block.lean_payload.as_ref() {
+        let evm = &block.execution_payload.payload_inner.payload_inner;
+        // Timestamp lockstep with the EVM lane. Numbers are NOT coupled to EVM
+        // numbers: the lane may activate mid-chain, so lean numbers advance
+        // 1-per-height from activation (sync serving maps by constant offset).
+        if lane.decoded.timestamp_ms != evm.timestamp * 1000 {
+            record_invalid_payload(
+                block,
+                &format!(
+                    "lean lane: timestamp lockstep violation (lean ts_ms {} vs evm ts {})",
+                    lane.decoded.timestamp_ms, evm.timestamp
+                ),
+                store,
+                metrics,
+            )
+            .await;
+            return Ok(Validity::Invalid);
         }
+        // Parent linkage vs OUR lean head: prevents a byzantine proposer from
+        // getting a wrong-parent block certified (which would make the decide
+        // anchor fail network-wide = a halt).
+        //
+        // If WE are behind (block.number > head.number + 1), catch up from
+        // peer lean nodes HERE, before the verdict. Waiting for value-sync
+        // deadlocks: a lagging validator can't vote, so consensus can't
+        // decide, so the decide-time catch-up never fires (measured live
+        // 2026-08-22: 2/4 validators one lean block behind = permanent
+        // 40/80-nil stall). Peer blocks are safe to ingest pre-verdict — the
+        // local node recomputes every commitment on ingest, and appended
+        // certified-chain blocks are exactly what sync would feed anyway.
+        if let Some(shim) = lean_shim {
+            match shim.get_head().await {
+                Ok(mut head) => {
+                    // ALREADY-CANONICAL (sync replay of a historic height):
+                    // when consensus lags the lean chain (the node kept up via
+                    // gossip while this validator's consensus fell behind),
+                    // the synced value's lean block is in our PAST. Tip
+                    // linkage (number == head+1) is the wrong test there —
+                    // it rejected every such frame, wedging value-sync
+                    // (measured 2026-08-22: val2 consensus at 15570, lean
+                    // head 15523, lean number 15519 → invalid → sync dead).
+                    // Valid iff it IS our canonical block at that number.
+                    if lane.decoded.number <= head.number {
+                        match shim.get_block_bytes(lane.decoded.number).await {
+                            Ok(Some(ours)) if ours == lane.bytes => {
+                                // Canonical replay — lean lane section valid;
+                                // skip tip-linkage checks entirely.
+                            }
+                            Ok(_) => {
+                                record_invalid_payload(
+                                    block,
+                                    &format!(
+                                        "lean lane: historic block {} conflicts with our canonical chain",
+                                        lane.decoded.number
+                                    ),
+                                    store,
+                                    metrics,
+                                )
+                                .await;
+                                return Ok(Validity::Invalid);
+                            }
+                            Err(e) => {
+                                return Err(e.wrap_err(
+                                    "lean lane: node unreachable during historic validation",
+                                ));
+                            }
+                        }
+                        return Ok(Validity::Valid);
+                    }
+                    if lane.decoded.number > head.number + 1 {
+                        let mut fed = 0u64;
+                        'catchup: while lane.decoded.number > head.number + 1 {
+                            let next = head.number + 1;
+                            let mut advanced = false;
+                            for peer in shim.peers() {
+                                if let Ok(Some(bytes)) = peer.get_block_bytes(next).await {
+                                    if matches!(
+                                        shim.new_block(&bytes).await,
+                                        Ok(arc_eth_engine::lean_shim::NewBlockStatus::Valid(_))
+                                    ) {
+                                        advanced = true;
+                                        fed += 1;
+                                        break;
+                                    }
+                                }
+                            }
+                            if !advanced {
+                                break 'catchup;
+                            }
+                            match shim.get_head().await {
+                                Ok(h) => head = h,
+                                Err(_) => break 'catchup,
+                            }
+                        }
+                        if fed > 0 {
+                            tracing::info!(
+                                "🪶 lean lane: validation-time catch-up fed {fed} blocks \
+                                 from peers (local head now {})",
+                                head.number
+                            );
+                        }
+                    }
+                    if lane.decoded.parent != head.commitment
+                        || lane.decoded.number != head.number + 1
+                    {
+                        record_invalid_payload(
+                            block,
+                            &format!(
+                                "lean lane: parent/number mismatch (block parent {} number {} vs head {} number {})",
+                                lane.decoded.parent, lane.decoded.number, head.commitment, head.number
+                            ),
+                            store,
+                            metrics,
+                        )
+                        .await;
+                        return Ok(Validity::Invalid);
+                    }
+                    // Vote-gap execution (shim v1.3): stage the block now so
+                    // the decide anchor promotes instead of executing on the
+                    // critical path. Fire-and-forget — staging is speculative;
+                    // failure (older node, races) just means the anchor takes
+                    // the full path. Never blocks the vote.
+                    let stage_shim = shim.clone();
+                    let stage_bytes = lane.bytes.clone();
+                    tokio::spawn(async move {
+                        let _ = stage_shim.stage_block(&stage_bytes).await;
+                    });
+                }
+                Err(e) => {
+                    // Unreachable past the shim's ~15s transport retry: the
+                    // node is genuinely down. Return Err (no verdict) rather
+                    // than Invalid — a recorded Invalid sticks to the value,
+                    // and the valid-round rule re-proposes certified values
+                    // WITHOUT re-validation, so a transient outage would wedge
+                    // the height permanently (measured live 2026-08-22: all-4
+                    // rolling restart => 0-precommit deadlock at height 3446).
+                    return Err(e.wrap_err("lean lane: node unreachable during validation"));
+                }
+            }
+        }
+    }
+
+    Ok(Validity::Valid)
+}
+
+/// Best-effort persistence of an invalid-payload forensic record. Logs on failure
+/// but never changes the verdict (the engine's verdict is authoritative).
+async fn record_invalid_payload(
+    block: &ConsensusBlock,
+    reason: &str,
+    store: &impl InvalidPayloadsRepository,
+    metrics: &AppMetrics,
+) {
+    warn!(
+        height = %block.height,
+        round = %block.round,
+        block_hash = %block.self_reported_block_hash(),
+        proposer = %block.proposer,
+        reason = %reason,
+        "Engine rejected payload, storing for forensics",
+    );
+    metrics.inc_invalid_payloads_count(InvalidPayloadSource::EngineReject);
+    let invalid = InvalidPayload::new_from_block(block, reason);
+    if let Err(e) = store.append(invalid).await {
+        error!(
+            height = %block.height,
+            round = %block.round,
+            block_hash = %block.self_reported_block_hash(),
+            proposer = %block.proposer,
+            "Failed to persist invalid-payload forensic record: {e}",
+        );
     }
 }
 
@@ -462,6 +634,7 @@ impl BlockVerdict {
 /// A payload that keeps the rules gets its verdict from [`validate_consensus_block`].
 pub async fn establish_block_validity(
     payload_validator: &impl PayloadValidator,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     block: &ConsensusBlock,
     previous_block: Option<&ExecutionBlock>,
     store: &impl InvalidPayloadsRepository,
@@ -493,7 +666,7 @@ pub async fn establish_block_validity(
         return Ok(BlockVerdict::Unbound(error));
     }
 
-    validate_consensus_block(payload_validator, block, store, metrics)
+    validate_consensus_block(payload_validator, lean_shim, block, store, metrics)
         .await
         .map(BlockVerdict::Engine)
 }
@@ -691,6 +864,10 @@ mod tests {
             msg.contains("call to EngineAPI::new_payload failed"),
             "error message should describe the failure, got: {msg}",
         );
+        assert!(
+            is_transient(&err),
+            "an engine transport failure is the client being AWAY: transient"
+        );
     }
 
     #[tokio::test]
@@ -739,6 +916,7 @@ mod tests {
             execution_payload: test_payload(0),
             validity: Validity::Valid,
             signature: None,
+            lean_payload: None,
         }
     }
 
@@ -768,6 +946,7 @@ mod tests {
             execution_payload: payload,
             validity: Validity::Valid,
             signature: None,
+            lean_payload: None,
         }
     }
 
@@ -885,7 +1064,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let block = block_at(11, bound_payload(5, B256::ZERO));
 
-        let verdict = establish_block_validity(&validator, &block, None, &store, &metrics)
+        let verdict = establish_block_validity(&validator, None, &block, None, &store, &metrics)
             .await
             .expect("a binding error is a verdict, not a failure");
 
@@ -918,9 +1097,7 @@ mod tests {
         let actual = B256::repeat_byte(0xCD);
         let block = block_at(11, bound_payload(11, actual));
 
-        let verdict = establish_block_validity(
-            &validator,
-            &block,
+        let verdict = establish_block_validity(&validator, None, &block,
             Some(&prev_block(10, expected)),
             &store,
             &metrics,
@@ -954,9 +1131,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let block = block_at(11, bound_payload(11, parent));
 
-        let verdict = establish_block_validity(
-            &validator,
-            &block,
+        let verdict = establish_block_validity(&validator, None, &block,
             Some(&prev_block(10, parent)),
             &store,
             &metrics,
@@ -980,7 +1155,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let result = validate_consensus_block(&validator, &block, &store, &metrics)
+        let result = validate_consensus_block(&validator, None, &block, &store, &metrics)
             .await
             .expect("should succeed");
 
@@ -1012,7 +1187,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let result = validate_consensus_block(&validator, &block, &store, &metrics)
+        let result = validate_consensus_block(&validator, None, &block, &store, &metrics)
             .await
             .expect("should succeed");
 
@@ -1032,7 +1207,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let err = validate_consensus_block(&validator, &block, &store, &metrics)
+        let err = validate_consensus_block(&validator, None, &block, &store, &metrics)
             .await
             .expect_err("should propagate error");
 
@@ -1041,6 +1216,29 @@ mod tests {
             "error should contain the original message, \
              got: {err}",
         );
+        assert_eq!(metrics.get_invalid_payloads_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn validate_consensus_block_keeps_transient_marker_through_propagation() {
+        let mut validator = MockPayloadValidator::new();
+        validator.expect_validate_payload().returning(|_| {
+            Err(TransientDependencyError::new("execution engine", "unexpected SYNCING").into())
+        });
+
+        let mut store = MockInvalidPayloadsRepository::new();
+        store.expect_append().times(0);
+
+        let metrics = AppMetrics::default();
+        let block = test_block();
+        let err = validate_consensus_block(&validator, None, &block, &store, &metrics)
+            .await
+            .expect_err("a transient error must propagate as Err (no verdict), never as Invalid");
+
+        assert!(is_transient(&err), "marker lost in validate_consensus_block: {err:#}");
+        // ...and through the wrap_err layer every handler adds on the way up.
+        let wrapped = err.wrap_err("Payload validation failed on block built from synced value");
+        assert!(is_transient(&wrapped), "marker lost under wrap_err: {wrapped:#}");
         assert_eq!(metrics.get_invalid_payloads_count(), 0);
     }
 
@@ -1067,7 +1265,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let validity = validate_consensus_block(&validator, &block, &store, &metrics)
+        let validity = validate_consensus_block(&validator, None, &block, &store, &metrics)
             .await
             .expect("verdict should be returned even when forensics persist fails");
 

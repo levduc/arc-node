@@ -60,13 +60,14 @@ use arc_consensus_db::invalid_payloads::InvalidPayload;
 pub async fn handle(
     state: &mut State,
     engine: &Engine,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     height: Height,
     round: Round,
     proposer: Address,
     role: Role,
     reply: Reply<Vec<ProposedValue<ArcContext>>>,
 ) {
-    let proposals = match on_started_round(state, engine, height, round, proposer, role).await {
+    let proposals = match on_started_round(state, engine, lean_shim, height, round, proposer, role).await {
         Ok(proposals) => {
             info!(%height, %round, "StartedRound: sending {} undecided proposals to consensus", proposals.len());
             proposals
@@ -87,6 +88,7 @@ pub async fn handle(
 async fn on_started_round(
     state: &mut State,
     engine: &Engine,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     height: Height,
     round: Round,
     proposer: Address,
@@ -123,6 +125,8 @@ async fn on_started_round(
         &state.ctx.proposer_selector,
         state.store(),
         engine,
+        lean_shim,
+        state.lean_undecided.clone(),
         state.signing_provider(),
         state.metrics(),
         state.previous_block.as_ref(),
@@ -182,6 +186,15 @@ async fn fetch_and_process_pending_proposals(
     proposer_selector: &dyn ProposerSelector,
     store: &Store,
     engine: &Engine,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_undecided: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                arc_consensus_types::BlockHash,
+                arc_consensus_types::block::LeanLanePayload,
+            >,
+        >,
+    >,
     signing_provider: &ArcSigningProvider,
     metrics: &AppMetrics,
     previous_block: Option<&ExecutionBlock>,
@@ -199,7 +212,7 @@ async fn fetch_and_process_pending_proposals(
     // the undecided table with the engine's verdict. Rows always reflect a
     // real verdict; on a transient engine error we skip the insert. The
     // parts are pruned when height advances past them.
-    process_pending_proposal_parts(
+    let assembled = process_pending_proposal_parts(
         store,
         pending_parts,
         height,
@@ -211,9 +224,25 @@ async fn fetch_and_process_pending_proposals(
         signing_provider,
         metrics,
         previous_block,
+        lean_shim,
     )
     .await
     .wrap_err("Failed to validate pending proposal parts")?;
+
+    // LEAN lane: stash every assembled lane so the decide anchor has bytes —
+    // this assembly path never wrote the stash (only received_proposal_part
+    // did), so values decided from round-start replays anchored via the slow
+    // peer-fetch path.
+    for b in &assembled {
+        if b.validity.is_valid() {
+            if let Some(lane) = b.lean_payload.clone() {
+                lean_undecided
+                    .lock()
+                    .expect("lean_undecided mutex poisoned")
+                    .insert(b.value_id(), lane);
+            }
+        }
+    }
 
     // Re-validate undecided blocks that already exist in the store. This is
     // needed after a restart, when the execution client may have lost the
@@ -224,6 +253,8 @@ async fn fetch_and_process_pending_proposals(
         previous_block,
         store,
         &payload_validator,
+        lean_shim,
+        assembled,
         store,
         metrics,
     )
@@ -277,7 +308,9 @@ async fn process_pending_proposal_parts(
     signing_provider: &ArcSigningProvider,
     metrics: &AppMetrics,
     previous_block: Option<&ExecutionBlock>,
-) -> eyre::Result<()> {
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+) -> eyre::Result<Vec<ConsensusBlock>> {
+    let mut assembled = Vec::new();
     for parts in pending_parts {
         let (height, round, proposer) = (parts.height(), parts.round(), parts.proposer());
 
@@ -290,7 +323,7 @@ async fn process_pending_proposal_parts(
             continue;
         }
 
-        let mut block = match assemble_block_from_parts(&parts) {
+        let mut block = match assemble_block_from_parts(&parts, lean_shim.is_some()) {
             Ok(block) => block,
             Err(e) => {
                 warn!(%height, %round, %proposer, "Failed to assemble block from pending parts: {e}");
@@ -312,6 +345,7 @@ async fn process_pending_proposal_parts(
         // recorded as a permanent `Invalid` verdict against this block.
         let validity = match establish_block_validity(
             payload_validator,
+            lean_shim,
             &block,
             previous_block,
             invalid_payloads,
@@ -338,10 +372,13 @@ async fn process_pending_proposal_parts(
 
         // Atomically remove from pending and store as undecided.
         // This ensures that if the process fails, the parts are not lost.
-        remove_pending_parts_and_store_undecided_block(store, parts, block).await?;
+        remove_pending_parts_and_store_undecided_block(store, parts, block.clone()).await?;
+        // Keep the ASSEMBLED block: it still carries the lean bytes, which the
+        // SSZ store drops (a store-loaded copy has a lying value_id in lean mode).
+        assembled.push(block);
     }
 
-    Ok(())
+    Ok(assembled)
 }
 
 /// Re-sends every undecided block for the given height and round to the
@@ -367,10 +404,12 @@ async fn validate_undecided_blocks(
     previous_block: Option<&ExecutionBlock>,
     undecided_blocks: &impl UndecidedBlocksRepository,
     payload_validator: &impl PayloadValidator,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    assembled: Vec<ConsensusBlock>,
     invalid_payloads: &impl InvalidPayloadsRepository,
     metrics: &AppMetrics,
 ) -> eyre::Result<Vec<ConsensusBlock>> {
-    let blocks = undecided_blocks
+    let stored = undecided_blocks
         .get_by_round(height, round)
         .await
         .wrap_err_with(|| {
@@ -379,6 +418,35 @@ async fn validate_undecided_blocks(
                  from the state before sending them to execution client for validation"
             )
         })?;
+    // Prefer the in-memory ASSEMBLED copies: the SSZ store drops lean bytes,
+    // so a store-loaded block's value_id collapses to the EVM hash in lean
+    // mode and consensus would never match it to the streamed proposal
+    // (measured on the fleet: early-arriving proposals replayed with the
+    // lying id => the proposal's round nil'd out ~25-48% of turns). Store-only
+    // blocks are SKIPPED in lean mode for the same reason — the live paths or
+    // sync re-deliver them with bytes intact. With the lane off this is
+    // exactly the stored list.
+    let mut blocks: Vec<ConsensusBlock> = Vec::new();
+    let mut seen: std::collections::HashSet<arc_consensus_types::BlockHash> =
+        std::collections::HashSet::new();
+    for b in assembled {
+        seen.insert(b.self_reported_block_hash());
+        blocks.push(b);
+    }
+    for b in stored {
+        if seen.contains(&b.self_reported_block_hash()) {
+            continue;
+        }
+        if lean_shim.is_some() {
+            warn!(
+                %height, %round, block_hash = %b.self_reported_block_hash(),
+                "lean lane: skipping store-loaded undecided block (lean bytes \
+                 dropped by the store => lying value_id); live/sync paths re-deliver"
+            );
+            continue;
+        }
+        blocks.push(b);
+    }
 
     let mut validated_blocks = Vec::with_capacity(blocks.len());
 
@@ -427,7 +495,9 @@ async fn validate_undecided_blocks(
             continue;
         }
 
-        match validate_consensus_block(payload_validator, &block, invalid_payloads, metrics).await {
+        match validate_consensus_block(payload_validator, lean_shim, &block, invalid_payloads, metrics)
+            .await
+        {
             Ok(new_validity) => {
                 if new_validity != existing_validity {
                     warn!(
@@ -534,6 +604,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload,
             signature: None,
+            lean_payload: None,
         }
     }
 
@@ -683,7 +754,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let result = validate_undecided_blocks(
-            height, round, None, &undecided, &validator, &invalid, &metrics,
+            height, round, None, &undecided, &validator, None, Vec::new(), &invalid, &metrics,
         )
         .await
         .expect("should succeed");
@@ -742,7 +813,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let result = validate_undecided_blocks(
-            height, round, None, &undecided, &validator, &invalid, &metrics,
+            height, round, None, &undecided, &validator, None, Vec::new(), &invalid, &metrics,
         )
         .await
         .expect("should succeed");
@@ -771,7 +842,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let result = validate_undecided_blocks(
-            height, round, None, &undecided, &validator, &invalid, &metrics,
+            height, round, None, &undecided, &validator, None, Vec::new(), &invalid, &metrics,
         )
         .await
         .expect("should succeed");
@@ -795,7 +866,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let err = validate_undecided_blocks(
-            height, round, None, &undecided, &validator, &invalid, &metrics,
+            height, round, None, &undecided, &validator, None, Vec::new(), &invalid, &metrics,
         )
         .await
         .expect_err("should propagate repository error");
@@ -849,7 +920,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let result = validate_undecided_blocks(
-            height, round, None, &undecided, &validator, &invalid, &metrics,
+            height, round, None, &undecided, &validator, None, Vec::new(), &invalid, &metrics,
         )
         .await
         .expect("should succeed despite one block erroring");
@@ -904,6 +975,7 @@ mod tests {
             &provider,
             &metrics,
             None,
+            None,
         )
         .await
         .expect("should handle assembly failure gracefully");
@@ -947,11 +1019,12 @@ mod tests {
             validity: Validity::Valid,
             execution_payload,
             signature: None,
+            lean_payload: None,
         };
         let block_hash = block.self_reported_block_hash();
 
         let provider = LocalSigningProvider::new(signing_key.clone());
-        let (raw_parts, _sig) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (raw_parts, _sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
         (ProposalParts::new(raw_parts).unwrap(), block_hash)
     }
 
@@ -996,6 +1069,7 @@ mod tests {
             &invalid_payloads,
             &provider,
             &metrics,
+            None,
             None,
         )
         .await
@@ -1059,6 +1133,10 @@ mod tests {
             &selector,
             &store,
             &engine,
+
+            None,
+
+            Default::default(),
             &provider,
             &metrics,
             None,
@@ -1111,9 +1189,10 @@ mod tests {
             validity: Validity::Valid,
             execution_payload,
             signature: None,
+            lean_payload: None,
         };
         let provider = ArcSigningProvider::Local(LocalSigningProvider::new(signing_key.clone()));
-        let (raw_parts, _sig) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (raw_parts, _sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
         let parts = ProposalParts::new(raw_parts).unwrap();
 
         store
@@ -1140,6 +1219,10 @@ mod tests {
             &selector,
             &store,
             &engine,
+
+            None,
+
+            Default::default(),
             &provider,
             &metrics,
             None,
@@ -1199,7 +1282,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let blocks = validate_undecided_blocks(
-            height, round, None, &undecided, &validator, &invalid, &metrics,
+            height, round, None, &undecided, &validator, None, Vec::new(), &invalid, &metrics,
         )
         .await
         .expect("should succeed");
@@ -1254,6 +1337,10 @@ mod tests {
             &selector,
             &store,
             &engine,
+
+            None,
+
+            Default::default(),
             &provider,
             &metrics,
             Some(&previous_block),
@@ -1320,6 +1407,7 @@ mod tests {
             &provider,
             &metrics,
             None,
+            None,
         )
         .await
         .expect("a binding error is a verdict, not a failure");
@@ -1382,6 +1470,7 @@ mod tests {
             &provider,
             &metrics,
             None,
+            None,
         )
         .await
         .expect("validate-and-insert should succeed with Invalid verdict");
@@ -1442,6 +1531,7 @@ mod tests {
             &invalid_payloads,
             &provider,
             &metrics,
+            None,
             None,
         )
         .await
@@ -1505,7 +1595,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let err = validate_undecided_blocks(
-            height, round, None, &undecided, &validator, &invalid, &metrics,
+            height, round, None, &undecided, &validator, None, Vec::new(), &invalid, &metrics,
         )
         .await
         .expect_err("persist error should propagate");

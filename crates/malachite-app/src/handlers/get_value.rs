@@ -65,6 +65,7 @@ pub async fn handle(
     state: &mut State,
     network: NetworkHandle,
     engine: &Engine,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     height: Height,
     round: Round,
     timeout: Duration,
@@ -79,9 +80,13 @@ pub async fn handle(
     let previous_block = state.previous_block.as_ref();
     let signing_provider = state.signing_provider();
 
+    let lean_budget_gas = state.env_config().payment_lean_budget_gas;
     let proposed_value = on_get_value(
         network,
         engine,
+        lean_shim,
+        lean_budget_gas,
+        state.lean_undecided.clone(),
         metrics,
         store,
         height,
@@ -93,7 +98,20 @@ pub async fn handle(
         stream_id,
         timeout,
     )
-    .await?;
+    .await;
+
+    // A proposer that fails to BUILD (a lane's engine call times out under
+    // load, a lean node briefly away) must not crash the node: skip the reply
+    // so this round simply times out and consensus moves on (identical to the
+    // existing None path). Chain anomalies (`HaltAndWait`) still stop the node.
+    let proposed_value = match proposed_value {
+        Ok(v) => v,
+        Err(e) if e.downcast_ref::<HaltAndWait>().is_some() => return Err(e),
+        Err(e) => {
+            error!(%height, %round, "GetValue: failed to build proposal; skipping round: {e:#}");
+            return Ok(());
+        }
+    };
 
     if let Some(proposed_value) = proposed_value {
         if round.as_i64() == 0 {
@@ -127,6 +145,16 @@ pub async fn handle(
 async fn on_get_value(
     network: NetworkHandle,
     engine: &Engine,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_budget_gas: u64,
+    lean_undecided: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                arc_consensus_types::BlockHash,
+                arc_consensus_types::block::LeanLanePayload,
+            >,
+        >,
+    >,
     metrics: AppMetrics,
     store: Store,
     height: Height,
@@ -148,15 +176,22 @@ async fn on_get_value(
         })?;
 
     let mut block = match block {
-        Some(block) => {
+        // LEAN lane: never reuse a store-loaded block — the SSZ store drops
+        // lean bytes, so its value_id is wrong. Lean builds are microseconds;
+        // always build fresh.
+        Some(block) if lean_shim.is_none() => {
             info!(block_hash = %block.self_reported_block_hash(), "✅ Using previously built block");
 
             check_reused_block_binding(&block, height, round, previous_block, &metrics)?;
 
             block
         }
-        None => {
-            info!(%height, %round, "🌈 Building new block");
+        stored => {
+            if stored.is_some() {
+                info!(%height, %round, "lean lane: ignoring previously built block (store drops lean bytes); rebuilding");
+            } else {
+                info!(%height, %round, "🌈 Building new block");
+            }
 
             let previous_block = previous_block.ok_or_else(|| {
                 eyre!("No previous block available to build new block at height={height} and round={round}")
@@ -171,6 +206,8 @@ async fn on_get_value(
 
             let task = build_and_validate_block(
                 engine,
+                lean_shim,
+                lean_budget_gas,
                 &metrics,
                 &store,
                 height,
@@ -197,6 +234,20 @@ async fn on_get_value(
 
     let proposed_value = LocallyProposedValue::from(&block);
 
+    // LEAN lane: the PROPOSER stashes its own build immediately. The stash was
+    // otherwise written only at proposal-part assembly (self-delivery) — and
+    // when decide beats the looped-back parts (measured on the fleet: every
+    // val1-proposed height anchored via a 5s grace + CL peer-fetch, 35 polls,
+    // pinning the whole chain to ~10s on those heights), the proposer's own
+    // decide has no bytes to anchor with. Build-time stashing removes the race
+    // by construction; assembly/sync inserts stay as harmless overwrites.
+    if let Some(lane) = block.lean_payload.clone() {
+        lean_undecided
+            .lock()
+            .expect("lean_undecided mutex poisoned")
+            .insert(block.value_id(), lane);
+    }
+
     debug!(
         %height, %round,
         block_size = %block.size_bytes(),
@@ -206,7 +257,7 @@ async fn on_get_value(
 
     let block_hash = block.self_reported_block_hash();
 
-    let (stream_messages, signature) = prepare_stream(stream_id, signing_provider, &block)
+    let (stream_messages, signature) = prepare_stream(stream_id, signing_provider, &block, lean_shim.is_some())
         .await
         .wrap_err_with(|| {
             format!(
@@ -241,6 +292,8 @@ async fn on_get_value(
 #[allow(clippy::too_many_arguments)]
 async fn build_and_validate_block(
     engine: &Engine,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_budget_gas: u64,
     metrics: &AppMetrics,
     store: &Store,
     height: Height,
@@ -254,6 +307,8 @@ async fn build_and_validate_block(
 
     let block = build_block(
         engine,
+        lean_shim,
+        lean_budget_gas,
         metrics,
         height,
         round,
@@ -281,7 +336,11 @@ async fn build_and_validate_block(
     )?;
 
     let validator = EnginePayloadValidator::new_with_deadline(engine, metrics, deadline);
-    let validity = validate_consensus_block(&validator, &block, store, metrics)
+    // The proposer validates its own lean build structurally only: the lean
+    // node has no forkchoice (arc_newBlock appends permanently), so the
+    // block is executed once, at the decide anchor. Passing no shim here
+    // skips the parent-linkage check, which the build itself guarantees.
+    let validity = validate_consensus_block(&validator, None, &block, store, metrics)
         .await
         .wrap_err_with(|| {
             format!(
@@ -311,6 +370,8 @@ async fn build_and_validate_block(
 #[allow(clippy::too_many_arguments)]
 pub async fn build_block(
     engine: &Engine,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_budget_gas: u64,
     metrics: &AppMetrics,
     height: Height,
     round: Round,
@@ -332,6 +393,49 @@ pub async fn build_block(
         PrettyPayload(&execution_payload)
     );
 
+    // LEAN payment lane (ARC_PAYMENT_LEAN_LANE): build the next lean block on
+    // the lean node's head, timestamp locked to the EVM lane (ts_ms = evm_ts * 1000)
+    // so the two lanes advance in lockstep. The commitment is RECOMPUTED from
+    // the returned bytes by LeanLanePayload::new — the shim's answer is only
+    // cross-checked, never trusted.
+    let lean_payload = match lean_shim {
+        Some(shim) => {
+            let head = shim
+                .get_head()
+                .await
+                .wrap_err("lean lane: failed to fetch head for build")?;
+            let ts_ms = execution_payload.timestamp() * 1000;
+            let (claimed, bytes) = shim
+                .build_block(head.commitment, head.number + 1, ts_ms, lean_budget_gas)
+                .await
+                .wrap_err("lean lane: buildBlock failed")?;
+            let lane = arc_consensus_types::block::LeanLanePayload::new(bytes)
+                .wrap_err("lean lane: built block failed strict decode")?;
+            if lane.commitment() != claimed {
+                return Err(eyre!(
+                    "lean lane: recomputed commitment {} != shim's claimed {claimed}",
+                    lane.commitment()
+                ));
+            }
+            debug!(
+                number = head.number + 1,
+                txs = lane.decoded.tx_count,
+                commitment = %lane.commitment(),
+                "🪶 built lean payment block"
+            );
+            // Vote-gap execution (shim v1.3): the proposer stages its own
+            // build so its decide anchor promotes instantly. Fire-and-forget —
+            // failure just means the anchor takes the full path.
+            let stage_shim = shim.clone();
+            let stage_bytes = lane.bytes.clone();
+            tokio::spawn(async move {
+                let _ = stage_shim.stage_block(&stage_bytes).await;
+            });
+            Some(lane)
+        }
+        None => None,
+    };
+
     Ok(ConsensusBlock {
         height,
         round,
@@ -340,6 +444,7 @@ pub async fn build_block(
         validity: Validity::Valid,
         execution_payload,
         signature: None,
+        lean_payload,
     })
 }
 
@@ -494,6 +599,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: test_execution_payload(block_hash_byte),
             signature: Some(Signature::test()),
+            lean_payload: None,
         }
     }
 

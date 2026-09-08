@@ -37,6 +37,10 @@ const ARC_CONSENSUS_QUEUE_PER_HEIGHT_CAPACITY: &str = "ARC_CONSENSUS_QUEUE_PER_H
 const ARC_DISCOVERY_EPHEMERAL_CONNECTION_TIMEOUT: &str =
     "ARC_DISCOVERY_EPHEMERAL_CONNECTION_TIMEOUT";
 const ARC_REMOTE_SIGNING_TIMEOUT: &str = "ARC_REMOTE_SIGNING_TIMEOUT";
+const ARC_PAYMENT_LEAN_LANE: &str = "ARC_PAYMENT_LEAN_LANE";
+const ARC_PAYMENT_LEAN_RPC: &str = "ARC_PAYMENT_LEAN_RPC";
+const ARC_PAYMENT_LEAN_BUDGET_GAS: &str = "ARC_PAYMENT_LEAN_BUDGET_GAS";
+const ARC_PAYMENT_LEAN_PEER_RPCS: &str = "ARC_PAYMENT_LEAN_PEER_RPCS";
 
 /// Default cache size for the database (1 GiB).
 const DEFAULT_DB_CACHE_SIZE: ByteSize = ByteSize::gib(1);
@@ -82,6 +86,21 @@ pub struct EnvConfig {
     pub ephemeral_connection_timeout: Option<Duration>,
     /// Overrides `remote_signing::TIMEOUT` if set (remote signing only).
     pub remote_signing_timeout: Option<Duration>,
+    /// `ARC_PAYMENT_LEAN_LANE=1`: run a second, LEAN payment lane beside the EVM
+    /// lane — a separate lean-lane node (flat state, commitment chain) driven
+    /// over a small JSON-RPC shim (docs/lean-lane-integration.md), committed
+    /// under the same BFT certificate. Default off = stock single-lane
+    /// behaviour, byte-for-byte.
+    pub payment_lean_lane: bool,
+    /// Lean lane node RPC (`ARC_PAYMENT_LEAN_RPC`, default http://127.0.0.1:8560).
+    pub payment_lean_rpc: String,
+    /// Per-block lean-gas budget passed to arc_buildBlock
+    /// (`ARC_PAYMENT_LEAN_BUDGET_GAS`, default 300_000_000 = ~42k outputs at
+    /// N=10 under gas = 21000 + 5000*N — the 2 blk/s starting point).
+    pub payment_lean_budget_gas: u64,
+    /// Comma-separated peer lean node RPCs (`ARC_PAYMENT_LEAN_PEER_RPCS`) —
+    /// decide-time lane catch-up source.
+    pub payment_lean_peer_rpcs: Vec<String>,
 }
 
 /// Read an environment variable, returning `None` when it is unset or empty.
@@ -194,6 +213,21 @@ impl EnvConfig {
                 ARC_DISCOVERY_EPHEMERAL_CONNECTION_TIMEOUT,
             )?,
             remote_signing_timeout: env_nonzero_duration(ARC_REMOTE_SIGNING_TIMEOUT)?,
+            payment_lean_lane: env_var_opt(ARC_PAYMENT_LEAN_LANE)
+                .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
+            payment_lean_rpc: env_var_opt(ARC_PAYMENT_LEAN_RPC)
+                .unwrap_or_else(|| "http://127.0.0.1:8560".to_string()),
+            payment_lean_budget_gas: env_parse::<u64>(ARC_PAYMENT_LEAN_BUDGET_GAS)?
+                .unwrap_or(300_000_000),
+            payment_lean_peer_rpcs: env_var_opt(ARC_PAYMENT_LEAN_PEER_RPCS)
+                .map(|v| {
+                    v.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 }
@@ -217,6 +251,10 @@ impl Default for EnvConfig {
             queue_per_height_capacity: None,
             ephemeral_connection_timeout: None,
             remote_signing_timeout: None,
+            payment_lean_lane: false,
+            payment_lean_rpc: "http://127.0.0.1:8560".to_string(),
+            payment_lean_budget_gas: 300_000_000,
+            payment_lean_peer_rpcs: Vec::new(),
         }
     }
 }

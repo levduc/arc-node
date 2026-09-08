@@ -18,7 +18,6 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use eyre::Context;
-use ssz::Decode;
 use tracing::{error, warn};
 
 use malachitebft_app_channel::app::engine::host::SyncedValueOutcome;
@@ -26,7 +25,6 @@ use malachitebft_app_channel::app::types::core::Round;
 use malachitebft_app_channel::app::types::ProposedValue;
 use malachitebft_app_channel::Reply;
 
-use alloy_rpc_types_engine::ExecutionPayloadV3;
 use arc_consensus_types::{Address, ArcContext, Height};
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
@@ -34,7 +32,7 @@ use arc_eth_engine::persistence_meter::PersistenceMeter;
 
 use malachitebft_app_channel::app::types::core::Validity;
 
-use crate::block::ConsensusBlock;
+use crate::block::{decode_value, ConsensusBlock};
 use crate::metrics::{AppMetrics, InvalidPayloadSource};
 use crate::payload::{
     establish_block_validity, persist_invalid_payload_best_effort, BlockVerdict,
@@ -62,6 +60,7 @@ const SYNC_PERSISTENCE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 pub async fn handle(
     state: &mut State,
     engine: &Engine,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     height: Height,
     round: Round,
     proposer: Address,
@@ -70,6 +69,8 @@ pub async fn handle(
 ) -> Result<(), eyre::Error> {
     let outcome = match on_process_synced_value(
         EnginePayloadValidator::new(engine, state.metrics()),
+        lean_shim,
+        state.lean_undecided.clone(),
         state.store(),
         state.store(),
         state.persistence_meter(),
@@ -90,6 +91,19 @@ pub async fn handle(
             SyncedValueOutcome::Verdict(proposal)
         }
         Ok(None) => SyncedValueOutcome::PeerFault,
+        // A dependency is briefly AWAY or BEHIND (lean node restarting, EL
+        // SYNCING): no verdict is possible right now. The peer is innocent;
+        // sync re-requests the height and the process stays alive.
+        Err(e) if crate::payload::is_transient(&e) => {
+            warn!(
+                %height, %round, %proposer,
+                "ProcessSyncedValue: transient dependency error — no verdict, sync will re-request: {e:#}"
+            );
+            state
+                .metrics()
+                .inc_transient_dependency_skips(crate::metrics::app::TransientSkipSource::Sync);
+            SyncedValueOutcome::LocalTransientError
+        }
         Err(e) => {
             error!(%height, %round, %proposer, "ProcessSyncedValue failed: {e:#}");
             SyncedValueOutcome::LocalTransientError
@@ -121,6 +135,18 @@ pub async fn handle(
 #[allow(clippy::too_many_arguments)]
 async fn on_process_synced_value(
     engine: impl PayloadValidator,
+    // The synced value carries BOTH lanes (framed identically to the proposal-
+    // streaming path), so synced blocks re-validate the lean lane structurally
+    // and reconstruct the same `value_id` the certificate was signed over.
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_undecided: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                arc_consensus_types::BlockHash,
+                arc_consensus_types::block::LeanLanePayload,
+            >,
+        >,
+    >,
     undecided_blocks_repo: impl UndecidedBlocksRepository,
     invalid_payloads_repo: impl InvalidPayloadsRepository,
     persistence_meter: impl PersistenceMeter,
@@ -131,12 +157,12 @@ async fn on_process_synced_value(
     value_bytes: Bytes,
     previous_block: Option<ExecutionBlock>,
 ) -> eyre::Result<Option<ProposedValue<ArcContext>>> {
-    let payload = match ExecutionPayloadV3::from_ssz_bytes(&value_bytes) {
-        Ok(payload) => payload,
+    let (payload, lean_payload) = match decode_value(&value_bytes, lean_shim.is_some()) {
+        Ok(frame) => frame.into_parts(),
         Err(e) => {
             warn!(
                 %height, %round, %proposer,
-                "Failed to decode synced value into an execution payload: {e:?}",
+                "Failed to decode synced value into execution payloads: {e:?}",
             );
             metrics.inc_invalid_payloads_count(InvalidPayloadSource::SyncDecode);
 
@@ -167,10 +193,14 @@ async fn on_process_synced_value(
         execution_payload: payload,
         validity: Validity::Valid,
         signature: None,
+        lean_payload,
     };
 
+    // The sync path validates exactly like the live round: EVM lane via
+    // newPayload, lean lane structurally against the local lean node.
     let verdict = establish_block_validity(
         &engine,
+        lean_shim,
         &block,
         previous_block.as_ref(),
         &invalid_payloads_repo,
@@ -187,7 +217,22 @@ async fn on_process_synced_value(
     let validity = verdict.validity();
     block.validity = validity;
 
+    // LEAN lane: stash the synced lean payload for the decide anchor (sync
+    // heights are decided through the same decide path; the SSZ store drops
+    // lean bytes).
+    if validity.is_valid() {
+        if let Some(lane) = block.lean_payload.as_ref() {
+            lean_undecided
+                .lock()
+                .expect("lean_undecided mutex poisoned")
+                .insert(block.value_id(), lane.clone());
+        }
+    }
+
     let block_hash = block.self_reported_block_hash();
+    // The undecided store is keyed by the consensus value id (commitment over
+    // both lanes), so dedup must probe by value_id, not the EVM block hash.
+    let value_id = block.value_id();
 
     if !validity.is_valid() {
         error!(%height, %round, %proposer, %block_hash, "❌ Received invalid payload via sync");
@@ -219,24 +264,34 @@ async fn on_process_synced_value(
         None
     } else {
         undecided_blocks_repo
-            .get_by_round_and_hash(height, round, block_hash)
+            .get_by_round_and_hash(height, round, value_id)
             .await
             .wrap_err_with(|| {
                 format!(
                     "Failed to query undecided blocks repo for dedup at \
-                     height={height}, round={round}, block_hash={block_hash}"
+                     height={height}, round={round}, value_id={value_id}"
                 )
             })?
     };
 
     if let Some(existing) = existing {
-        debug_assert_eq!(
-            existing.validity, validity,
-            "dedup hit at height={height}, round={round}, block_hash={block_hash}: \
-             existing.validity ({:?}) != freshly-computed validity ({validity:?})",
-            existing.validity,
-        );
-        return Ok(Some(ProposedValue::from(&existing)));
+        if existing.validity != validity {
+            // A validation-code fix legitimately flips verdicts an older binary
+            // persisted; the certificate (2/3+ committed this value) is the
+            // authority, so trust the FRESH verdict and say so loudly.
+            warn!(
+                %height, %round, %block_hash,
+                "sync dedup validity disagreement: stored {:?} vs fresh {validity:?}; using the fresh verdict",
+                existing.validity,
+            );
+        }
+        // Return the FRESH block's proposal, not the stored copy: the SSZ store
+        // drops lean bytes, so `existing.value_id()` collapses to the EVM hash
+        // in lean mode and the framework would reject it against the
+        // certificate forever. The dedup's only job is skipping the
+        // persistence wait + duplicate store.
+        let _ = existing;
+        return Ok(Some(ProposedValue::from(&block)));
     }
 
     let proposal = ProposedValue::from(&block);
@@ -280,6 +335,7 @@ mod tests {
     use bytes::Bytes;
     use malachitebft_core_types::Validity;
     use mockall::predicate::*;
+    use alloy_rpc_types_engine::ExecutionPayloadV3;
     use ssz::Encode;
     use std::io;
 
@@ -341,6 +397,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let outcome = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -405,6 +463,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let outcome = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -461,6 +521,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let outcome = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -520,6 +582,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -576,6 +640,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let Some(proposal) = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -659,6 +725,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -713,6 +781,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let result = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -749,6 +819,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -794,6 +866,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let result = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -832,6 +906,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let result = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -880,6 +956,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let result = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -932,6 +1010,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             persistence_meter,
@@ -983,6 +1063,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             persistence_meter,
@@ -1036,6 +1118,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             persistence_meter,
@@ -1084,6 +1168,7 @@ mod tests {
             execution_payload: payload,
             validity: Validity::Valid,
             signature: None,
+            lean_payload: None,
         };
 
         // Engine validation still runs once (defense in depth on the synced
@@ -1113,6 +1198,8 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
+            Default::default(),
             undecided,
             invalid,
             persistence_meter,

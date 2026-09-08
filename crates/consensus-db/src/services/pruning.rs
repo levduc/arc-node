@@ -165,6 +165,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: payload,
             signature: None,
+            lean_payload: None,
         };
         store
             .store_decided_block(cert, block.execution_payload, block.proposer)

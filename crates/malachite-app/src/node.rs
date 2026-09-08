@@ -33,6 +33,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use backon::{BackoffBuilder, Retryable};
 use bytesize::ByteSize;
 use eyre::Context;
 use rand::rngs::OsRng;
@@ -797,6 +798,38 @@ impl App {
         .await
         .wrap_err("Failed to resolve chain identity from execution engine")?;
 
+        // LEAN payment lane (ARC_PAYMENT_LEAN_LANE): a lean-lane node driven over
+        // the JSON-RPC shim, committed under the same certificate as the EVM lane.
+        let lean_shim = if env_config.payment_lean_lane {
+            let shim = arc_eth_engine::lean_shim::LeanShim::new(env_config.payment_lean_rpc.clone())
+                .with_peers(env_config.payment_lean_peer_rpcs.clone());
+            // Same patience as the EVM engine connect: retry forever with a
+            // warning. Parking after one ~15 s try was an asymmetry — a CL
+            // rebooted by docker into a lean-node restart window parked
+            // permanently (every fleet park of 2026-08-26/27).
+            let retry_policy = backon::ConstantBuilder::new()
+                .with_delay(arc_eth_engine::INITIAL_RETRY_DELAY)
+                .without_max_times()
+                .build();
+            let head = (|| shim.get_head())
+                .retry(retry_policy)
+                .notify(|e, dur| {
+                    warn!(
+                        "ARC_PAYMENT_LEAN_LANE=1 but the lean lane node is unreachable at boot: \
+                         {e:#}, retrying in {dur:?}..."
+                    )
+                })
+                .await
+                .wrap_err("ARC_PAYMENT_LEAN_LANE=1 but the lean lane node is unreachable at boot")?;
+            info!(
+                url = %shim.url(), number = head.number, commitment = %head.commitment,
+                "🪶 Connected to LEAN payment lane node"
+            );
+            Some(shim)
+        } else {
+            None
+        };
+
         self.apply_chain_specific_config(chain_id);
 
         let consensus_spec = ConsensusSpec::from(chain_id);
@@ -910,6 +943,7 @@ impl App {
                 state,
                 channels,
                 engine,
+                lean_shim,
                 rx_app_req,
                 cancel_token,
                 graceful_shutdown,

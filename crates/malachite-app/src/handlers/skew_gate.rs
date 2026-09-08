@@ -148,6 +148,7 @@ mod tests {
             validity,
             execution_payload: payload,
             signature: None,
+            lean_payload: None,
         }
     }
 

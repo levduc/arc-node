@@ -58,6 +58,7 @@ use crate::utils::HaltAndWait;
 pub async fn handle(
     state: &mut State,
     engine: &Engine,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     certificate: CommitCertificate<ArcContext>,
     commit_ack: Reply<()>,
 ) -> eyre::Result<()> {
@@ -72,6 +73,17 @@ pub async fn handle(
     let block_finalizer = EngineBlockFinalizer::new(engine, stats, metrics);
     let pruning_service = ProdPruningService::new(store, &state.config().prune);
 
+    // LEAN lane: the decide anchor needs the lean bytes, which the SSZ store
+    // dropped — read them from the in-memory stash (written at get_value /
+    // proposal assembly / sync). Missing after a mid-height restart -> decide
+    // fails loudly and the height recovers via sync.
+    let decided_vid = certificate.value_id.block_hash();
+    let lean_lane = state
+        .lean_undecided
+        .lock()
+        .expect("lean_undecided mutex poisoned")
+        .get(&decided_vid)
+        .cloned();
     let block = decide(
         block_finalizer,
         store, // undecided blocks repository
@@ -82,12 +94,40 @@ pub async fn handle(
         metrics,
         commit_ack,
         previous_block.as_ref(),
+        lean_shim,
+        lean_lane,
     )
     .await;
 
     match block {
         Ok(block) => {
             info!("🟢 Successfully committed the decided value");
+            {
+                // Remove only the decided entry. A full clear() here wiped
+                // already-validated NEXT-height stashes (validation of H+1
+                // overlaps decide(H) at sub-second heights), forcing every
+                // decide into the peer-fetch race — measured 2026-08-22:
+                // 24-133 anchor failures/10min per validator, each a
+                // "restarting height" retry whose delay burned ~7s round
+                // timeouts on the late validator's next proposer turn
+                // (cadence 0.58 blk/s vs 0.64s median height). Same bug
+                // class as fc10d3c (mem::take drained future candidates).
+                let mut stash = state
+                    .lean_undecided
+                    .lock()
+                    .expect("lean_undecided mutex poisoned");
+                stash.remove(&decided_vid);
+                // Losing candidates (other rounds' values) accumulate; bound
+                // the map with a safety valve far above any live window.
+                if stash.len() > 256 {
+                    warn!(
+                        "lean stash grew to {} entries — clearing (losing \
+                         candidates leak?)",
+                        stash.len()
+                    );
+                    stash.clear();
+                }
+            }
 
             let catch_up_threshold = state.env_config().sync_catch_up_threshold;
             let new_sync_state = sync_state(block.timestamp, catch_up_threshold);
@@ -160,6 +200,8 @@ async fn decide(
     metrics: &AppMetrics,
     commit_ack: Reply<()>,
     previous_block: Option<&ExecutionBlock>,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_lane: Option<arc_consensus_types::block::LeanLanePayload>,
 ) -> eyre::Result<ExecutionBlock> {
     let height = certificate.height;
     let round = certificate.round;
@@ -216,6 +258,20 @@ async fn decide(
         block.payload_size()
     );
 
+    // LEAN lane anchor: execute + append the decided lean block on the lean
+    // node BEFORE commit — the one and only feed (validation never appends;
+    // arc_newBlock is permanent and idempotent by commitment). The certificate
+    // binds commit_lanes(evm, lean_commitment) == value_id; verify BOTH that
+    // binding and that the node's answer reproduces the commitment. Failure =
+    // loud height failure (Decision::Failure -> restart/sync), never a fork.
+    if let Some(shim) = lean_shim {
+        let evm_hash = block.self_reported_block_hash();
+        let cert_bound = value_id.block_hash();
+        anchor_lean_lane(shim, evm_hash, cert_bound, lean_lane.as_ref(), height)
+            .await
+            .wrap_err_with(|| format!("lean lane: decide anchor failed at height={height}"))?;
+    }
+
     // Commit the decision to the store before finalizing the block.
     // This way we ensure that latest decided height >= latest finalized block.
     let new_latest_block = commit(
@@ -242,6 +298,161 @@ async fn decide(
 
     Ok(new_latest_block)
 }
+
+/// Anchors the decided lean block, catching the local lane up from PEER lean
+/// nodes when it is behind the certificate (missed round-1 proposals, node
+/// restarts, mid-height stash loss). Termination is exact and trustless: keep
+/// feeding until `commit_lanes(evm_hash, local_head) == certificate value_id`
+/// — every ingested block's commitment is recomputed by our own node, and the
+/// final head must reproduce the certified binding, so peers cannot forge.
+async fn anchor_lean_lane(
+    shim: &arc_eth_engine::lean_shim::LeanShim,
+    evm_hash: arc_consensus_types::BlockHash,
+    cert_bound: arc_consensus_types::BlockHash,
+    stashed: Option<&arc_consensus_types::block::LeanLanePayload>,
+    height: Height,
+) -> eyre::Result<()> {
+    use arc_consensus_types::block::commit_lanes;
+    use arc_eth_engine::lean_shim::NewBlockStatus;
+    // Engine-API-shaped anchoring: feed what we have; a SYNCING answer (or a
+    // behind head with nothing to feed) means the NODE is backfilling itself
+    // from its peers — WAIT and re-poll instead of failing the height. The
+    // old fail-fast turned every transient lag into a "Decision failure,
+    // restarting height" loop whose delay made the validator late for its
+    // next proposer turn; the laggard role then migrated around the network
+    // (24-174 anchor failures/10min/validator, cadence 0.60 blk/s measured).
+    // CL-side peer-fetch stays only as a fallback for nodes without --peers.
+    const TOTAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+    const NODE_HEAL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+    const POLL: std::time::Duration = std::time::Duration::from_millis(150);
+    let wait_start = std::time::Instant::now();
+    let mut fed_from_peers = 0u64;
+    let mut iterations = 0u64;
+    loop {
+        iterations += 1;
+        if wait_start.elapsed() > TOTAL_DEADLINE {
+            let head = shim.get_head().await.map(|h| h.number).unwrap_or(0);
+            return Err(eyre!(
+                "lean lane: could not anchor height={height} within {TOTAL_DEADLINE:?} \
+                 (local lean head {head}, {fed_from_peers} peer blocks fed) — halting"
+            ));
+        }
+        // Node briefly AWAY (restart ~10 s): wait it out under the same
+        // deadline instead of failing the height on the first miss. A
+        // Decision::Failure here restarts the height every ~15 s for as long
+        // as the node is down, and made this validator late for its next
+        // proposer turn.
+        let head = match shim.get_head().await {
+            Ok(h) => h,
+            Err(e) if arc_eth_engine::transient::is_transient(&e) => {
+                warn!("lean lane: node unreachable at anchor ({e:#}); waiting");
+                tokio::time::sleep(POLL).await;
+                continue;
+            }
+            Err(e) => return Err(e.wrap_err("lean lane: get_head failed")),
+        };
+        // ALREADY-CANONICAL (sync replay of a historic height): when the lean
+        // node ran ahead of this validator's consensus (v1.1 gossip), the
+        // decided lean block is in our past — the certificate binds THAT
+        // block's commitment, which will never equal the moving head. Anchor
+        // is a no-op iff our canonical block at that number is byte-identical.
+        if let Some(lane) = stashed {
+            if lane.decoded.number <= head.number
+                && commit_lanes(evm_hash, Some(lane.commitment())) == cert_bound
+            {
+                match shim.get_block_bytes(lane.decoded.number).await {
+                    Ok(Some(ours)) if ours == lane.bytes => {
+                        debug!(
+                            "🪶 Lean lane anchored (historic no-op, block {}) at height {height}",
+                            lane.decoded.number
+                        );
+                        return Ok(());
+                    }
+                    Ok(_) => {
+                        return Err(eyre!(
+                            "lean lane: certified historic block {} conflicts with our \
+                             canonical chain at height={height} — halting",
+                            lane.decoded.number
+                        ));
+                    }
+                    Err(e) if arc_eth_engine::transient::is_transient(&e) => {
+                        warn!("lean lane: node unreachable at historic anchor ({e:#}); waiting");
+                        tokio::time::sleep(POLL).await;
+                        continue;
+                    }
+                    Err(e) => return Err(e.wrap_err("lean lane: historic anchor read failed")),
+                }
+            }
+        }
+        if commit_lanes(evm_hash, Some(head.commitment)) == cert_bound {
+            if fed_from_peers > 0 || iterations > 2 {
+                info!(
+                    "🪶 Lean lane anchored at height {height} after catch-up \
+                     ({fed_from_peers} peer blocks, {iterations} polls) in {:?}",
+                    wait_start.elapsed()
+                );
+            } else {
+                debug!(
+                    "🪶 Lean lane anchored at decide in {:?} (height {height})",
+                    wait_start.elapsed()
+                );
+            }
+            return Ok(());
+        }
+        // Fast path: the stashed decided payload extends the current head.
+        if let Some(lane) = stashed {
+            if lane.decoded.parent == head.commitment {
+                match shim.new_block(&lane.bytes).await {
+                    Ok(NewBlockStatus::Valid(_)) => continue,
+                    Ok(NewBlockStatus::Syncing) => {
+                        tokio::time::sleep(POLL).await;
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!("lean lane: stashed anchor failed ({e:#}); trying peer catch-up");
+                    }
+                }
+            }
+        }
+        // Behind. Give the node its self-backfill grace window first; only
+        // then fall back to CL-side peer fetching (nodes without --peers).
+        if wait_start.elapsed() < NODE_HEAL_GRACE {
+            tokio::time::sleep(POLL).await;
+            continue;
+        }
+        let next = head.number + 1;
+        let mut fed = false;
+        for peer in shim.peers() {
+            match peer.get_block_bytes(next).await {
+                Ok(Some(bytes)) => match shim.new_block(&bytes).await {
+                    Ok(NewBlockStatus::Valid(_)) => {
+                        fed = true;
+                        fed_from_peers += 1;
+                        break;
+                    }
+                    Ok(NewBlockStatus::Syncing) => {
+                        fed = true; // node took it as a sync hint; re-poll
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("lean lane: peer-fed block {next} rejected by local node: {e:#}");
+                    }
+                },
+                Ok(None) => {}
+                Err(e) => {
+                    debug!("lean lane: peer {} has no block {next}: {e:#}", peer.url());
+                }
+            }
+        }
+        if !fed {
+            // Nobody has it YET (peers' own decides may still be in flight,
+            // the exact race measured tonight) — wait out the deadline
+            // instead of failing the height immediately.
+            tokio::time::sleep(POLL).await;
+        }
+    }
+}
+
 
 /// Commits a value with the given certificate, cleanup stale consensus data and prune historical data.
 ///
@@ -440,6 +651,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: test_execution_payload(height, timestamp),
             signature: Some(Signature::test()),
+            lean_payload: None,
         }
     }
 
@@ -534,6 +746,8 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             None,
+            None,
+            None,
         )
         .await;
 
@@ -593,6 +807,8 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             Some(&test_execution_block(height - 1, 900)),
+            None,
+            None,
         )
         .await
         .expect_err("an unbound payload must not be finalized");
@@ -642,6 +858,8 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             Some(&test_execution_block(height - 1, 900)),
+            None,
+            None,
         )
         .await
         .expect_err("a payload that extends another block must not be finalized");
@@ -694,6 +912,8 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             Some(&test_execution_block(height - 1, 900)),
+            None,
+            None,
         )
         .await
         .expect_err("an unbound payload must not be finalized");
@@ -735,6 +955,8 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             Some(&test_execution_block(height - 1, 900)),
+            None,
+            None,
         )
         .await
         .expect_err("a block marked invalid must not be finalized");
@@ -801,6 +1023,8 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             Some(&test_execution_block(height - 1, 900)),
+            None,
+            None,
         )
         .await
         .expect("a bound payload is finalized");
@@ -837,6 +1061,8 @@ mod tests {
             &stats,
             &metrics,
             dummy_commit_ack(),
+            None,
+            None,
             None,
         )
         .await;
@@ -882,6 +1108,8 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             None,
+            None,
+            None,
         )
         .await;
 
@@ -918,6 +1146,8 @@ mod tests {
             &stats,
             &metrics,
             dummy_commit_ack(),
+            None,
+            None,
             None,
         )
         .await;
@@ -961,6 +1191,8 @@ mod tests {
             &stats,
             &metrics,
             dummy_commit_ack(),
+            None,
+            None,
             None,
         )
         .await;
