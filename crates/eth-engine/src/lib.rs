@@ -19,9 +19,11 @@ pub mod deadline;
 pub mod engine;
 pub mod ipc;
 pub mod json_structures;
+pub mod lean_shim;
 pub mod persistence_meter;
 pub mod retry;
 pub mod rpc;
+pub mod transient;
 
 mod abi_utils;
 
@@ -30,6 +32,7 @@ pub use constants::{
     ENGINE_FORKCHOICE_UPDATED_TIMEOUT, ENGINE_GET_PAYLOAD_TIMEOUT, ENGINE_NEW_PAYLOAD_TIMEOUT,
     INITIAL_RETRY_DELAY,
 };
+pub use transient::{is_transient, TransientDependencyError};
 
 #[cfg(any(test, feature = "mocks"))]
 pub mod mocks {
