@@ -121,8 +121,15 @@ pub fn decode_block(bytes: &[u8]) -> Result<ConsensusBlock, DecodeError> {
 
     match ConsensusBlockVersion::try_from(*version) {
         Ok(ConsensusBlockVersion::V1) => {
-            let (height, round, valid_round, proposer, is_valid, execution_payload, signature) =
-                SszBlock::<ExecutionPayloadV3>::from_ssz_bytes(&bytes[1..])?;
+            let (
+                height,
+                round,
+                valid_round,
+                proposer,
+                is_valid,
+                execution_payload,
+                signature,
+            ) = SszBlock::<ExecutionPayloadV3>::from_ssz_bytes(&bytes[1..])?;
             Ok(ConsensusBlock {
                 height: Height::new(height),
                 round: Round::from(round),
@@ -131,6 +138,9 @@ pub fn decode_block(bytes: &[u8]) -> Result<ConsensusBlock, DecodeError> {
                 validity: Validity::from_bool(is_valid),
                 execution_payload,
                 signature: signature.map(|s| s.0),
+                // The store persists the SSZ form only; lean lane data is
+                // canonical in the lean node and reattached via sync/fetch.
+                lean_payload: None,
             })
         }
         Err(version) => Err(DecodeError::UnsupportedVersion(version)),
@@ -406,6 +416,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: create_test_execution_payload(),
             signature: Some(signature),
+            lean_payload: None,
         }
     }
 
