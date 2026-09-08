@@ -2,8 +2,8 @@
 
 A second, lean execution lane for high-volume native payments, running beside
 the EVM lane under the same Malachite BFT certificate. The lane's node lives in
-its own repository (`lean-lane`: node + `0x50` fan-out wire format + load
-generator; builds against upstream reth, no fork). This document is what the
+its own repository (`levduc/lean-lane`: node + `0x50` fan-out wire format +
+load generator; links upstream reth crates, no fork). This document is what the
 Arc CL needs to drive it, written for whoever integrates the series into `main`.
 
 Everything is behind `ARC_PAYMENT_LEAN_LANE=1`. **Flag off is stock:** the wire
@@ -142,7 +142,7 @@ not.
 ## 4b. Local testnet (quake)
 
 ```bash
-git clone <lean-lane repo> ../lean-lane      # next to this checkout, or set LEAN_LANE_DIR
+git clone git@github.com:levduc/lean-lane.git ../lean-lane   # next to this checkout, or set LEAN_LANE_DIR
 make testnet-lean                            # docker images + 5 host lean nodes + quake localdev-lean.toml
 make testnet-lean-load LOAD_SECS=180         # fan-out load through the lean nodes
 make testnet-lean-status                     # EL/lean heights + byte-level lean agreement
