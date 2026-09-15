@@ -244,3 +244,103 @@ pub(crate) async fn validate_lean_section(
 
     Ok(LeanVerdict::Valid)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use arc_consensus_types::{Address, Height, Round, B256};
+    use arc_eth_engine::lean_shim::{LeanCatchup, LeanHead, MockLeanBytesResolver, NewBlockStatus};
+    use malachitebft_app_channel::app::types::core::Validity;
+
+    /// A lean node that must never be called. `LeanValidation` is not
+    /// `automock`ed (its catch-up tests need genuinely slow peers), so the
+    /// "strict mock" is spelled out: every method panics.
+    struct NeverCalled;
+
+    impl LeanCatchup for NeverCalled {
+        fn peer_count(&self) -> usize {
+            panic!("the stock path must not ask the lean node anything")
+        }
+        async fn peer_block_bytes(&self, _p: usize, _n: u64) -> eyre::Result<Option<Vec<u8>>> {
+            panic!("the stock path must not ask a peer lean node for bytes")
+        }
+        async fn feed_local(&self, _b: Vec<u8>) -> eyre::Result<NewBlockStatus> {
+            panic!("the stock path must not feed the lean node")
+        }
+        async fn local_head(&self) -> eyre::Result<LeanHead> {
+            panic!("the stock path must not read the lean head")
+        }
+    }
+
+    impl LeanValidation for NeverCalled {
+        async fn canonical_block_bytes(&self, _n: u64) -> eyre::Result<Option<Vec<u8>>> {
+            panic!("the stock path must not read canonical lean bytes")
+        }
+        fn stage_detached(&self, _b: Vec<u8>) {
+            panic!("the stock path must not stage anything")
+        }
+    }
+
+    /// The concrete types a bare `None` leaves unconstrained.
+    const NO_SHIM: Option<&NeverCalled> = None;
+    const NO_RESOLVER: Option<&MockLeanBytesResolver> = None;
+
+    fn stock_block() -> ConsensusBlock {
+        ConsensusBlock {
+            height: Height::new(1),
+            round: Round::new(0),
+            valid_round: Round::Nil,
+            proposer: Address::new([0u8; 20]),
+            validity: Validity::Valid,
+            execution_payload: crate::block::tests_payload_helper(0x11, vec![]),
+            signature: None,
+            lean_payload: None,
+        }
+    }
+
+    /// THE flag-off contract at the seam this module is: with no lean node and
+    /// no lean payload — exactly the shape `ARC_PAYMENT_LEAN_LANE` unset
+    /// produces at every call site — the lean section is a no-op that returns
+    /// Valid. Both mocks are strict (`MockLeanValidation`/`MockLeanBytesResolver`
+    /// with no expectations panic if called), so this also pins that nothing
+    /// here reaches for a lean node on the stock path.
+    #[tokio::test]
+    async fn flag_off_is_a_no_op_that_never_touches_a_lean_node() {
+        let block = stock_block();
+        assert_eq!(
+            block
+                .execution_payload
+                .payload_inner
+                .payload_inner
+                .prev_randao,
+            B256::ZERO,
+            "with the lane off the CL leaves prev_randao at zero",
+        );
+        assert_eq!(block.header_lean_commitment(), None);
+
+        // `lean_bytes_required` is the network-origin flag; both readings must
+        // be the same no-op when there is no lane at all.
+        for required in [false, true] {
+            let verdict = validate_lean_section(&block, NO_SHIM, NO_RESOLVER, required)
+                .await
+                .expect("the stock path never abstains");
+            assert_eq!(verdict, LeanVerdict::Valid, "required={required}");
+        }
+    }
+
+    /// A node running WITH the lane still votes on EVM-only heights (before
+    /// activation, or a height whose proposer framed no lean block): a shim in
+    /// hand but no lean payload and a zero header is not something to judge.
+    #[tokio::test]
+    async fn a_lane_enabled_node_is_a_no_op_on_an_evm_only_height() {
+        let block = stock_block();
+        let resolver = MockLeanBytesResolver::new();
+
+        let verdict = validate_lean_section(&block, Some(&NeverCalled), Some(&resolver), true)
+            .await
+            .expect("an EVM-only height is not an abstain");
+
+        assert_eq!(verdict, LeanVerdict::Valid);
+    }
+}
