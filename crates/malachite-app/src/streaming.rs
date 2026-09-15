@@ -51,11 +51,24 @@ const MAX_STREAMS_PER_PEER: usize = 4;
 /// what every memory bound documented in this module is computed from.
 pub(crate) const DEFAULT_CHUNK_SIZE: usize = 128 * 1024;
 
-/// Smallest chunk size the override will accept.
+/// Smallest chunk size the override will accept: the default, so the override
+/// can only ever *raise* the chunk size.
 ///
-/// Below this the per-part protobuf envelope and the per-message gossipsub
-/// overhead start to dominate the payload.
-pub(crate) const MIN_CHUNK_SIZE: usize = 16 * 1024;
+/// [`MAX_MESSAGES_PER_STREAM`] is a hard constant and is not derived from the
+/// chunk size, so the largest assemblable block is
+/// `(MAX_MESSAGES_PER_STREAM - 2) * chunk_size` (Init and Fin take a slot
+/// each). Lowering the chunk size therefore lowers the maximum block the fleet
+/// can stream, and a fleet-wide value low enough to put the operating block
+/// size over the cap halts the chain: every receiver evicts every proposal with
+/// `ExceededMaxMessages` and no value ever completes. Clamping the floor at the
+/// default removes that direction entirely — the experiments only ever wanted
+/// to raise it — and keeps the documented 16 MiB per-stream bound as the
+/// minimum, not the maximum, assemblable block.
+///
+/// Raising the floor is also why a low value is not merely inefficient: below
+/// the default the per-part protobuf envelope and the per-message gossipsub
+/// overhead start to dominate the payload as well.
+pub(crate) const MIN_CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE;
 
 /// Largest chunk size the override will accept.
 ///
@@ -877,13 +890,45 @@ mod tests {
         assert_eq!(parse_chunk_size(Some("8388608")), MAX_CHUNK_SIZE);
 
         // Both bounds are inclusive.
-        assert_eq!(parse_chunk_size(Some("16384")), MIN_CHUNK_SIZE);
+        assert_eq!(parse_chunk_size(Some("131072")), MIN_CHUNK_SIZE);
         assert_eq!(parse_chunk_size(Some("4194304")), MAX_CHUNK_SIZE);
 
         // The bounds themselves are the documented ones.
-        assert_eq!(MIN_CHUNK_SIZE, 16 * 1024);
+        assert_eq!(MIN_CHUNK_SIZE, 128 * 1024);
         assert_eq!(MAX_CHUNK_SIZE, 4 * 1024 * 1024);
         assert_eq!(DEFAULT_CHUNK_SIZE, 128 * 1024);
+    }
+
+    /// The floor is the default, so the override can only raise the chunk size.
+    ///
+    /// `MAX_MESSAGES_PER_STREAM` is a hard constant: the largest assemblable
+    /// block is `(MAX_MESSAGES_PER_STREAM - 2) * chunk_size`. A chunk size below
+    /// the default would shrink that below the 16 MiB every memory bound in this
+    /// module is documented against, and a fleet-wide value low enough to put the
+    /// operating block size over the cap would halt the chain. Anything below the
+    /// floor must therefore come back as the default, not as the requested value.
+    #[test]
+    fn a_chunk_size_below_the_floor_clamps_to_the_default() {
+        assert_eq!(MIN_CHUNK_SIZE, DEFAULT_CHUNK_SIZE);
+
+        for raw in ["1", "1024", "16384", "65536", "131071"] {
+            assert_eq!(
+                parse_chunk_size(Some(raw)),
+                DEFAULT_CHUNK_SIZE,
+                "{raw} is below the floor and must clamp up to the default"
+            );
+        }
+
+        // The knob still raises, and the default itself passes through.
+        assert_eq!(parse_chunk_size(Some("131072")), DEFAULT_CHUNK_SIZE);
+        assert!(parse_chunk_size(Some("262144")) > DEFAULT_CHUNK_SIZE);
+
+        // The maximum assemblable block never shrinks below the documented bound.
+        let max_block = MAX_MESSAGES_PER_STREAM.saturating_sub(2) * parse_chunk_size(Some("1024"));
+        assert!(
+            max_block >= (MAX_MESSAGES_PER_STREAM - 2) * DEFAULT_CHUNK_SIZE,
+            "a clamped-down override must not shrink the assemblable block"
+        );
     }
 
     /// The effective size is resolved once and is always inside the window,
