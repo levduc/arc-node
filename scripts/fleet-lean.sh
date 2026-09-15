@@ -41,8 +41,25 @@ REPO=$(cd "$(dirname "$0")/.." && pwd); cd "$REPO" || exit 1
 
 CFG=${FLEET_ENV:-$REPO/scripts/fleet.env}
 [ -f "$CFG" ] || CFG=$REPO/scripts/fleet.env.example
+
+# fleet.env is sourced below as plain `VAR=value` assignments, which
+# unconditionally clobber anything the caller already exported — so
+# `BUDGET_GAS=225000000 FANOUT=100 scripts/fleet-lean.sh load` was silently
+# losing to whatever fleet.env said. The sweep tonight drives every run
+# through env vars, so: snapshot what the caller exported for the load-shape
+# knobs BEFORE sourcing fleet.env, then restore exactly those after — fleet.env
+# still supplies every default the caller didn't set, but the process
+# environment always wins for the ones it did.
+_ENV_OVERRIDABLE="FANOUT LOAD_SECS LOAD_RATE POOL_TARGET GENERATORS DISTRIBUTED BUDGET_GAS BUDGET_TXS"
+for _v in $_ENV_OVERRIDABLE; do
+  [ -n "${!_v+x}" ] && eval "_had_$_v=1; _val_$_v=\${$_v}"
+done
 # shellcheck disable=SC1090
 source "$CFG"
+for _v in $_ENV_OVERRIDABLE; do
+  eval "[ -n \"\${_had_$_v:-}\" ]" && eval "$_v=\${_val_$_v}"
+done
+unset _v _ENV_OVERRIDABLE
 
 SCEN=${SCENARIO:-fleet4-lean}
 MANIFEST=crates/quake/scenarios/$SCEN.toml
@@ -52,12 +69,28 @@ QUAKE=${QUAKE:-$REPO/target/release/quake}
 N=4
 CHAIN=${LEAN_CHAIN_ID:-1338}
 LEAN_PORT=8560
-BUDGET_TXS=${BUDGET_TXS:-553}     # 150 M gas / (21000 + 5000*50) at N=50 = a 100 %-full block
 LEAN_SRC=${LEAN_BIN:-$LEAN_LANE_DIR/target/release/lean-lane-node}
 SPAM_SRC=${SPAMMER_BIN:-$LEAN_LANE_DIR/target/release/spammer}
 IMAGES=${IMAGES:-"arc_consensus:latest arc_execution:latest"}
 SSH_TMO=${SSH_TMO:-120}
+
+# load-shape knobs: default here too, in case fleet.env doesn't set one at all
+# (fleet.env.example ships all of these, but a hand-trimmed fleet.env might not).
+FANOUT=${FANOUT:-50}
+LOAD_SECS=${LOAD_SECS:-600}
+LOAD_RATE=${LOAD_RATE:-3000}
+POOL_TARGET=${POOL_TARGET:-1500}
+FUND_ACCOUNTS=${FUND_ACCOUNTS:-800}
 GENERATORS=${GENERATORS:-2}
+DISTRIBUTED=${DISTRIBUTED:-0}
+
+# BUDGET_GAS templates the scenario's ARC_PAYMENT_LEAN_BUDGET_GAS into a per-run
+# copy of the manifest in up() (the tracked toml is never edited — see up()).
+# BUDGET_TXS is the tx count that fills that budget at this FANOUT, derived
+# automatically unless the caller pins it explicitly:
+#   budget_gas / (21000 base + 5000/output * outputs) = txs to fill the block
+BUDGET_GAS=${BUDGET_GAS:-150000000}
+BUDGET_TXS=${BUDGET_TXS:-$((BUDGET_GAS / (21000 + 5000 * FANOUT)))}
 
 ACTION=${1:-}; shift 2>/dev/null || true
 if [ -z "${RUN_ID:-}" ]; then
@@ -158,6 +191,19 @@ up(){
   [ -x "$QUAKE" ]     || die "no quake at $QUAKE"
   for img in $IMAGES; do docker image inspect "$img" >/dev/null 2>&1 || die "local image $img missing (make build-docker)"; done
   mkdir -p "$LOCAL" "$RUNS"; echo "$RUN_ID" > "$RUNS/latest"
+  say "effective params: BUDGET_GAS=$BUDGET_GAS BUDGET_TXS=$BUDGET_TXS FANOUT=$FANOUT FUND_ACCOUNTS=$FUND_ACCOUNTS"
+
+  # ---- template BUDGET_GAS into a per-run copy of the manifest; the tracked
+  # scenario toml under crates/quake/scenarios/ is NEVER edited. quake derives
+  # its testnet name (and so $QDIR=.quake/$SCEN) from the manifest's FILE STEM
+  # alone, not its directory, so the copy keeps the same basename ($SCEN.toml)
+  # under .quake/ (gitignored) and QDIR still resolves the same as always.
+  EFF_MANIFEST=$REPO/.quake/.effective-manifests/$SCEN.toml
+  mkdir -p "$(dirname "$EFF_MANIFEST")"
+  sed -E "s/(ARC_PAYMENT_LEAN_BUDGET_GAS = \")[0-9]+(\")/\1${BUDGET_GAS}\2/" "$MANIFEST" > "$EFF_MANIFEST"
+  grep -q "ARC_PAYMENT_LEAN_BUDGET_GAS = \"$BUDGET_GAS\"" "$EFF_MANIFEST" \
+    || die "failed to template BUDGET_GAS=$BUDGET_GAS into $EFF_MANIFEST (tracked $MANIFEST left untouched)"
+  say "effective manifest $EFF_MANIFEST (BUDGET_GAS=$BUDGET_GAS; tracked $MANIFEST untouched)"
 
   say "reachability + run root on all $N machines"
   for n in $(seq 1 $N); do
@@ -176,7 +222,7 @@ up(){
   say "fund file: $(wc -l < "$FUND") accounts, sha $(sha256sum "$FUND" | cut -c1-16)"
 
   # ---- generate the testnet files locally (setup renders, it does NOT start containers)
-  say "quake setup -f $MANIFEST --force (render only)"
+  say "quake setup -f $EFF_MANIFEST --force (render only)"
   # The containers write validator1's local data as root; a plain rm -rf
   # leaves reth/store.db/wal behind and the CL then crash-loops on the
   # handshake ("EL has blocks but CL has no committed state") — measured
@@ -187,7 +233,7 @@ up(){
   fi
   rm -rf "$QDIR"
   [ -d "$QDIR" ] && die "could not remove $QDIR (root-owned leftovers?) — refusing to start on stale data"
-  "$QUAKE" -f "$MANIFEST" setup --force > "$LOCAL/quake-setup.log" 2>&1 \
+  "$QUAKE" -f "$EFF_MANIFEST" setup --force > "$LOCAL/quake-setup.log" 2>&1 \
     || { tail -20 "$LOCAL/quake-setup.log"; die "quake setup failed (see $LOCAL/quake-setup.log)"; }
   [ -f "$QDIR/compose.yaml" ] || die "quake setup produced no compose.yaml"
   say "fleet surgery"
@@ -303,6 +349,7 @@ status(){
 load(){
   mkdir -p "$LOCAL"
   local n
+  say "effective params: BUDGET_GAS=$BUDGET_GAS BUDGET_TXS=$BUDGET_TXS FANOUT=$FANOUT LOAD_SECS=$LOAD_SECS LOAD_RATE=$LOAD_RATE POOL_TARGET=$POOL_TARGET GENERATORS=$GENERATORS DISTRIBUTED=$DISTRIBUTED FUND_ACCOUNTS=$FUND_ACCOUNTS"
   say "  full block at this budget = $BUDGET_TXS txs (a number without fullness is not a result)"
   # Ingress is PER LEAN NODE (the lane does not propagate transactions between
   # nodes — guide §6: "the proposer packs what it has"), so DISTRIBUTED=1 puts
@@ -379,7 +426,9 @@ import json
 print(json.dumps({'t':$t,'sample':$s,'lean_height':$h,'blk_per_min':'$bpm','head_txs':${txs:-0},
  'mean_txs_5blk':$mean,'full_pct':'$full','tx_per_s':'$tps','payments_per_s':'$pps',
  'pool':[$(IFS=,; echo "${pool[*]}")],'restarts':[$(IFS=,; echo "${rst[*]}")],
- 'budget_txs':$BUDGET_TXS,'fanout':$FANOUT}))" >> "$jf"
+ 'budget_gas':$BUDGET_GAS,'budget_txs':$BUDGET_TXS,'fanout':$FANOUT,'load_secs':$LOAD_SECS,
+ 'load_rate':$LOAD_RATE,'pool_target':$POOL_TARGET,'generators':$GENERATORS,
+ 'distributed':$DISTRIBUTED}))" >> "$jf"
     prev_h=$h; prev_t=$t
   done
   say "samples -> $jf"
