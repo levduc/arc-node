@@ -318,19 +318,32 @@ load(){
 }
 
 sample_loop(){ # sample every 60 s while the spammer (pid $1) runs
+  # Two separate per-validator columns, both labelled: pool1/2/3/4 is the PENDING
+  # txpool depth of each lean node (ingress health — the lane does not propagate
+  # transactions, so a proposer can only pack what its OWN pool holds, and one
+  # shallow pool is the thing that silently caps fullness), and restarts1/2/3/4 is
+  # each CL container's RestartCount (0 throughout = no CL ever crash-restarted).
   local sp=$1 jf=$LOCAL/run.jsonl t0 prev_h=-1 prev_t=0 s=0
   t0=$(date +%s)
-  printf '%-6s %-7s %-9s %-9s %-8s %-10s %-9s %s\n' "t(s)" "leanH" "blk/min" "headTxs" "full%" "tx/s" "pay/s" "pool r2/r3/r4"
+  printf '%-6s %-7s %-9s %-9s %-7s %-9s %-9s %-22s %s\n' \
+    "t(s)" "leanH" "blk/min" "headTxs" "full%" "tx/s" "pay/s" "pool1/2/3/4" "restarts1/2/3/4"
   while kill -0 "$sp" 2>/dev/null; do
     sleep 60
     kill -0 "$sp" 2>/dev/null || break
     s=$((s+1)); local t; t=$(( $(date +%s) - t0 ))
-    local h txs pool r2 r3 r4 mean sum=0 k cnt=0 i
-    h=$(lean_height 1); txs=$(block_txs 1 "$h"); pool=$(pool_depth 1)
+    local h txs mean sum=0 k cnt=0 i n
+    local -a pool=() rst=()
+    local pd rst_c pools rsts
+    h=$(lean_height 1); txs=$(block_txs 1 "$h")
     # mean fullness over the last 5 blocks (node 1 is local, so this is loopback)
     for i in 0 1 2 3 4; do k=$(block_txs 1 $((h-i))); [ "${k:-0}" -gt 0 ] 2>/dev/null && { sum=$((sum+k)); cnt=$((cnt+1)); }; done
     mean=0; [ $cnt -gt 0 ] && mean=$((sum/cnt))
-    r2=$(cl_restarts 2); r3=$(cl_restarts 3); r4=$(cl_restarts 4)
+    # pool depth AND restart count on every validator, not just node 1
+    for n in $(seq 1 $N); do
+      pd=$(pool_depth "$n"); rst_c=$(cl_restarts "$n")
+      pool+=("${pd:--1}"); rst+=("${rst_c:--1}")
+    done
+    pools=$(IFS=/; echo "${pool[*]}"); rsts=$(IFS=/; echo "${rst[*]}")
     local bpm=0 tps=0 pps=0 full=0
     if [ "$prev_h" -ge 0 ] && [ $((t-prev_t)) -gt 0 ]; then
       bpm=$(python3 -c "print(f'{($h-$prev_h)*60/($t-$prev_t):.2f}')")
@@ -338,12 +351,14 @@ sample_loop(){ # sample every 60 s while the spammer (pid $1) runs
       pps=$(python3 -c "print(f'{($h-$prev_h)*$mean*$FANOUT/($t-$prev_t):.0f}')")
     fi
     full=$(python3 -c "print(f'{100*$mean/$BUDGET_TXS:.0f}')")
-    printf '%-6s %-7s %-9s %-9s %-8s %-10s %-9s %s\n' "$t" "$h" "$bpm" "${txs:-?}" "$full" "$tps" "$pps" "$r2/$r3/$r4"
+    printf '%-6s %-7s %-9s %-9s %-7s %-9s %-9s %-22s %s\n' \
+      "$t" "$h" "$bpm" "${txs:-?}" "$full" "$tps" "$pps" "$pools" "$rsts"
     python3 -c "
-import json,sys
+import json
 print(json.dumps({'t':$t,'sample':$s,'lean_height':$h,'blk_per_min':'$bpm','head_txs':${txs:-0},
- 'mean_txs_5blk':$mean,'full_pct':'$full','tx_per_s':'$tps','payments_per_s':'$pps','pool_node1':${pool:--1},
- 'cl_restarts':{'2':${r2:--1},'3':${r3:--1},'4':${r4:--1}},'budget_txs':$BUDGET_TXS,'fanout':$FANOUT}))" >> "$jf"
+ 'mean_txs_5blk':$mean,'full_pct':'$full','tx_per_s':'$tps','payments_per_s':'$pps',
+ 'pool':[$(IFS=,; echo "${pool[*]}")],'restarts':[$(IFS=,; echo "${rst[*]}")],
+ 'budget_txs':$BUDGET_TXS,'fanout':$FANOUT}))" >> "$jf"
     prev_h=$h; prev_t=$t
   done
   say "samples -> $jf"
