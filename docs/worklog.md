@@ -994,3 +994,45 @@ Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
 **Open**
 - Fleet re-run with lean-lane rc2 (same runner, `scripts/fleet-lean.sh`), then the v0.1-vs-v0.2 A/B
   only if a gap remains. The two parked must-fix findings from the final review still stand.
+
+## 2026-09-15 — fleet re-run with rc2: 1.90 blk/s opening at 100 % full, then an unexplained drift
+
+**Changed**
+- `arc-lean-v0.1` (branch `lean-lane-v0.2`) c1f469a: `scripts/fleet-lean.sh` wipes root-owned
+  reth/malachite data through a `--user root alpine` container before `rm -rf`, and `up` dies
+  if any EL is not fresh (height ≥ 60 within the gate) or any CL has restarted.
+- a9d36a8: guide §5 carries the rc2 fleet table; the rc1 0.73 blk/s row is marked retracted
+  (scan bug) and the invalid re-run is documented.
+
+**Measured** (fleet run `v02-0914-2301`, lean-lane `v0.2.0-rc2`, 4 machines, N=50, 150 M,
+DISTRIBUTED=1 one spammer per machine at 3000 tx/s offered, 10 min, health gate PASS, CL
+restarts 0/0/0/0 throughout, 4/4 byte-identical at 1054, DOWN_EXIT=0):
+- minute 2: **114.10 blk/min = 1.90 blk/s, 553/553 = 100 % full, 1,052 tx/s, 52,580 payments/s**
+- minute 3: 110.16 · minute 4: 107.00 · minute 5: 103.28 · minute 6: 94.43 · minute 7: 90.49 ·
+  minute 8: 84.59 · minute 9: 93.00 blk/min — every sample 553/553 = 100 % full; tx/s 1,015 →
+  857; payments/s 50,767 → 42,858. Pools 1.5–2.5 k on all four the whole time (never starved).
+- The opening window matches the v0.1 campaign point (1.93 blk/s / 55,534 pay/s at N=100/150 M).
+
+**Broke / retracted**
+- Fleet re-run #1 (`v02-0914-2243`) INVALID, not reported: validator1's root-owned reth data
+  survived the runner's `rm -rf`, its EL came up stale at 1584, its CL crash-looped (restarts
+  11 → 19). Cause was the runner, fixed in c1f469a; re-run #2 above is the valid one.
+
+**Decided**
+- The v0.2 header binding costs nothing measurable at the operating point; the rc1 gap was
+  entirely the anchor scan. The guide's §5 says so with the retraction beside it.
+
+**Open**
+- **Cadence drift over 10 min: 114 → 85–93 blk/min at constant 100 % fullness and steady pools.**
+  Not the scan (anchor flat 15–25 ms), not starvation. BRAINSTORM candidates: lean log / EL
+  persistence growth, backpressure (`execution_persistence_backpressure`), host load on the
+  wifi machine. Next: a 20–30 min run sampling per-validator proposer turns + lean-node / EL
+  CPU, then the same run on the v0.1 series (tag `lean-lane-v0.1.0`) to see whether v0.1 drifts
+  the same way. A drift that v0.1 shares is a campaign property, not a v0.2 regression.
+- Two parked must-fix-before-merge findings from the final review still stand (get_value
+  reuse-arm equivocation; CATCHUP_BUDGET sticky Invalid).
+- Branches/tags not pushed (user pushes): lean-lane `v0.2` @ f76c189 (`v0.2.0-rc2`),
+  arc `lean-lane-v0.2` @ a9d36a8, this worklog on `lean-lane-integration`.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
