@@ -42,6 +42,81 @@ pub enum NewBlockStatus {
     Syncing,
 }
 
+// ---------------------------------------------------------------------------
+// Response parsing — ONE reading of each shim field.
+//
+// Every verb comes in two spellings (by-bytes and by-commitment), so each
+// field used to be parsed twice with its own error text. These helpers are the
+// single reading: the verbs differ only in the params they send.
+// ---------------------------------------------------------------------------
+
+/// Standard, padded base64 — the encoding the shim contract specifies for
+/// block bytes in both directions.
+const B64: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::STANDARD;
+
+fn encode_block_bytes(bytes: &[u8]) -> String {
+    B64.encode(bytes)
+}
+
+fn decode_block_bytes(method: &str, s: &str) -> eyre::Result<Vec<u8>> {
+    B64.decode(s)
+        .wrap_err_with(|| format!("lean shim: {method} blockBytes bad base64"))
+}
+
+/// The `commitment` field, parsed as a hash. Never trusted on its own: every
+/// caller recomputes the commitment from the bytes before believing it.
+fn parse_commitment(v: &Value) -> eyre::Result<BlockHash> {
+    v.get("commitment")
+        .and_then(|c| c.as_str())
+        .ok_or_else(|| eyre!("lean shim: missing commitment"))?
+        .parse()
+        .map_err(|e| eyre!("lean shim: bad commitment: {e}"))
+}
+
+/// An `arc_newBlock` reply: a commitment (appended) or `SYNCING` (the node is
+/// backfilling itself — wait and ask again). Anything else fails closed.
+fn parse_new_block_status(method: &str, r: &Value) -> eyre::Result<NewBlockStatus> {
+    if r.get("commitment").is_some() {
+        return Ok(NewBlockStatus::Valid(parse_commitment(r)?));
+    }
+    match r.get("status").and_then(|s| s.as_str()) {
+        Some("SYNCING") => Ok(NewBlockStatus::Syncing),
+        other => Err(eyre!(
+            "lean shim: {method} response has neither commitment nor a \
+             known status (status={other:?})"
+        )),
+    }
+}
+
+/// A `blockBytes` field that the node is allowed to omit ("I do not have it").
+fn parse_optional_block_bytes(method: &str, r: &Value) -> eyre::Result<Option<Vec<u8>>> {
+    match r.get("blockBytes") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(decode_block_bytes(method, s)?)),
+        Some(other) => Err(eyre!("lean shim: {method} unexpected type: {other}")),
+    }
+}
+
+/// A `blockBytes` field the node MUST supply.
+fn parse_required_block_bytes(method: &str, r: &Value) -> eyre::Result<Vec<u8>> {
+    let s = r
+        .get("blockBytes")
+        .and_then(|b| b.as_str())
+        .ok_or_else(|| eyre!("lean shim: {method} missing blockBytes"))?;
+    decode_block_bytes(method, s)
+}
+
+/// By-name params for the commitment-addressed verbs (v0.2).
+fn commitment_params(commitment: BlockHash) -> Value {
+    json!({ "commitment": format!("{commitment}") })
+}
+
+/// By-name params for the bytes-addressed verbs.
+fn block_bytes_params(block_bytes: &[u8]) -> Value {
+    json!({ "blockBytes": encode_block_bytes(block_bytes) })
+}
+
 impl LeanShim {
     pub fn new(url: impl Into<String>) -> Self {
         Self {
@@ -115,14 +190,6 @@ impl LeanShim {
             .ok_or_else(|| eyre!("lean shim: {method} response has no result"))
     }
 
-    fn parse_commitment(v: &Value) -> eyre::Result<BlockHash> {
-        v.get("commitment")
-            .and_then(|c| c.as_str())
-            .ok_or_else(|| eyre!("lean shim: missing commitment"))?
-            .parse()
-            .map_err(|e| eyre!("lean shim: bad commitment: {e}"))
-    }
-
     /// Proposer: build (but do not append) the next block from the node's pool.
     /// Returns (commitment, canonical block bytes).
     pub async fn build_block(
@@ -143,14 +210,8 @@ impl LeanShim {
                 }),
             )
             .await?;
-        let commitment = Self::parse_commitment(&r)?;
-        let bytes = r
-            .get("blockBytes")
-            .and_then(|b| b.as_str())
-            .ok_or_else(|| eyre!("lean shim: buildBlock missing blockBytes"))?;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(bytes)
-            .wrap_err("lean shim: buildBlock blockBytes bad base64")?;
+        let commitment = parse_commitment(&r)?;
+        let bytes = parse_required_block_bytes("buildBlock", &r)?;
         Ok((commitment, bytes))
     }
 
@@ -165,23 +226,9 @@ impl LeanShim {
     /// 0.60 blk/s while the laggard role migrated between validators).
     pub async fn new_block(&self, block_bytes: &[u8]) -> eyre::Result<NewBlockStatus> {
         let r = self
-            .call(
-                "arc_newBlock",
-                json!({
-                    "blockBytes": base64::engine::general_purpose::STANDARD.encode(block_bytes),
-                }),
-            )
+            .call("arc_newBlock", block_bytes_params(block_bytes))
             .await?;
-        if r.get("commitment").is_some() {
-            return Ok(NewBlockStatus::Valid(Self::parse_commitment(&r)?));
-        }
-        match r.get("status").and_then(|s| s.as_str()) {
-            Some("SYNCING") => Ok(NewBlockStatus::Syncing),
-            other => Err(eyre!(
-                "lean shim: newBlock response has neither commitment nor a \
-                 known status (status={other:?})"
-            )),
-        }
+        parse_new_block_status("newBlock", &r)
     }
 
     /// Vote-gap execution (shim v1.3): ask the node to validate + execute the
@@ -192,12 +239,7 @@ impl LeanShim {
     /// SYNCING, transport) just means the anchor takes the full path.
     pub async fn stage_block(&self, block_bytes: &[u8]) -> eyre::Result<()> {
         let _ = self
-            .call(
-                "arc_stageBlock",
-                json!({
-                    "blockBytes": base64::engine::general_purpose::STANDARD.encode(block_bytes),
-                }),
-            )
+            .call("arc_stageBlock", block_bytes_params(block_bytes))
             .await?;
         Ok(())
     }
@@ -205,7 +247,7 @@ impl LeanShim {
     pub async fn get_head(&self) -> eyre::Result<LeanHead> {
         let r = self.call("arc_getHead", json!({})).await?;
         Ok(LeanHead {
-            commitment: Self::parse_commitment(&r)?,
+            commitment: parse_commitment(&r)?,
             number: r
                 .get("number")
                 .and_then(|n| n.as_u64())
@@ -222,21 +264,8 @@ impl LeanShim {
         let r = self
             .call("arc_getBlockBytes", json!({ "number": number }))
             .await?;
-        match r.get("blockBytes") {
-            None | Some(Value::Null) => Ok(None),
-            Some(Value::String(s)) => Ok(Some(
-                base64::engine::general_purpose::STANDARD
-                    .decode(s)
-                    .wrap_err("lean shim: getBlockBytes bad base64")?,
-            )),
-            Some(other) => Err(eyre!("lean shim: getBlockBytes unexpected type: {other}")),
-        }
+        parse_optional_block_bytes("getBlockBytes", &r)
     }
-}
-
-/// By-name params for the commitment-addressed verbs (v0.2).
-fn commitment_params(commitment: BlockHash) -> Value {
-    json!({ "commitment": format!("{commitment}") })
 }
 
 impl LeanShim {
@@ -249,13 +278,7 @@ impl LeanShim {
         let r = self
             .call("arc_newBlock", commitment_params(commitment))
             .await?;
-        if r.get("commitment").is_some() {
-            return Ok(NewBlockStatus::Valid(Self::parse_commitment(&r)?));
-        }
-        match r.get("status").and_then(|s| s.as_str()) {
-            Some("SYNCING") => Ok(NewBlockStatus::Syncing),
-            other => Err(eyre!("lean shim: newBlock{{commitment}} response has neither commitment nor a known status (status={other:?})")),
-        }
+        parse_new_block_status("newBlock{commitment}", &r)
     }
 
     /// v0.2: canonical/staged/queued block bytes by commitment (sync serving).
@@ -266,15 +289,7 @@ impl LeanShim {
         let r = self
             .call("arc_getBlockBytes", commitment_params(commitment))
             .await?;
-        match r.get("blockBytes") {
-            None | Some(Value::Null) => Ok(None),
-            Some(Value::String(s)) => Ok(Some(
-                base64::engine::general_purpose::STANDARD
-                    .decode(s)
-                    .wrap_err("lean shim: getBlockBytes bad base64")?,
-            )),
-            Some(other) => Err(eyre!("lean shim: getBlockBytes unexpected type: {other}")),
-        }
+        parse_optional_block_bytes("getBlockBytes{commitment}", &r)
     }
 }
 
@@ -447,5 +462,66 @@ mod tests {
         let v = commitment_params(c);
         assert_eq!(v["commitment"].as_str().unwrap(), format!("{c}"));
         assert!(v.get("blockBytes").is_none());
+    }
+
+    #[test]
+    fn block_bytes_params_are_by_name_padded_base64() {
+        let v = block_bytes_params(&[0x50, 0x01]);
+        assert_eq!(v["blockBytes"].as_str().unwrap(), "UAE=");
+        assert!(v.get("commitment").is_none());
+    }
+
+    /// Both spellings of `arc_newBlock` read their reply through this one
+    /// parser, so a commitment means appended, `SYNCING` means wait, and
+    /// anything else fails closed rather than being read as success.
+    #[test]
+    fn new_block_status_reads_commitment_syncing_and_nothing_else() {
+        let c = BlockHash::repeat_byte(0x5c);
+        assert_eq!(
+            parse_new_block_status("newBlock", &json!({ "commitment": format!("{c}") })).unwrap(),
+            NewBlockStatus::Valid(c)
+        );
+        assert_eq!(
+            parse_new_block_status("newBlock", &json!({ "status": "SYNCING" })).unwrap(),
+            NewBlockStatus::Syncing
+        );
+        for bad in [
+            json!({}),
+            json!({ "status": "VALID" }),
+            json!({ "status": 1 }),
+        ] {
+            assert!(parse_new_block_status("newBlock", &bad).is_err(), "{bad}");
+        }
+    }
+
+    /// An omitted or null `blockBytes` is "I do not have it", not an error;
+    /// a non-string is malformed; a string must be valid base64.
+    #[test]
+    fn optional_block_bytes_distinguishes_absent_from_malformed() {
+        let m = "getBlockBytes";
+        assert_eq!(parse_optional_block_bytes(m, &json!({})).unwrap(), None);
+        assert_eq!(
+            parse_optional_block_bytes(m, &json!({ "blockBytes": null })).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_optional_block_bytes(m, &json!({ "blockBytes": "UAE=" })).unwrap(),
+            Some(vec![0x50, 0x01])
+        );
+        assert!(parse_optional_block_bytes(m, &json!({ "blockBytes": 7 })).is_err());
+        assert!(parse_optional_block_bytes(m, &json!({ "blockBytes": "!!!" })).is_err());
+    }
+
+    /// `buildBlock` must supply the bytes: absent is a protocol error there,
+    /// which is exactly what separates it from the optional reading above.
+    #[test]
+    fn required_block_bytes_rejects_an_absent_field() {
+        let m = "buildBlock";
+        assert_eq!(
+            parse_required_block_bytes(m, &json!({ "blockBytes": "UAE=" })).unwrap(),
+            vec![0x50, 0x01]
+        );
+        assert!(parse_required_block_bytes(m, &json!({})).is_err());
+        assert!(parse_required_block_bytes(m, &json!({ "blockBytes": null })).is_err());
     }
 }
