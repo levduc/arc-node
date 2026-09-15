@@ -65,7 +65,13 @@ pub async fn handle(
     let decided_height = certificate.height;
     let decided_value_id = certificate.value_id;
 
+    let t_monitor = crate::height_timing::segment_start();
     store_proposal_monitor_on_decision(state, decided_height, &decided_value_id).await;
+    crate::height_timing::record(
+        decided_height.as_u64(),
+        crate::height_timing::Segment::Monitor,
+        t_monitor,
+    );
 
     let previous_block = state.previous_block;
     let (store, metrics, stats) = (state.store(), state.metrics(), state.stats());
@@ -101,8 +107,14 @@ pub async fn handle(
 
             state.sync_state = new_sync_state;
 
+            let t_next = crate::height_timing::segment_start();
             let next_height_info =
                 prepare_next_height(decided_height, block, new_sync_state, engine).await?;
+            crate::height_timing::record(
+                decided_height.as_u64(),
+                crate::height_timing::Segment::NextHeight,
+                t_next,
+            );
 
             state.decision = Some(Decision::Success(Box::new(next_height_info)));
         }
@@ -170,10 +182,14 @@ async fn decide(
 
     // NOTE: here the node searches for the block with maching value_id from any round
     // It needs to read the complete undecided blocks table, but the expectation is it should be small.
-    let block = match undecided_blocks
-        .get_by_hash(height, value_id.block_hash())
-        .await
-    {
+    let t_lookup = crate::height_timing::segment_start();
+    let looked_up = undecided_blocks.get_by_hash(height, value_id.block_hash()).await;
+    crate::height_timing::record(
+        height.as_u64(),
+        crate::height_timing::Segment::Lookup,
+        t_lookup,
+    );
+    let block = match looked_up {
         Ok(Some(block)) => block,
         Ok(None) => {
             return Err(eyre!(
@@ -191,7 +207,14 @@ async fn decide(
     // payload before consensus votes on it, so reaching this point means an
     // invariant broke. A restart cannot change the certificate, so the node stops
     // here whatever the row reads, rather than repeating the height with no reason.
-    if let Err(error) = check_payload_binding(&block.execution_payload, height, previous_block) {
+    let t_bind = crate::height_timing::segment_start();
+    let binding = check_payload_binding(&block.execution_payload, height, previous_block);
+    crate::height_timing::record(
+        height.as_u64(),
+        crate::height_timing::Segment::Bind,
+        t_bind,
+    );
+    if let Err(error) = binding {
         error!(
             %height, %round, %value_id,
             "🛑 Chain anomaly: decided payload is not bound to its place in the chain; halting",
@@ -223,8 +246,14 @@ async fn decide(
         let Some(commitment) = block.header_lean_commitment() else {
             return Err(eyre!("lean lane: decided EVM header carries no lean commitment at height={height} (lane on, prev_randao zero)"));
         };
-        anchor_lean_lane(shim, commitment, height, ANCHOR_DEADLINE)
-            .await
+        let t_anchor = crate::height_timing::segment_start();
+        let anchored = anchor_lean_lane(shim, commitment, height, ANCHOR_DEADLINE).await;
+        crate::height_timing::record(
+            height.as_u64(),
+            crate::height_timing::Segment::AnchorCall,
+            t_anchor,
+        );
+        anchored
             .wrap_err_with(|| format!("lean lane: decide anchor failed at height={height}"))?;
 
         crate::height_timing::mark_at(height.as_u64(), crate::height_timing::Phase::Anchor);
@@ -339,9 +368,24 @@ async fn commit(
     let certificate_round = certificate.round;
     let value_id = certificate.value_id;
 
-    decided_blocks
-        .store(certificate, block.execution_payload.clone(), block.proposer)
-        .await
+    let t_clone = crate::height_timing::segment_start();
+    let payload_for_store = block.execution_payload.clone();
+    crate::height_timing::record(
+        certificate_height.as_u64(),
+        crate::height_timing::Segment::PayloadClone,
+        t_clone,
+    );
+
+    let t_store = crate::height_timing::segment_start();
+    let stored = decided_blocks
+        .store(certificate, payload_for_store, block.proposer)
+        .await;
+    crate::height_timing::record(
+        certificate_height.as_u64(),
+        crate::height_timing::Segment::Store,
+        t_store,
+    );
+    stored
         .wrap_err_with(|| {
             format!("Failed to store decided block at height={certificate_height}, round={certificate_round}, value_id={value_id}")
         })?;
@@ -355,12 +399,18 @@ async fn commit(
 
     // Clean up stale consensus data (undecided blocks and pending proposals up to the certificate height)
     let clean_start = std::time::Instant::now();
+    let t_clean = crate::height_timing::segment_start();
     if let Err(e) = pruning_service
         .clean_stale_consensus_data(certificate_height)
         .await
     {
         error!("Failed to clean stale consensus data: {e}");
     }
+    crate::height_timing::record(
+        certificate_height.as_u64(),
+        crate::height_timing::Segment::Clean,
+        t_clean,
+    );
     debug!(
         %certificate_height,
         elapsed_ms = clean_start.elapsed().as_secs_f64() * 1000.0,
@@ -376,6 +426,7 @@ async fn commit(
         })?;
 
     // Prune historical decided certificates if pruning is enabled
+    let t_prune = crate::height_timing::segment_start();
     if let Err(e) = pruning_service
         .prune_historical_certs(certificate_height)
         .await
@@ -389,6 +440,11 @@ async fn commit(
     if let Err(e) = pruning_service.prune_decided_blocks().await {
         error!("Failed to prune decided blocks: {e}");
     }
+    crate::height_timing::record(
+        certificate_height.as_u64(),
+        crate::height_timing::Segment::Prune,
+        t_prune,
+    );
 
     Ok(new_latest_block)
 }

@@ -7,12 +7,19 @@ The consensus layer emits one INFO line per height when `ARC_HEIGHT_TIMING=1`:
       first_part=35 last_part=180 parts=14 bytes=1234567 assembled=181
       lean_stage=262 evm_newpayload=250 prevote=263 precommit=310 decided=402
       anchor=418 evm_fcu=455 lean_txs=2400 build_lean=- build_evm=- parts_sent=-
+      dec_monitor=0.8 dec_lookup=2.3 dec_bind=0.0 dec_anchor_call=11.9
+      dec_clone=0.4 dec_store=3.1 dec_clean=0.9 dec_prune=0.2 dec_next=1.5
 
 Every phase field is milliseconds after the *start of that height*; `t_start` is
 milliseconds from the previous height's decide to this height's start; `-` means
 the phase did not happen on this node. This script turns those absolute stamps
 into per-phase durations and reports mean / p50 / p90 for each, split by role
 and by proposer, plus the cadence per wall-clock minute.
+
+The `dec_*` fields are the exception: they are elapsed DURATIONS (ms, one
+decimal) for the decide path's individual costs, so `decided -> anchor` can be
+split into the CL's own work and the lean shim's round trip. Older logs have
+no `dec_*` fields and parse exactly as before.
 
 Usage:  scripts/height-timing.py <cl.log> [<cl.log> ...]
         scripts/height-timing.py --self-test
@@ -21,6 +28,7 @@ Usage:  scripts/height-timing.py <cl.log> [<cl.log> ...]
 from __future__ import annotations
 
 import argparse
+import io
 import math
 import re
 import sys
@@ -49,6 +57,21 @@ STAMP_FIELDS = (
     "parts_sent",
 )
 COUNT_FIELDS = ("round", "parts", "bytes", "lean_txs")
+
+# Decide-path segment DURATIONS (ms, one decimal) — unlike every other field
+# these are elapsed times, not stamps relative to the height start. They
+# decompose `decided -> anchor -> evm_fcu` and the gap to the next height.
+SEGMENT_FIELDS = (
+    "dec_monitor",
+    "dec_lookup",
+    "dec_bind",
+    "dec_anchor_call",
+    "dec_clone",
+    "dec_store",
+    "dec_clean",
+    "dec_prune",
+    "dec_next",
+)
 
 # name -> (from_field, to_field). `None` as the source means "the height start",
 # which is the origin every stamp is already relative to.
@@ -82,6 +105,7 @@ class Height:
     proposer: str
     stamps: dict[str, int] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
+    segments: dict[str, float] = field(default_factory=dict)
     source: str = ""
 
     def duration(self, frm: Optional[str], to: str) -> Optional[int]:
@@ -127,6 +151,14 @@ def parse_line(line: str, source: str = "") -> Optional[Height]:
             continue
         try:
             rec.counts[key] = int(raw)
+        except ValueError:
+            continue
+    for key in SEGMENT_FIELDS:
+        raw = kvs.get(key)
+        if raw is None or raw == "-":
+            continue
+        try:
+            rec.segments[key] = float(raw)
         except ValueError:
             continue
     return rec
@@ -193,6 +225,54 @@ def render_phases(title: str, records: Sequence[Height], out) -> None:
         )
 
 
+def render_segments(title: str, records: Sequence[Height], out) -> None:
+    """The `dec_*` decide-path breakdown, for records that carry it.
+
+    Prints nothing when no height has any segment — a log from a CL without
+    the instrumentation reads exactly as it did before.
+    """
+    rows = []
+    for key in SEGMENT_FIELDS:
+        samples = [r.segments[key] for r in records if key in r.segments]
+        stats = summarize(samples)
+        if stats is not None:
+            rows.append((key, stats))
+    if not rows:
+        return
+    print(f"\n{title}  (heights={len(records)})", file=out)
+    print(f"  {'segment':<28} {'n':>5} {'mean':>9} {'p50':>9} {'p90':>9}", file=out)
+    for name, s in rows:
+        print(
+            f"  {name:<28} {int(s['n']):>5} {s['mean']:>9.2f} "
+            f"{s['p50']:>9.2f} {s['p90']:>9.2f}",
+            file=out,
+        )
+    # The budget these fields exist to explain: everything the CL does between
+    # the certificate arriving and the anchor returning. The residual against
+    # `decided_to_anchor` is what is still unattributed.
+    pre = ("dec_monitor", "dec_lookup", "dec_bind", "dec_anchor_call")
+    accounted = [
+        sum(r.segments[k] for k in pre if k in r.segments)
+        for r in records
+        if any(k in r.segments for k in pre)
+    ]
+    measured = [
+        float(v) for v in (r.duration("decided", "anchor") for r in records) if v is not None
+    ]
+    a, m = summarize(accounted), summarize(measured)
+    if a and m:
+        print(
+            f"  {'-> sum(pre-anchor dec_*)':<28} {int(a['n']):>5} {a['mean']:>9.2f} "
+            f"{a['p50']:>9.2f} {a['p90']:>9.2f}",
+            file=out,
+        )
+        print(
+            f"  {'-> decided_to_anchor':<28} {int(m['n']):>5} {m['mean']:>9.2f} "
+            f"{m['p50']:>9.2f} {m['p90']:>9.2f}",
+            file=out,
+        )
+
+
 def render_sizes(records: Sequence[Height], out) -> None:
     for key in ("bytes", "parts", "lean_txs"):
         samples = [float(r.counts[key]) for r in records if key in r.counts]
@@ -250,12 +330,14 @@ def report(records: Sequence[Height], out=sys.stdout) -> None:
     cadence(records, out)
 
     render_phases("ALL", records, out)
+    render_segments("ALL decide-path segments", records, out)
 
     by_role: dict[str, list[Height]] = defaultdict(list)
     for rec in records:
         by_role[rec.role].append(rec)
     for role in sorted(by_role):
         render_phases(f"role={role}", by_role[role], out)
+        render_segments(f"role={role} decide-path segments", by_role[role], out)
 
     by_proposer: dict[str, list[Height]] = defaultdict(list)
     for rec in records:
@@ -280,9 +362,9 @@ def read_files(paths: Sequence[str]) -> list[Height]:
 
 FIXTURE = """\
 2026-09-14T20:00:00.000Z  INFO arc_node_consensus::app: unrelated line
-2026-09-14T20:00:00.100Z  INFO height_timing h=100 role=validator proposer=0xaaaa1111 round=0 t_start=10 first_part=30 last_part=180 parts=14 bytes=1200000 assembled=185 lean_stage=260 evm_newpayload=250 prevote=262 precommit=300 decided=400 anchor=415 evm_fcu=450 lean_txs=2400 build_lean=- build_evm=- parts_sent=-
+2026-09-14T20:00:00.100Z  INFO height_timing h=100 role=validator proposer=0xaaaa1111 round=0 t_start=10 first_part=30 last_part=180 parts=14 bytes=1200000 assembled=185 lean_stage=260 evm_newpayload=250 prevote=262 precommit=300 decided=400 anchor=415 evm_fcu=450 lean_txs=2400 build_lean=- build_evm=- parts_sent=- dec_monitor=0.8 dec_lookup=2.3 dec_bind=0.0 dec_anchor_call=11.9 dec_clone=0.4 dec_store=3.1 dec_clean=0.9 dec_prune=0.2 dec_next=1.5
 2026-09-14T20:00:00.600Z  INFO height_timing h=101 role=proposer proposer=0xbbbb2222 round=0 t_start=20 first_part=- last_part=- parts=0 bytes=1300000 assembled=- lean_stage=- evm_newpayload=90 prevote=95 precommit=200 decided=300 anchor=320 evm_fcu=350 lean_txs=2500 build_lean=30 build_evm=80 parts_sent=140
-2026-09-14T20:00:01.100Z  INFO height_timing h=102 role=validator proposer=0xcccc3333 round=1 t_start=30 first_part=50 last_part=400 parts=20 bytes=1400000 assembled=410 lean_stage=500 evm_newpayload=480 prevote=505 precommit=600 decided=800 anchor=830 evm_fcu=880 lean_txs=2600 build_lean=- build_evm=- parts_sent=-
+2026-09-14T20:00:01.100Z  INFO height_timing h=102 role=validator proposer=0xcccc3333 round=1 t_start=30 first_part=50 last_part=400 parts=20 bytes=1400000 assembled=410 lean_stage=500 evm_newpayload=480 prevote=505 precommit=600 decided=800 anchor=830 evm_fcu=880 lean_txs=2600 build_lean=- build_evm=- parts_sent=- dec_monitor=1.2 dec_lookup=2.7 dec_bind=- dec_anchor_call=25.1 dec_clone=0.6 dec_store=4.0 dec_clean=1.0 dec_prune=0.3 dec_next=2.0
 """
 
 
@@ -332,8 +414,6 @@ def self_test() -> int:
     check("p50 single", percentile([7], 0.5), 7)
 
     # Cadence tiles t_start + decided: 410, 320, 830 ms.
-    import io
-
     buf = io.StringIO()
     cadence(records, buf)
     text = buf.getvalue()
@@ -348,6 +428,29 @@ def self_test() -> int:
     for expected in ("role=validator", "role=proposer", "proposer=0xaaaa1111", "cadence"):
         if expected not in buf.getvalue():
             failures.append(f"report is missing section {expected!r}")
+
+    # Decide-path segments: floats, `-` absent, and a line written by a CL
+    # without the instrumentation (h=101) parses exactly as before.
+    check("segment parsed", records[0].segments.get("dec_anchor_call"), 11.9)
+    check("segment zero kept", records[0].segments.get("dec_bind"), 0.0)
+    check("segment dash absent", "dec_bind" in records[2].segments, False)
+    check("old-format line has no segments", records[1].segments, {})
+
+    buf = io.StringIO()
+    render_segments("seg", records, buf)
+    text = buf.getvalue()
+    for expected in ("dec_anchor_call", "sum(pre-anchor dec_*)", "decided_to_anchor"):
+        if expected not in text:
+            failures.append(f"segment table is missing {expected!r}: {text!r}")
+    # h=100: 0.8 + 2.3 + 0.0 + 11.9 = 15.0; h=102: 1.2 + 2.7 + 25.1 = 29.0.
+    if "15.00" not in text or "29.00" not in text:
+        failures.append(f"segment sums wrong: {text!r}")
+
+    # A CL log with no segments at all must print no segment table.
+    buf = io.StringIO()
+    render_segments("seg", [records[1]], buf)
+    if buf.getvalue() != "":
+        failures.append(f"segment table should be empty: {buf.getvalue()!r}")
 
     # Non-matching input yields nothing.
     check("noise ignored", parse_line("2026-01-01 INFO nothing here"), None)

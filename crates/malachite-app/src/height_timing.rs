@@ -50,7 +50,7 @@
 //!   deliberately fire-and-forget, so its completion is not on any path.
 
 use std::sync::{LazyLock, Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tracing::info;
 
@@ -85,6 +85,43 @@ pub enum Phase {
     BuildEvm,
     /// Proposer only: all proposal parts were handed to the network.
     PartsSent,
+}
+
+/// A span of the decide path that gets a *duration*, not a timestamp.
+///
+/// The [`Phase`] marks tile a height with instants; these decompose the one
+/// stretch where a pair of instants (`decided` -> `anchor` -> `evm_fcu`)
+/// hides several distinct costs — store reads, store writes, the lean shim's
+/// HTTP round trip, pruning — that a fleet run otherwise has to guess at.
+///
+/// Emitted as `dec_*` fields in milliseconds with one decimal: the whole
+/// CL-side share of `decided -> anchor` measured 1-3 ms on a healthy
+/// validator, which integer milliseconds would round away.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Segment {
+    /// `store_proposal_monitor_data`: a redb write transaction (fsync) for
+    /// telemetry, taken before the decided block is even looked up.
+    Monitor,
+    /// `UndecidedBlocksRepository::get_by_hash`: find the decided value's row
+    /// and SSZ-decode it.
+    Lookup,
+    /// `check_payload_binding` on the decided payload.
+    Bind,
+    /// `anchor_lean_lane`: the `arc_newBlock{commitment}` round trip(s),
+    /// including any SYNCING re-polls.
+    AnchorCall,
+    /// The `ExecutionPayloadV3` clone handed to the decided-blocks store
+    /// (O(value bytes)).
+    PayloadClone,
+    /// `DecidedBlocksRepository::store`: encode + redb write transaction.
+    Store,
+    /// `clean_stale_consensus_data`.
+    Clean,
+    /// `prune_historical_certs` + `prune_decided_blocks`.
+    Prune,
+    /// `prepare_next_height`: the two EL reads (signing validator set,
+    /// consensus params) that gate the next `StartedRound`.
+    NextHeight,
 }
 
 /// `true` when `ARC_HEIGHT_TIMING` is set to `1` / `true`. Read once.
@@ -162,6 +199,34 @@ pub fn mark_at(height: u64, phase: Phase) {
     let mut t = timer();
     if t.height == height {
         t.mark(phase);
+    }
+}
+
+/// Open a stopwatch for a [`Segment`], or `None` when timing is off.
+///
+/// Returning an `Option` rather than an `Instant` keeps the disabled path at
+/// one relaxed atomic load: no clock is read, so a node without
+/// `ARC_HEIGHT_TIMING` pays nothing for the call sites.
+#[inline]
+pub fn segment_start() -> Option<Instant> {
+    enabled().then(Instant::now)
+}
+
+/// Close a stopwatch opened by [`segment_start`] and add its elapsed time to
+/// `segment` for `height`.
+///
+/// A no-op when `start` is `None` (timing off) or the timer has already moved
+/// on to another height. Durations **accumulate**: a height that decides more
+/// than once (a failed decide is retried) reports the total time it spent in
+/// the segment, not just the first attempt's.
+pub fn record(height: u64, segment: Segment, start: Option<Instant>) {
+    let Some(start) = start else {
+        return;
+    };
+    let elapsed = start.elapsed();
+    let mut t = timer();
+    if t.height == height {
+        t.add_segment(segment, elapsed);
     }
 }
 
@@ -259,7 +324,28 @@ pub struct HeightTimer {
     build_lean: Option<Instant>,
     build_evm: Option<Instant>,
     parts_sent: Option<Instant>,
+
+    /// Decide-path segment durations, in [`Segment`] order. `None` means the
+    /// segment never ran on this node at this height.
+    segments: [Option<Duration>; SEGMENTS],
 }
+
+/// How many [`Segment`] variants there are (kept next to [`SEGMENT_KEYS`],
+/// which is what actually pins the order into the log line).
+const SEGMENTS: usize = 9;
+
+/// The `dec_*` field names, indexed by [`HeightTimer::segment_index`].
+const SEGMENT_KEYS: [&str; SEGMENTS] = [
+    "dec_monitor",
+    "dec_lookup",
+    "dec_bind",
+    "dec_anchor_call",
+    "dec_clone",
+    "dec_store",
+    "dec_clean",
+    "dec_prune",
+    "dec_next",
+];
 
 impl HeightTimer {
     /// An idle timer: no height started, so nothing to emit yet.
@@ -289,7 +375,35 @@ impl HeightTimer {
             build_lean: None,
             build_evm: None,
             parts_sent: None,
+            segments: [None; SEGMENTS],
         }
+    }
+
+    /// `segment`'s slot in [`Self::segments`] / [`SEGMENT_KEYS`].
+    fn segment_index(segment: Segment) -> usize {
+        match segment {
+            Segment::Monitor => 0,
+            Segment::Lookup => 1,
+            Segment::Bind => 2,
+            Segment::AnchorCall => 3,
+            Segment::PayloadClone => 4,
+            Segment::Store => 5,
+            Segment::Clean => 6,
+            Segment::Prune => 7,
+            Segment::NextHeight => 8,
+        }
+    }
+
+    /// Add `elapsed` to `segment`'s running total for this height.
+    pub fn add_segment(&mut self, segment: Segment, elapsed: Duration) {
+        if !self.active {
+            return;
+        }
+        let slot = &mut self.segments[Self::segment_index(segment)];
+        *slot = Some(match *slot {
+            Some(total) => total.saturating_add(elapsed),
+            None => elapsed,
+        });
     }
 
     /// The slot holding `phase`'s timestamp.
@@ -374,7 +488,7 @@ impl HeightTimer {
              parts={parts} bytes={bytes} assembled={assembled} lean_stage={lean_stage} \
              evm_newpayload={evm_newpayload} prevote={prevote} precommit={precommit} \
              decided={decided} anchor={anchor} evm_fcu={evm_fcu} lean_txs={lean_txs} \
-             build_lean={build_lean} build_evm={build_evm} parts_sent={parts_sent}",
+             build_lean={build_lean} build_evm={build_evm} parts_sent={parts_sent}{segments}",
             h = self.height,
             role = self.role,
             proposer = self.proposer,
@@ -396,7 +510,23 @@ impl HeightTimer {
             build_lean = self.rel(self.build_lean),
             build_evm = self.rel(self.build_evm),
             parts_sent = self.rel(self.parts_sent),
+            segments = self.segment_fields(),
         )
+    }
+
+    /// The `dec_*` decide-path duration fields, in [`SEGMENT_KEYS`] order,
+    /// each prefixed with a space so they append to the line as-is.
+    ///
+    /// Milliseconds with one decimal; `-` for a segment that did not run.
+    fn segment_fields(&self) -> String {
+        let mut out = String::new();
+        for (key, slot) in SEGMENT_KEYS.iter().zip(self.segments.iter()) {
+            match slot {
+                Some(d) => out.push_str(&format!(" {key}={:.1}", d.as_secs_f64() * 1000.0)),
+                None => out.push_str(&format!(" {key}=-")),
+            }
+        }
+        out
     }
 }
 
@@ -584,6 +714,80 @@ mod tests {
         for kv in fields {
             assert!(kv.contains('='), "field {kv} is not key=value: {line}");
         }
+    }
+
+    // ---- decide-path segments (`dec_*`) ---------------------------------
+
+    #[test]
+    fn decide_segments_print_as_dash_until_they_run() {
+        let line = timer_at(7, "validator").format_line();
+        for key in SEGMENT_KEYS {
+            assert_eq!(field(&line, key), "-", "expected {key} to be absent");
+        }
+    }
+
+    #[test]
+    fn decide_segments_print_milliseconds_with_one_decimal() {
+        let mut t = timer_at(8, "validator");
+        t.add_segment(Segment::Monitor, Duration::from_micros(1_460));
+        t.add_segment(Segment::Lookup, Duration::from_micros(420));
+        t.add_segment(Segment::AnchorCall, Duration::from_millis(203));
+        t.add_segment(Segment::NextHeight, Duration::from_micros(50));
+
+        let line = t.format_line();
+
+        assert_eq!(field(&line, "dec_monitor"), "1.5");
+        assert_eq!(field(&line, "dec_lookup"), "0.4");
+        assert_eq!(field(&line, "dec_anchor_call"), "203.0");
+        // Sub-100us still shows as a number, not `-`: the point of the decimal
+        // is that the CL-side share of decided->anchor is single-digit ms.
+        assert_eq!(field(&line, "dec_next"), "0.1");
+        // Segments that did not run stay absent.
+        assert_eq!(field(&line, "dec_store"), "-");
+        assert_eq!(field(&line, "dec_prune"), "-");
+    }
+
+    #[test]
+    fn decide_segments_accumulate_across_repeated_decides() {
+        let mut t = timer_at(9, "validator");
+        t.add_segment(Segment::Store, Duration::from_millis(10));
+        t.add_segment(Segment::Store, Duration::from_millis(5));
+
+        assert_eq!(field(&t.format_line(), "dec_store"), "15.0");
+    }
+
+    #[test]
+    fn an_idle_timer_ignores_segments() {
+        let mut t = HeightTimer::new();
+        t.add_segment(Segment::AnchorCall, Duration::from_millis(100));
+        assert!(t.segments.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn restarting_clears_the_previous_heights_segments() {
+        let mut t = timer_at(10, "validator");
+        t.add_segment(Segment::Clean, Duration::from_millis(3));
+        let line = t
+            .restart(11, "validator", "0x12345678".to_owned())
+            .expect("the finished height must be emitted");
+
+        assert_eq!(field(&line, "dec_clean"), "3.0");
+        assert_eq!(field(&t.format_line(), "dec_clean"), "-");
+    }
+
+    /// The field order in the line must match `SEGMENT_KEYS`, since that is
+    /// the vocabulary `scripts/height-timing.py` parses.
+    #[test]
+    fn every_segment_has_exactly_one_field_in_the_line() {
+        let line = timer_at(12, "validator").format_line();
+        for key in SEGMENT_KEYS {
+            assert_eq!(
+                line.matches(&format!("{key}=")).count(),
+                1,
+                "{key} must appear exactly once: {line}"
+            );
+        }
+        assert_eq!(SEGMENT_KEYS.len(), SEGMENTS);
     }
 
     #[test]
