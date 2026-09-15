@@ -296,6 +296,26 @@ impl LeanBuilder for LeanShim {
     }
 }
 
+/// "Can this node produce the lean block a header commits to?" — the one
+/// question validation (a network block that arrives without its lean bytes)
+/// and re-proposal (a store-loaded row, whose lean bytes were never stored)
+/// both ask. Mockable so both paths are unit-testable without a lean node.
+///
+/// The answer is bytes, never a claim: every caller re-decodes them and
+/// recomputes the commitment before believing the node.
+// Same `Send`-auto-trait caveat as `LeanBuilder`: workspace-internal only.
+#[allow(async_fn_in_trait)]
+#[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
+pub trait LeanBytesResolver: Send + Sync {
+    async fn lean_bytes_by_commitment(&self, commitment: BlockHash) -> eyre::Result<Option<Vec<u8>>>;
+}
+
+impl LeanBytesResolver for LeanShim {
+    async fn lean_bytes_by_commitment(&self, commitment: BlockHash) -> eyre::Result<Option<Vec<u8>>> {
+        self.get_block_bytes_by_commitment(commitment).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

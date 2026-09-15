@@ -192,6 +192,9 @@ async fn on_process_synced_value(
     let verdict = establish_block_validity(
         &engine,
         lean_shim,
+        lean_shim,
+        // Network origin (sync), same rule as a proposal part.
+        true,
         &block,
         previous_block.as_ref(),
         &invalid_payloads_repo,

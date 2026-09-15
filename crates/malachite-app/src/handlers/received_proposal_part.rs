@@ -385,8 +385,19 @@ async fn validate_block(
     from: PeerId,
 ) -> eyre::Result<()> {
     let validator = EnginePayloadValidator::new(engine, metrics);
-    let validity = establish_block_validity(&validator, lean_shim, block, previous_block, store, metrics)
-        .await
+    // Network origin: a header that commits to a lean block this node cannot
+    // produce is Invalid (the anchor would otherwise wait forever at decide).
+    let validity = establish_block_validity(
+        &validator,
+        lean_shim,
+        lean_shim,
+        true,
+        block,
+        previous_block,
+        store,
+        metrics,
+    )
+    .await
         .map(|verdict| verdict.validity())
         .wrap_err_with(|| {
             format!(

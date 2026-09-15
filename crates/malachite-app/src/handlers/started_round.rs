@@ -320,6 +320,11 @@ async fn process_pending_proposal_parts(
         let validity = match establish_block_validity(
             payload_validator,
             lean_shim,
+            lean_shim,
+            // Pending PARTS are network origin (they arrived from the
+            // proposer and were parked until this round started), so the
+            // lean-bytes rule applies exactly as in `received_proposal_part`.
+            true,
             &block,
             previous_block,
             invalid_payloads,
@@ -436,8 +441,20 @@ async fn validate_undecided_blocks(
             continue;
         }
 
-        match validate_consensus_block(payload_validator, lean_shim, &block, invalid_payloads, metrics)
-            .await
+        // Store-loaded rows are this node's OWN earlier work (spec §5.5): the
+        // store never held the lean bytes, so "no bytes" here is normal and
+        // the EVM-only reading stands. `false` keeps that, and keeps this
+        // restart path off the shim.
+        match validate_consensus_block(
+            payload_validator,
+            lean_shim,
+            lean_shim,
+            false,
+            &block,
+            invalid_payloads,
+            metrics,
+        )
+        .await
         {
             Ok(new_validity) => {
                 if new_validity != existing_validity {
