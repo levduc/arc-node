@@ -1177,3 +1177,59 @@ block 100 % of budget; 0 restarts; 4/4 byte-identical at the end)
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-15 (midday) — the two must-fix findings closed; perf merged into v0.2 on both repos; local e2e green
+
+**Changed** (nothing pushed)
+- arc `lean-lane-v0.2` fast-forwarded to bf21bcd (33 commits over a9d36a8): the overnight `lean-lane-perf`
+  work, plus c8ebcd7 **get_value reuse arm declines the round** (`Ok(None)`) when a signed stored block
+  cannot be rehydrated — rebuild only when the row is unsigned (signature is set by `prepare_stream`
+  before the store write and before streaming, so signed ⊇ streamed); 868a849 **catch-up budget** — per-peer
+  slice of the remaining 5 s, dead-peer memo, and every lag outcome (budget exhausted, peers timed out, no
+  peers, local node unreachable, head ran past) returns a transient Err = abstain, never `Invalid`;
+  8afb445 `lean_no_verdict_total{reason}` counter + once-per-height warn on the abstain path; 7ada6f3
+  `MAX_CATCHUP_LAG = 1024` (a larger gap abstains without spending budget); 3d0366f `LeanValidation` seam +
+  wiring tests (lag⇒Err, violation⇒Invalid); pre-merge review fixes 81e5f15 (fmt), 65170cf (chunk-size
+  floor = default, knob can only raise), 214715d (store errors propagate on the decide path), dd4f82b
+  (timer lock not held across logging), 67d4fd2, 5a55be1, b8c95c1; docs c7ed3d4, bf21bcd.
+- lean-lane `v0.2` fast-forwarded to 3b5d11c (16 commits over f76c189): the overnight `perf` work plus
+  pre-merge review fixes e0e8ab1 (`from_wire_bytes_with_header` crate-private, trust boundary stated,
+  debug recompute), 34df293 (with `LEAN_FSYNC=0`, never resume above a hole: fall back to the newest
+  snapshot the log can continue from), 880f9f7 (claims carry an owner id), 93d6974 (**one commit gate
+  per append**: parent-link re-check under the lock before apply, idempotent VALID for an already-canonical
+  block, conflicting block still an error — closes the double-append windows incl. the sync-queue drain
+  and promote-vs-feed), 71636c6, a5b25f0; README 3b5d11c.
+- Worktrees `~/arc-lean-fixA`, `~/arc-lean-fixB` removed after merge; `~/arc-lean-perf` (lean-lane-perf)
+  and `~/lean-lane-cow` (perf-cow) kept.
+
+**Measured** — local 5-validator testnet from the merged `lean-lane-v0.2` image + merged `v0.2` lean
+node (`scripts/lean-testnet.sh`, localdev-lean 100 M, N=100, 3000 tx/s): **119 / 107 / 119 heights/min**
+over three 60 s samples, every sampled head block **191/191 = 100 %** of the 100 M budget, **5/5 lean
+nodes identical at 1105**, 0 `Manual intervention`, 0 panics, clean teardown. Same as the pre-merge
+baseline (117–119). Fleet numbers for the merged tree: not re-run (the fleet A/B of 66c1b43 and the
+commit gate is still open).
+
+**Broke / retracted**
+- The first e2e attempt's log was lost: `lean-testnet.sh up` wipes `.quake/lean-nodes/` where I had
+  opened the log; the run itself was fine (chain at 636, 5/5 identical) and was re-sampled.
+- Reviews found no Critical issue on either branch; four Important on arc (fmt gate, chunk floor could
+  halt the chain on a downward A/B, swallowed store errors, timer lock across `info!`) and three on
+  lean-lane (header-trusting constructor, snapshot/log hole with fsync off, claim ownership) — all fixed
+  before merging. Re-reviews: lean-lane CLEAN after follow-ups; must-fix diffs CLEAN.
+- Reviewer's ruling kept: the resolver `Ok(None)` row stays `Invalid` — it is only reachable for a
+  network frame that shipped no lean trailer at all (a deficient proposal), not for lag.
+
+**Decided**
+- Both v0.2 branches now carry the design, the performance fixes and the two must-fix rulings; the
+  measurement branches are no longer needed as separate lines.
+- Tests: arc-node-consensus 461 + 20 green, clippy `-D warnings` and fmt clean; lean-lane-node 60+
+  green in debug and release (repo-wide clippy/fmt were red before this work and are unchanged).
+
+**Open**
+- Fleet A/B of the three anchor fixes together (66c1b43) and of the commit gate (93d6974) at 400/450 M,
+  then a 30-min soak at the new best point; the 30-min ~4 % decline; the parked lean bugs
+  (stage-vs-direct digest divergence on no-op'd txs, `--snapshot-every 0`); an EVM-lane N=1
+  re-measure with the same offered-load discipline; a `rustfmt.toml` + mechanical reformat for lean-lane.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
