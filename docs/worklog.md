@@ -846,3 +846,117 @@ sampler change is untested against a live fleet.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-14 (night) — v0.2 final fix wave: two halts closed, CI green, local run
+
+**Changed** (branch `lean-lane-v0.2` in the `arc-lean-v0.1` worktree, off
+`e47e535`; six commits, logic first, fmt last)
+- `5d7480b` — **Critical: a network block must produce the lean bytes its header
+  names.** `validate_consensus_block` gated every lean check on
+  `lean_payload.is_some()`, so a frame without `LEAN_LANE_BIT` whose EVM header
+  carried a non-zero `prev_randao` was voted Valid on the EVM lane alone
+  (`lean_binding_ok()` is vacuously true with no payload) and then anchored a
+  commitment nobody had: SYNCING to the 30 s deadline → height failure → restart
+  → same block → forever. Now, for a block that arrived from the **network**,
+  the node is asked `arc_getBlockBytes{commitment}` and the commitment is
+  recomputed from the answer: matching bytes are used for the rest of the lean
+  arm as if framed; no bytes / other bytes → Invalid with
+  `"lean lane: header commits to unknown lean block {c}"`; unreachable node →
+  transient, no verdict. Origin is an explicit `lean_bytes_required` argument
+  (network: proposal parts live and pending, sync = true; store-loaded
+  re-validation and self-built = false). Seam: new `LeanBytesResolver` trait on
+  the shim, automocked.
+- `baf551a` — **Critical: re-proposal and restream of a store-loaded lean block
+  broke its signature.** The store keeps the EVM payload only, so `get_value`'s
+  reuse arm and `RestreamProposal` re-framed the value WITHOUT the lean trailer
+  under the stored Fin signature that covered the framing WITH it — every
+  receiver rejected the parts. `rehydrate_lean_payload` fetches the bytes back
+  by the header's commitment and verifies them; re-proposal falls back to a
+  fresh build when it cannot, restream declines outright. The comment claiming a
+  uniform fleet flag made restream framing match was wrong and is gone: the flag
+  fixes the format, not the content.
+- `13da65d` — the decide anchor's 30 s was never a bound (one shim call carries
+  its own ~15 s transport retry); every call is now wrapped in the remaining
+  slice of the budget. `LeanAnchor` trait makes the loop testable — seven tests
+  covering promote, SYNCING polling, a different commitment, transient, hard
+  error, the deadline, and a call that never returns. Deleted
+  `state_has_no_lean_stash`, which asserted nothing.
+- `aa6968d` — the eight clippy denials in `types/block.rs` (`try_into().unwrap()`
+  on statically sized slices → `first_chunk` helpers, so short bytes decode-error
+  instead of panicking; three arithmetic sites → saturating), plus the lane test
+  that was missing: lean bytes under a zero `prev_randao` must NOT read as bound.
+- `a815140` — guide + spec vs implementation: no "5 s grace"; sync receive
+  validates and **stages** (append is at the decide anchor); the two new rules
+  written down; mid-chain activation stated as foreclosed. Spec §4/§10: staged
+  entries retained while `number >= head`, cap 32, with the memory bound.
+- `843f15e` — `cargo fmt --all` + the remaining workspace clippy denials (six
+  `arithmetic_side_effects` in the lean arms, five `too_many_arguments`).
+- lean-lane `7f62966` (tag `v0.2.0-rc1` moved) — `locate_by_commitment` no longer
+  holds the commitment-index mutex across the log read; docs §3 gains the v0.2
+  sync-serve row and corrects the certificate line.
+
+**Measured** (5-validator localdev-lean on one host, images rebuilt from the
+final tree, N=50 / 100 M, 800 accounts, pool-target 1500)
+- 180 s load, two status samples 69 s apart under load: lean heights 123 → 188 =
+  **65 blocks / 69 s = 0.94 blk/s, every block 369 txs = 100 % of budget** ⇒ 348
+  tx/s, **17,391 payments/s**. Agreement: all 5 lean nodes byte-identical at the
+  sampled height, both samples and after the load (228).
+- Offered rate `400.7 tx/s` (governed down from 3,000 by `--pool-target 1500`);
+  74,088 txs sent in 184.9 s.
+- validator3's CL restarted mid-load at 21:08:42: **back within 3 heights of the
+  tip in 1 s** (123/123), no `Manual intervention`.
+- Every CL log, whole run: `invalid signature` 0, `Invalid` 0, `unknown lean
+  block` 0, `Manual intervention` 0, `restream` 0, and no line containing
+  `lean lane` on any validator. Teardown clean (`docker ps -q | wc -l` = 0).
+- `cargo test` over the four CL crates: all green bar the known environmental
+  `test_migrate_command_without_home_flag`, which passes 8/8 when its **test
+  binary** (not cargo) gets a fresh HOME. `cargo test -p lean-lane-node`: 33
+  passed. `cargo fmt --all -- --check` quiet;
+  `cargo clippy --all-targets --all-features -- -D warnings` clean for the whole
+  workspace.
+
+**Broke / retracted**
+- Retracting the v0.2 guide's claim that sync receive "executes both lanes": it
+  validates and stages; the lean append happens once, at that height's decide
+  anchor. Retracting the decide row's "5 s grace" — there was none, and until
+  this wave there was no enforced 30 s either.
+- Retracting the restream comment's implication that a uniform fleet flag makes
+  restream framing match the original: it makes the FORMAT match, and a
+  store-loaded lean block's CONTENT differs, which is precisely the signature
+  break fixed here.
+- Note against the earlier "flag off is upstream behaviour" checks: they were
+  never in question, but the two halts above were both reachable with the flag
+  **on** and neither was caught by any test or by the fleet runs — a healthy
+  fleet does not produce either input. The unit tests are their whole coverage.
+- Process: `HOME=$(mktemp -d) cargo test …` relocates `.cargo`/`.rustup` and
+  rebuilds the world. Override HOME for the test **binary**, not for cargo.
+
+**Decided**
+- `process_pending_proposal_parts` passes `lean_bytes_required = true` even
+  though the fix brief's parenthetical said both `started_round` call sites
+  should pass `false`: those blocks come from network proposal parts (parked
+  until the round started), and `false` there would leave the Critical-1 hole
+  open on that path. The genuinely store-loaded call site
+  (`validate_undecided_blocks`, spec §5.5) passes `false`.
+- The anchor trait method is `anchor_by_commitment`, not
+  `new_block_by_commitment`: the latter collides with `LeanShim`'s inherent
+  method and makes call sites ambiguous to a reader.
+- Validation's peer catch-up gets a named 5 s budget. The constant is a
+  judgement call (under the local pacer's slack); the argument for it is only
+  that unbounded was worse — it runs inside the vote window.
+
+**Open**
+- The restream and reuse paths were **not exercised live** (`restream` 0 in every
+  log — a 3-minute 100 %-full run never changed rounds). Add a `pause <n>` verb
+  to `lean-testnet.sh` to force round changes and cover both halves of Critical 2
+  on a real chain.
+- Same for Critical 1's Invalid path: nothing healthy produces a header
+  commitment without bytes.
+- `lean_bytes_required` is a bool at five call sites; a `BlockOrigin` enum would
+  make a future call site impossible to get silently wrong.
+- Unchanged from the previous entry: the cadence question on the fleet,
+  proposer-turn attribution in the health gate, the sync `unknown request ID`
+  warnings.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
