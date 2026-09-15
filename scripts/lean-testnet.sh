@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lean-testnet.sh up|load|status|down
+# lean-testnet.sh up|load|status|down|restart <n>
 #
 # Local testnet WITH the lean payment lane: quake's localdev-lean scenario
 # (5 validators, ARC_PAYMENT_LEAN_LANE=1 via the manifest's `cl.env` table) plus one
@@ -170,7 +170,19 @@ down(){
   say "lean nodes stopped; data kept in $RUN (wiped by the next 'up')"
 }
 
+restart(){ # restart <validator-index>: CL container only; the lean node stays up
+  local i=${2:?validator index}
+  docker restart "validator${i}_cl" >/dev/null || die "no container validator${i}_cl"
+  for _ in $(seq 1 60); do
+    max=0; me=0
+    for j in $(seq 1 "$N"); do h=$(rpc "$(lean_url "$j")" arc_getHead '{}' | jget result.number); [ "${h:-0}" -gt "$max" ] && max=$h; [ "$j" = "$i" ] && me=${h:-0}; done
+    [ $((max - me)) -le 3 ] && { say "validator$i back within 3 heights of the tip ($me/$max)"; return 0; }
+    sleep 2
+  done
+  die "validator$i did not catch up after restart"
+}
+
 case "${1:-}" in
-  up) up ;; load) load ;; status) status ;; down) down ;;
-  *) echo "usage: $0 up|load|status|down"; exit 2 ;;
+  up) up ;; load) load ;; status) status ;; down) down ;; restart) restart "$@" ;;
+  *) echo "usage: $0 up|load|status|down|restart <n>"; exit 2 ;;
 esac
