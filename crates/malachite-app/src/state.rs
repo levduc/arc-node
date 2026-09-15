@@ -711,14 +711,6 @@ mod tests {
     }
 
     #[test]
-    fn state_has_no_lean_stash() {
-        // Guard against re-introducing CL-side byte custody: the node holds
-        // the bytes (staged at validation); decide anchors by commitment.
-        let _ = std::mem::size_of::<crate::state::State>();
-        // (compile-time: `State { lean_undecided, .. }` must not exist)
-    }
-
-    #[test]
     fn apply_early_arrival_synced_marks_synced_and_sets_time() {
         let start = SystemTime::now();
         let mut monitor = ProposalMonitor::new(Height::new(1), test_address(), start);

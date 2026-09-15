@@ -316,6 +316,22 @@ impl LeanBytesResolver for LeanShim {
     }
 }
 
+/// The decide-time anchor: promote the lean block the certificate's EVM header
+/// commits to. Mockable so the anchor loop (SYNCING polling, transient
+/// tolerance, deadline) is unit-testable without a lean node.
+// Same `Send`-auto-trait caveat as `LeanBuilder`: workspace-internal only.
+#[allow(async_fn_in_trait)]
+#[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
+pub trait LeanAnchor: Send + Sync {
+    async fn anchor_by_commitment(&self, commitment: BlockHash) -> eyre::Result<NewBlockStatus>;
+}
+
+impl LeanAnchor for LeanShim {
+    async fn anchor_by_commitment(&self, commitment: BlockHash) -> eyre::Result<NewBlockStatus> {
+        self.new_block_by_commitment(commitment).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
