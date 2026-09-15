@@ -20,7 +20,7 @@ use sha3::Digest;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::streaming::CHUNK_SIZE;
+use crate::streaming::chunk_size;
 
 use malachitebft_app_channel::app::streaming::{StreamContent, StreamId, StreamMessage};
 use malachitebft_app_channel::app::types::core::{Round, Validity};
@@ -160,7 +160,7 @@ pub async fn make_proposal_parts(
 
     // Data
     {
-        for chunk in data.chunks(CHUNK_SIZE) {
+        for chunk in data.chunks(chunk_size()) {
             let chunk_data = ProposalData::new(Bytes::copy_from_slice(chunk));
             parts.push(ProposalPart::Data(chunk_data));
             hasher.update(chunk);

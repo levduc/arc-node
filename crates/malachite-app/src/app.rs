@@ -57,6 +57,10 @@ pub async fn run(
         warn!("Consensus configured to halt at block height: {halt_height}");
     }
 
+    // Resolve ARC_PROPOSAL_CHUNK_SIZE now, so its one-time log lands at startup
+    // rather than at whichever proposal first chunks or validates a stream.
+    let _ = crate::streaming::chunk_size();
+
     let (status_tx, status_rx) = watch::channel(state.status_snapshot());
 
     let ctx = AppRequestContext {

@@ -17,11 +17,12 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap, HashSet};
 use std::mem::size_of;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use schnellru::{ByLength, LruMap};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use arc_consensus_types::{Height, ProposalPart, ProposalParts, ProposalPartsError, Round};
 use malachitebft_app_channel::app::streaming::{Sequence, StreamId, StreamMessage};
@@ -30,7 +31,7 @@ use malachitebft_app_channel::app::types::PeerId;
 /// Maximum number of messages allowed per stream
 ///
 /// Maximum block size
-/// = MAX_MESSAGES_PER_STREAM * CHUNK_SIZE
+/// = MAX_MESSAGES_PER_STREAM * DEFAULT_CHUNK_SIZE
 /// = 128 * 128 KiB = 16 MiB
 const MAX_MESSAGES_PER_STREAM: usize = 128;
 
@@ -40,12 +41,83 @@ const MAX_MESSAGES_PER_STREAM: usize = 128;
 /// retry). A value of 4 gives headroom for a couple of in-flight rounds while
 /// keeping the per-peer memory footprint bounded:
 ///
-/// = MAX_STREAMS_PER_PEER * MAX_MESSAGES_PER_STREAM * CHUNK_SIZE
+/// = MAX_STREAMS_PER_PEER * MAX_MESSAGES_PER_STREAM * DEFAULT_CHUNK_SIZE
 /// = 4 * 128 * 128 KiB = 64 MiB
 const MAX_STREAMS_PER_PEER: usize = 4;
 
-/// Size of chunks in which proposal data is split for streaming
-pub(crate) const CHUNK_SIZE: usize = 128 * 1024;
+/// Default size of chunks in which proposal data is split for streaming.
+///
+/// This is the value used when `ARC_PROPOSAL_CHUNK_SIZE` is unset, and it is
+/// what every memory bound documented in this module is computed from.
+pub(crate) const DEFAULT_CHUNK_SIZE: usize = 128 * 1024;
+
+/// Smallest chunk size the override will accept.
+///
+/// Below this the per-part protobuf envelope and the per-message gossipsub
+/// overhead start to dominate the payload.
+pub(crate) const MIN_CHUNK_SIZE: usize = 16 * 1024;
+
+/// Largest chunk size the override will accept.
+///
+/// gossipsub's `max_transmit_size` is 4 MiB; a chunk above it would be built by
+/// the proposer and then silently dropped by the transport.
+///
+/// Raising the chunk size scales the worst-case buffered bytes with it: the
+/// per-stream and per-peer bounds documented above are
+/// `MAX_MESSAGES_PER_STREAM * chunk_size` and
+/// `MAX_STREAMS_PER_PEER * MAX_MESSAGES_PER_STREAM * chunk_size`, so at the
+/// ceiling a single misbehaving peer could hold 2 GiB rather than 64 MiB.
+/// The cap is the transport's limit, not a memory-safe limit — raise the
+/// override deliberately, for an experiment, not as a default.
+pub(crate) const MAX_CHUNK_SIZE: usize = 4 * 1024 * 1024;
+
+/// Parse a chunk-size override, clamping it into
+/// [`MIN_CHUNK_SIZE`, `MAX_CHUNK_SIZE`].
+///
+/// Absent, empty or unparseable input yields [`DEFAULT_CHUNK_SIZE`], so a typo
+/// degrades to today's behaviour instead of wedging a node.
+fn parse_chunk_size(raw: Option<&str>) -> usize {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => DEFAULT_CHUNK_SIZE,
+        Some(s) => match s.parse::<usize>() {
+            Ok(n) => n.clamp(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE),
+            Err(_) => {
+                warn!(
+                    value = %s,
+                    default = DEFAULT_CHUNK_SIZE,
+                    "ARC_PROPOSAL_CHUNK_SIZE is not a byte count; using the default"
+                );
+                DEFAULT_CHUNK_SIZE
+            }
+        },
+    }
+}
+
+/// The effective proposal-part chunk size, read once from
+/// `ARC_PROPOSAL_CHUNK_SIZE` (bytes).
+///
+/// The sender ([`crate::proposal_parts`]) chunks by this and the receiver
+/// ([`StreamState::insert`]) rejects data parts larger than it, so both sides
+/// must read the same number: they share this one `LazyLock`. Unset means
+/// [`DEFAULT_CHUNK_SIZE`], i.e. byte-identical framing to before the override
+/// existed.
+///
+/// A fleet must change this on ALL validators together: a proposer chunking
+/// above a peer's limit has every part rejected by that peer.
+static CHUNK_SIZE: LazyLock<usize> = LazyLock::new(|| {
+    let size = parse_chunk_size(std::env::var("ARC_PROPOSAL_CHUNK_SIZE").ok().as_deref());
+    info!(
+        chunk_size = size,
+        default = DEFAULT_CHUNK_SIZE,
+        "Proposal-part chunk size"
+    );
+    size
+});
+
+/// The effective proposal-part chunk size in bytes. See [`CHUNK_SIZE`].
+pub(crate) fn chunk_size() -> usize {
+    *CHUNK_SIZE
+}
 
 /// Maximum age for a stream before it's evicted
 const MAX_STREAM_AGE: Duration = Duration::from_secs(60);
@@ -269,7 +341,7 @@ impl StreamState {
     fn insert(&mut self, msg: StreamMessage<ProposalPart>) -> StreamInsertResult {
         // Reject oversized Data chunks before recording the sequence as seen
         if let Some(ProposalPart::Data(data)) = msg.content.as_data() {
-            if data.bytes.len() > CHUNK_SIZE {
+            if data.bytes.len() > chunk_size() {
                 return StreamInsertResult::ExceededMaxChunkSize(data.bytes.len());
             }
         }
@@ -341,7 +413,7 @@ impl StreamState {
 /// Enforces the following limits:
 /// - [`MAX_STREAMS_PER_PEER`] streams per peer
 /// - [`MAX_MESSAGES_PER_STREAM`] messages per stream
-/// - [`CHUNK_SIZE`] per data chunk
+/// - [`chunk_size()`] per data chunk
 /// - `max_total_streams` total concurrent streams (= `MAX_STREAMS_PER_PEER * num_validators`)
 /// - Evict streams older than [`MAX_STREAM_AGE`]
 /// - Immediately evict streams that exceed message or size limits
@@ -350,7 +422,7 @@ impl StreamState {
 ///   proposal reached a terminal disposition) so duplicates cannot reopen a slot
 ///
 /// Worst-case memory at full saturation:
-/// = max_total_streams * MAX_MESSAGES_PER_STREAM * CHUNK_SIZE
+/// = max_total_streams * MAX_MESSAGES_PER_STREAM * DEFAULT_CHUNK_SIZE
 /// = (MAX_STREAMS_PER_PEER * num_validators) * 128 * 128 KiB
 /// = 64 MiB * num_validators
 pub struct PartStreamsMap {
@@ -552,7 +624,7 @@ impl PartStreamsMap {
                     %peer_id,
                     %stream_id,
                     actual,
-                    max = CHUNK_SIZE,
+                    max = chunk_size(),
                     "Stream sent oversized data chunk, evicting"
                 );
 
@@ -778,6 +850,49 @@ mod tests {
         ProposalPart::Data(ProposalData {
             bytes: vec![0xAB; len].into(),
         })
+    }
+
+    /// `parse_chunk_size` is the whole of the `ARC_PROPOSAL_CHUNK_SIZE`
+    /// contract, kept env-free so it can be asserted directly: the process
+    /// reads the variable once into a `LazyLock`, which a test cannot re-run.
+    #[test]
+    fn chunk_size_override_parses_and_clamps() {
+        // Unset, empty or unparseable => today's behaviour, byte for byte.
+        assert_eq!(parse_chunk_size(None), DEFAULT_CHUNK_SIZE);
+        assert_eq!(parse_chunk_size(Some("")), DEFAULT_CHUNK_SIZE);
+        assert_eq!(parse_chunk_size(Some("   ")), DEFAULT_CHUNK_SIZE);
+        assert_eq!(parse_chunk_size(Some("128 KiB")), DEFAULT_CHUNK_SIZE);
+        assert_eq!(parse_chunk_size(Some("-1")), DEFAULT_CHUNK_SIZE);
+        // Explicitly passing the default is indistinguishable from unset.
+        assert_eq!(parse_chunk_size(Some("131072")), DEFAULT_CHUNK_SIZE);
+
+        // Inside the window, the value passes through (surrounding space ok).
+        assert_eq!(parse_chunk_size(Some("262144")), 256 * 1024);
+        assert_eq!(parse_chunk_size(Some(" 262144 ")), 256 * 1024);
+
+        // Outside it, clamp rather than reject: a fleet-wide env typo must not
+        // take the node down, and both ends clamp the same way.
+        assert_eq!(parse_chunk_size(Some("0")), MIN_CHUNK_SIZE);
+        assert_eq!(parse_chunk_size(Some("1024")), MIN_CHUNK_SIZE);
+        assert_eq!(parse_chunk_size(Some("8388608")), MAX_CHUNK_SIZE);
+
+        // Both bounds are inclusive.
+        assert_eq!(parse_chunk_size(Some("16384")), MIN_CHUNK_SIZE);
+        assert_eq!(parse_chunk_size(Some("4194304")), MAX_CHUNK_SIZE);
+
+        // The bounds themselves are the documented ones.
+        assert_eq!(MIN_CHUNK_SIZE, 16 * 1024);
+        assert_eq!(MAX_CHUNK_SIZE, 4 * 1024 * 1024);
+        assert_eq!(DEFAULT_CHUNK_SIZE, 128 * 1024);
+    }
+
+    /// The effective size is resolved once and is always inside the window,
+    /// so the sender's chunking and the receiver's limit cannot disagree.
+    #[test]
+    fn the_effective_chunk_size_is_stable_and_in_range() {
+        let size = chunk_size();
+        assert!((MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&size));
+        assert_eq!(chunk_size(), size);
     }
 
     fn make_stream_id(id: u8) -> StreamId {
@@ -1896,8 +2011,8 @@ mod tests {
         let init_msg = make_message(&stream, 0, make_init_part());
         map.insert(peer, init_msg);
 
-        // Send a data chunk exceeding CHUNK_SIZE
-        let oversized = make_data_part_with_size(CHUNK_SIZE + 1);
+        // Send a data chunk exceeding the effective chunk size
+        let oversized = make_data_part_with_size(chunk_size() + 1);
         let msg = make_message(&stream, 1, oversized);
         let result = map.insert(peer, msg);
 
@@ -1924,14 +2039,14 @@ mod tests {
         let init_msg = make_message(&stream, 0, make_init_part());
         map.insert(peer, init_msg);
 
-        // CHUNK_SIZE - 1 should be accepted
-        let under_limit = make_data_part_with_size(CHUNK_SIZE - 1);
+        // One byte under the limit should be accepted
+        let under_limit = make_data_part_with_size(chunk_size() - 1);
         let msg = make_message(&stream, 1, under_limit);
         map.insert(peer, msg);
         assert_eq!(map.streams.len(), 1, "Under-limit chunk should be accepted");
 
-        // Data chunk exactly at CHUNK_SIZE should be accepted
-        let at_limit = make_data_part_with_size(CHUNK_SIZE);
+        // A chunk exactly at the limit should be accepted
+        let at_limit = make_data_part_with_size(chunk_size());
         let msg = make_message(&stream, 2, at_limit);
         let result = map.insert(peer, msg);
 
