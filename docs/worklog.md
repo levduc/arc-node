@@ -669,3 +669,116 @@ accounts):
   ships this same v0.2 series to the 4-machine fleet and repeats the
   restart-CL and kill-lean legs there, plus records fleet numbers in guide
   §5.
+
+## 2026-09-14 (evening) — v0.2 on the 4-machine fleet: runner + first fleet run
+
+Branch `lean-lane-v0.2` in `/home/papaduck/arc-lean-v0.1` (worktree; base
+`d879069`), lean node + spammer from `/home/papaduck/lean-lane` branch `v0.2`.
+Task 10 of the `2026-09-14-lean-lane-header-binding` plan: build the fleet
+runner and take the header-binding series to the four machines for the first
+time. Run id `v02-0914-1945`; every byte a run writes on a machine lives under
+`~/arc-runs/<run-id>/`.
+
+**Changed**
+- `9647e01` (arc-lean-v0.1) — `crates/quake/scenarios/fleet4-lean.toml`,
+  `scripts/fleet-split-compose.py`, `scripts/fleet-lean.sh`,
+  `scripts/fleet.env.example`. The runner is `lean-testnet.sh`'s multi-host
+  sibling: same `up/load/status/down` shape, plus `health`, `restart-cl <n>`
+  and `kill-lean <n> <secs>`. The splitter is a parameterised port of
+  `experiments/dual-el/fleet/gen-fleet.py` — CL multiaddrs and EL enodes
+  retargeted to `<tailscale ip>:<published port>`, EL p2p published (quake
+  already publishes the CL's `2700{n-1}:27000`), volumes made absolute under
+  the run root, remote networks stripped of the `172.21.0.0/16` ipam block and
+  the static addresses.
+- `6ef593f` (arc-lean-v0.1) — guide §5 gains the "fleet, v0.2 on main 97f8da0"
+  row block with both arms, the legs, and the caveats.
+- Deviation worth keeping: the scenario is rendered with `quake setup --force`,
+  not `start --force` + `stop`. `setup` writes the same
+  compose/assets/validatorN tree without starting a container, so no CL ever
+  boots against a lean node that is not up yet (the boot-park landmine) and the
+  validator dirs stay 32 KB of pure config instead of 5.6 MB of chain data that
+  would have to be root-deleted before shipping.
+
+**Measured** (fleet: ginny-alienware + GinnyThui + papaduck + papaduck-alien2,
+150 M lean budget, N=50 ⇒ a 100 %-full block is **553 txs**, `21000 + 5000×50 =
+271,000` gas each; 10 min per arm, sampled every 60 s to
+`.quake/fleet-runs/v02-0914-1945/run.jsonl`)
+
+| arm | blk/s | tx/s | payments/s | fullness |
+|---|---|---|---|---|
+| one spammer per machine (`DISTRIBUTED=1 GENERATORS=8`) | 0.73 | 404 | **20,227** | **553/553 = 100 %** on every one of the 8 rate samples |
+| one spammer here → all four over the tailnet (the brief's command) | 1.54 | 491 | 24,539 | 202–474 of 553, 38 % → 81 % — **delivery-bound** |
+
+Both arms: 0 CL restarts (`RestartCount` 0/0/0 at every sample), 0
+`Manual intervention` on all four CLs, **100 % of rounds decided at round 0**
+(`grep -oE 'round=[0-9]+'` on all four CLs is 7145/7079/7786/6848 × `round=0`,
+no round ≥ 1), four distinct proposers taking turns (so no parked CL and no
+pure sync-follower), lean blocks byte-identical at every `status`. Nothing was
+saturated at the full-block cadence: CLs 1–3 % CPU, ELs 4–17 %, lean nodes
+60–100 % of **one** core, spammers 2–4 %.
+
+Track A on the fleet, both legs pass:
+- `kill-lean 3 60` — lean node 3 killed at height 1031; the other three advanced
+  to 1062 (+31) while `arc_getHead` on `100.70.62.92:8560` refused connections;
+  validator3's CL neither restarted (`RestartCount` 0 → 0) nor parked; on
+  relaunch the node reached the tip in **2 s** (1064/1064) and its EL followed
+  (1077 vs a tip of 1078); agreement byte-identical at 1065.
+- `restart-cl 3` — `State.StartedAt` moved 02:44:43 → 02:57:27 while
+  `RestartCount` stayed 0; rejoined within 3 of the tip in **2 s**; 0 parks; all
+  four equal at 1085 byte-identical.
+
+Shipping was verified by effect, not by exit code: images by the sha256 of
+`/usr/local/bin/arc-node-{consensus,execution}` *inside* the image on both ends
+(all three remotes were carrying three-week-old images), the binaries and fund
+file by `sha256sum | cut -c1-16` after transfer, the quake tree by comparing
+`assets/genesis.json` (`79074ff653636201` on all four).
+
+**Broke / retracted**
+- Nothing broke, and nothing earlier is retracted. One caution about my own
+  first arm: the brief's load command (`-r 3000 -g 2 -a 800` from one machine
+  against all four) does **not** fill blocks on a fleet. In backpressure mode a
+  single sender offers roughly `generators / RTT`, and the tailnet RTT is not
+  the loopback's — it offered 472 tx/s against a chain eating 460–590, so the
+  pools sat at 150–470 pending against the 553 a full block needs. The lane also
+  does not propagate transactions between lean nodes (guide §6, "the proposer
+  packs what it has"), so spreading one sender over four targets gives each
+  proposer a quarter of it. That arm measures delivery, not the chain (§6), and
+  is recorded as such rather than as a throughput number.
+- Ops hazard hit and self-corrected, worth writing down: I edited
+  `fleet-lean.sh` while a `load` was running it. **bash reads a script
+  incrementally** — changing byte offsets under a running bash can make it
+  resume mid-line. Reverted to the exact original bytes immediately and
+  re-applied after the run. Never edit a shell script that is executing.
+
+**Decided**
+- `DISTRIBUTED=1` (one spammer per machine, disjoint `--account-offset` ranges,
+  each against its own node over loopback) is the runner's saturating mode, and
+  it is what a fleet throughput number should be taken with. Kept the
+  single-sender path as the default so the brief's command still works and the
+  difference is visible.
+- Evidence for a restart is `State.StartedAt`, not `RestartCount` — docker does
+  not increment the count for a manual `docker restart`. Both are now printed:
+  `StartedAt` proves the bounce, `RestartCount` proves there was no crash. (This
+  was the correction recorded in the previous session; it is now in the script.)
+- `down` deletes nothing. Removing a run is the operator's `rm -rf
+  ~/arc-runs/<run-id>`, on purpose: a lean chain's bytes are bound by
+  certificates and a laggard can never sync a span that was destroyed.
+
+**Open**
+- **The cadence question.** At 100 % full the fleet held only 0.73 blk/s. The
+  campaign's `lean, N=100, 150 M` row is 1.93 blk/s for a block of almost the
+  same wire size (814 KB at N=50×553 vs 824 KB at N=100×287) but **half** the
+  signatures (287 vs 553). That points at per-transaction work rather than
+  bytes — but nothing was CPU-saturated (lean node 60–100 % of one core, CLs at
+  1–3 %), and it is a cross-run comparison against a different base on a
+  different day, n=1 each. The clean experiment is a single fleet session
+  sweeping N ∈ {50, 100} at a fixed 150 M budget with `DISTRIBUTED=1`, which the
+  runner now makes a two-line change.
+- Per-validator proposer-turn attribution in the health gate (it catches parked
+  and hung CLs, not slow ones) is still not automated; this run did it by hand
+  from the CL logs.
+- 91 `WARN … sync … Received response for unknown request ID` lines on
+  validator3 over the run — benign-looking sync races, never investigated.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
