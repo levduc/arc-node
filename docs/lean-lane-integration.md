@@ -404,6 +404,18 @@ once per height): O(height × block bytes) per call, fixed by capping the scan a
 | 400 M (F11 / F16 with two anchor fixes) | 1.58–1.75 / 1.60–1.83 | — | 121,042–134,225 / 122,963–140,217 | 100 % |
 | 450 M (F12) | 1.52–1.58 | 1,308–1,362 | 130,798–136,192 | 863/863 = 100 % |
 
+**Final `v0.2` tree (2026-09-15 afternoon: CL 91a2024, lean-lane 039b990 — the anchor no longer races
+the stage: the proposer stages its own block, announces never re-pull held blocks, the anchor waits for
+an in-flight or not-yet-arrived stage up to `LEAN_ANCHOR_GRACE_MS`=60):**
+
+| config (N=100, 500 ms pacer) | blk/s | tx/s | payments/s | fullness | anchor paths (validator1) |
+|---|---|---|---|---|---|
+| **400 M (F26 v02-0915-1435)** | **1.86–1.97** | 1,424–1,510 | **142,443–150,965** | 767/767 = 100 % | staged 1244 / index 23 / peer 16 |
+| 450 M (F27 v02-0915-1450) | 1.64–1.91 (sliding) | 1,416–1,645 | 141,586–164,509 | 863/863 = 100 % | staged 1201 / index 49 / peer 31 |
+
+Before these fixes the same 400 M point ran 1.58–1.83 blk/s (121–140k) with 25–56 % of anchors pulling
+the block from a peer. 400 M is now pacer-bound; the byte wall moved from ~3.9 to ~4.4 MB/s.
+
 **N=1 (one payment per signature), same stack, 2026-09-15 morning** — with enough offered load
 (4–12k tx/s per machine, pool target 8–30k) the lane is pacer-bound far above the old 6.4k row:
 
