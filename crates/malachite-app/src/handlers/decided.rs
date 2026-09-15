@@ -354,12 +354,18 @@ async fn commit(
     }
 
     // Clean up stale consensus data (undecided blocks and pending proposals up to the certificate height)
+    let clean_start = std::time::Instant::now();
     if let Err(e) = pruning_service
         .clean_stale_consensus_data(certificate_height)
         .await
     {
         error!("Failed to clean stale consensus data: {e}");
     }
+    debug!(
+        %certificate_height,
+        elapsed_ms = clean_start.elapsed().as_secs_f64() * 1000.0,
+        "Decided: cleaned stale consensus data"
+    );
 
     // Finalize the decided payload
     let (new_latest_block, _latest_valid_hash) =

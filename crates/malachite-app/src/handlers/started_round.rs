@@ -207,12 +207,19 @@ async fn fetch_and_process_pending_proposals(
     metrics: &AppMetrics,
     previous_block: Option<&ExecutionBlock>,
 ) -> eyre::Result<Vec<ProposedValue<ArcContext>>> {
+    let fetch_start = std::time::Instant::now();
     let pending_parts = store
         .get_pending_proposal_parts(height, round)
         .await
         .wrap_err("failed to fetch pending proposal parts")?;
 
-    info!(%height, %round, "StartedRound: Found {} pending proposal parts", pending_parts.len());
+    info!(
+        %height,
+        %round,
+        fetch_ms = fetch_start.elapsed().as_secs_f64() * 1000.0,
+        "StartedRound: Found {} pending proposal parts",
+        pending_parts.len()
+    );
 
     let payload_validator = EnginePayloadValidator::new(engine, metrics);
 

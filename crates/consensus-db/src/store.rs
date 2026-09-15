@@ -1382,23 +1382,68 @@ impl Db {
     fn clean_stale_consensus_data(&self, current_height: Height) -> Result<(), StoreError> {
         let start = Instant::now();
 
-        let tx = self.db.begin_write()?;
+        // Both tables are keyed `(height, round, hash)`, so "height <=
+        // current_height" is a prefix range. Collect the stale keys in a read
+        // transaction first.
+        //
+        // The previous implementation used `Table::retain`, which redb
+        // implements by walking *every* row and invoking the predicate with
+        // `entry.value()` — materializing each value even though the predicate
+        // ignores it. With up to `max_pending_proposals` (50) stashed future
+        // proposals of ~1.24 MB each that copied ~62 MB per height, on the
+        // decide critical path, to usually delete nothing.
+        let stale_undecided = self.stale_keys(UNDECIDED_BLOCKS_TABLE, current_height)?;
+        let stale_pending = self.stale_keys(PENDING_PROPOSAL_PARTS_TABLE, current_height)?;
 
-        {
-            // Remove all undecided blocks with height <= current_height
-            let mut undecided = tx.open_table(UNDECIDED_BLOCKS_TABLE)?;
-            undecided.retain(|k, _| k.0 > current_height)?;
-
-            // Remove all pending proposals with height <= current_height
-            let mut pending = tx.open_table(PENDING_PROPOSAL_PARTS_TABLE)?;
-            pending.retain(|k, _| k.0 > current_height)?;
+        // Nothing below the decided height: skip the write transaction
+        // entirely (redb commits are fsync'd by default).
+        if stale_undecided.is_empty() && stale_pending.is_empty() {
+            self.metrics.observe_delete_time(start.elapsed());
+            return Ok(());
         }
 
+        let tx = self.db.begin_write()?;
+        {
+            let mut undecided = tx.open_table(UNDECIDED_BLOCKS_TABLE)?;
+            for key in &stale_undecided {
+                undecided.remove(key)?;
+            }
+
+            let mut pending = tx.open_table(PENDING_PROPOSAL_PARTS_TABLE)?;
+            for key in &stale_pending {
+                pending.remove(key)?;
+            }
+        }
         tx.commit()?;
 
         self.metrics.observe_delete_time(start.elapsed());
 
         Ok(())
+    }
+
+    /// Collect every key of a `(height, round, hash)`-keyed table whose height
+    /// is `<= current_height`, using a key-only range read.
+    fn stale_keys(
+        &self,
+        table_def: redb::TableDefinition<PendingPartsKey, Vec<u8>>,
+        current_height: Height,
+    ) -> Result<Vec<(Height, Round, BlockHash)>, StoreError> {
+        // Inclusive upper bound at the largest possible (round, hash) for
+        // `current_height`; avoids incrementing the height (and overflowing).
+        let range_end = (
+            current_height,
+            Round::new(u32::MAX),
+            BlockHash::new([0xff; 32]),
+        );
+
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(table_def)?;
+
+        Ok(table
+            .range(..=range_end)?
+            .flatten()
+            .map(|(key, _value)| key.value())
+            .collect())
     }
 
     /// Prune up to `PRUNE_BATCH_LIMIT` entries below `retain_height` from a height-keyed table.
@@ -3824,6 +3869,7 @@ mod tests {
         let heights: Vec<u64> = items.iter().map(|m| m.height.as_u64()).collect();
         assert_eq!(heights, vec![1, 2, 3, 4, 5]);
     }
+
     /// A ranged read must return exactly the rows for the requested
     /// (height, round) — no more, no fewer — when neighbouring heights,
     /// neighbouring rounds and several proposers all have rows.
@@ -3919,6 +3965,127 @@ mod tests {
         assert_eq!(store.get_pending_proposal_parts_count().await.unwrap(), 4);
     }
 
+    /// Helper: store one undecided block at (height, round, proposer).
+    async fn store_test_undecided(store: &Store, height: Height, round: Round, tag: u8) {
+        let block = ConsensusBlock {
+            height,
+            round,
+            valid_round: Round::Nil,
+            proposer: Address::new([tag; 20]),
+            validity: Validity::Valid,
+            execution_payload: arbitrary_payload(),
+            signature: None,
+            lean_payload: None,
+        };
+        store.store_undecided_block(block).await.unwrap();
+    }
+
+    /// The ranged delete must remove every row at or below the decided height
+    /// in both tables, across all rounds and hashes, and keep everything above.
+    #[tokio::test]
+    async fn test_clean_stale_consensus_data_removes_at_or_below_only() {
+        let store = create_store().await;
+
+        for h in 1u64..=4 {
+            for r in 0u32..=1 {
+                #[allow(clippy::cast_possible_truncation)]
+                let tag = (h as u8) * 16 + r as u8;
+                store_test_undecided(&store, Height::new(h), Round::new(r), tag).await;
+
+                let parts = create_test_proposal_parts(
+                    Height::new(h),
+                    Round::new(r),
+                    Address::new([tag; 20]),
+                )
+                .await;
+                assert!(store
+                    .store_pending_proposal_parts(parts, 100, Height::new(1))
+                    .await
+                    .unwrap());
+            }
+        }
+        assert_eq!(store.get_pending_proposal_parts_count().await.unwrap(), 8);
+
+        // Decide height 2: heights 1 and 2 go, 3 and 4 stay.
+        store
+            .clean_stale_consensus_data(Height::new(2))
+            .await
+            .unwrap();
+
+        for h in 1u64..=4 {
+            for r in 0u32..=1 {
+                let kept = h > 2;
+                let undecided = store
+                    .get_undecided_blocks(Height::new(h), Round::new(r))
+                    .await
+                    .unwrap();
+                assert_eq!(undecided.len(), usize::from(kept), "undecided h{h} r{r}");
+
+                let pending = store
+                    .get_pending_proposal_parts(Height::new(h), Round::new(r))
+                    .await
+                    .unwrap();
+                assert_eq!(pending.len(), usize::from(kept), "pending h{h} r{r}");
+            }
+        }
+
+        assert_eq!(
+            store.get_pending_proposal_parts_counts().await.unwrap(),
+            vec![(Height::new(3), 2), (Height::new(4), 2)]
+        );
+        assert_eq!(store.get_pending_proposal_parts_count().await.unwrap(), 4);
+    }
+
+    /// Steady state: every stashed row is for a future height, so the clean is
+    /// a no-op and must leave the tables byte-identical.
+    #[tokio::test]
+    async fn test_clean_stale_consensus_data_noop_keeps_everything() {
+        let store = create_store().await;
+
+        for h in 5u64..=7 {
+            #[allow(clippy::cast_possible_truncation)]
+            let tag = h as u8;
+            store_test_undecided(&store, Height::new(h), Round::new(0), tag).await;
+            let parts =
+                create_test_proposal_parts(Height::new(h), Round::new(0), Address::new([tag; 20]))
+                    .await;
+            assert!(store
+                .store_pending_proposal_parts(parts, 100, Height::new(1))
+                .await
+                .unwrap());
+        }
+
+        // Nothing at or below height 4.
+        store
+            .clean_stale_consensus_data(Height::new(4))
+            .await
+            .unwrap();
+
+        assert_eq!(store.get_pending_proposal_parts_count().await.unwrap(), 3);
+        assert_eq!(
+            store.get_pending_proposal_parts_counts().await.unwrap(),
+            vec![(Height::new(5), 1), (Height::new(6), 1), (Height::new(7), 1)]
+        );
+        for h in 5u64..=7 {
+            assert_eq!(
+                store
+                    .get_undecided_blocks(Height::new(h), Round::new(0))
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                store
+                    .get_pending_proposal_parts(Height::new(h), Round::new(0))
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
+
     // ---- timing bench (ignored by default) -------------------------------
     //
     // Populates a temp redb with `PENDING_BENCH_COUNT` pending proposal-part
@@ -3959,6 +4126,28 @@ mod tests {
             ProposalPart::Fin(ProposalFin::new(Signature::from_bytes([0u8; 64]))),
         ];
         ProposalParts::new(parts).unwrap()
+    }
+
+    /// Baseline: what a per-height `clean_stale_consensus_data` costs when
+    /// both tables are empty. Before the ranged-delete change this was still a
+    /// full write transaction, i.e. an fsync, on the decide critical path.
+    #[tokio::test]
+    #[ignore = "timing bench; run with --ignored --nocapture"]
+    async fn store_bench_clean_stale_on_empty_tables() {
+        let dir = tempdir().unwrap();
+        let store = create_store_with_cache(dir.path(), ByteSize::gib(1)).await;
+
+        let mut ms = Vec::new();
+        for h in 1u64..=20 {
+            let t = Instant::now();
+            store.clean_stale_consensus_data(Height::new(h)).await.unwrap();
+            ms.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        eprintln!(
+            "store_bench clean_stale_consensus_data on empty tables (median of 20) = {:.3} ms",
+            ms[ms.len() / 2]
+        );
     }
 
     #[tokio::test]
