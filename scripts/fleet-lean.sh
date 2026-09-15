@@ -183,6 +183,38 @@ ship_image(){ # ship_image <n> <image> — verified by the sha of the BINARY INS
   [ "$have" = "$want" ] && { echo "    $img: shipped ok (${want:0:12})"; return 0; }
   echo "    $img: CONTENT MISMATCH (remote ${have:0:12} != local ${want:0:12}) — truncated pipe?"; return 1; }
 
+# ---------------------------------------------------------------- preflight
+# Runs before anything else in `up`. Two failure modes seen live: a tailnet
+# path silently downgraded to a DERP relay (adds tens of ms to every RPC and
+# every value-sync round trip — indistinguishable from a slow validator until
+# someone thinks to check), and a full $FLEET_ROOT disk quietly truncating a
+# datadir mid-run. `tailscale ping` output is either
+#   "pong from <name> (<ip>) via <ip>:<port> in <n>ms"   -- direct, OK
+#   "pong from <name> (<ip>) via DERP(<region>) in <n>ms" -- relayed, FAIL
+preflight(){
+  say "preflight: tailscale path + disk on all $N machines"
+  local n ip out avail_kb gb
+  for n in $(seq 2 $N); do
+    ip=$(ip_of "$n")
+    out=$(timeout 15 tailscale ping -c 1 "$ip" 2>&1)
+    echo "    validator$n ($ip): $(echo "$out" | grep -m1 '^pong\|^no reply' || echo "$out" | tail -1)"
+    if echo "$out" | grep -q 'via DERP'; then
+      die "validator$n ($ip): tailscale path is RELAYED (DERP), not direct — fix connectivity before a run: $out"
+    fi
+    echo "$out" | grep -qE 'via [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+' \
+      || die "validator$n ($ip): tailscale ping did not report a direct path (unreachable, or unexpected output): $out"
+  done
+  for n in $(seq 1 $N); do
+    rsh "$n" "mkdir -p $FLEET_ROOT" >/dev/null 2>&1
+    avail_kb=$(rsh "$n" "df -Pk $FLEET_ROOT 2>/dev/null | tail -1 | awk '{print \$4}'" | tr -dc '0-9')
+    [ -n "$avail_kb" ] || die "validator$n: could not read \`df $FLEET_ROOT\` (unreachable, or path unwritable)"
+    gb=$((avail_kb / 1024 / 1024))
+    echo "    validator$n: $FLEET_ROOT has ${gb} GB free"
+    [ "$avail_kb" -ge $((5 * 1024 * 1024)) ] || die "validator$n: only ${gb} GB free under $FLEET_ROOT (need >= 5 GB)"
+  done
+  say "preflight PASS"
+}
+
 # ---------------------------------------------------------------- up
 up(){
   [ -f "$MANIFEST" ] || die "no scenario $MANIFEST"
@@ -190,6 +222,7 @@ up(){
   [ -x "$SPAM_SRC" ]  || die "no spammer at $SPAM_SRC"
   [ -x "$QUAKE" ]     || die "no quake at $QUAKE"
   for img in $IMAGES; do docker image inspect "$img" >/dev/null 2>&1 || die "local image $img missing (make build-docker)"; done
+  preflight
   mkdir -p "$LOCAL" "$RUNS"; echo "$RUN_ID" > "$RUNS/latest"
   say "effective params: BUDGET_GAS=$BUDGET_GAS BUDGET_TXS=$BUDGET_TXS FANOUT=$FANOUT FUND_ACCOUNTS=$FUND_ACCOUNTS"
 
