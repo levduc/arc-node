@@ -267,7 +267,15 @@ async fn on_get_value(
 
     let block_hash = block.self_reported_block_hash();
 
-    crate::height_timing::set_bytes(height.as_u64(), block.size_bytes().as_u64());
+    // `set_bytes` checks `enabled()` itself, but the argument is evaluated at
+    // the call site and `size_bytes()` re-encodes the whole block to SSZ and
+    // walks every transaction. Gate the call so a node without
+    // ARC_HEIGHT_TIMING pays nothing: the adjacent `debug!` also calls it, but
+    // `debug!` is elided at INFO, so ungated this was a new per-proposal
+    // O(n_txs) walk on production nodes.
+    if crate::height_timing::enabled() {
+        crate::height_timing::set_bytes(height.as_u64(), block.size_bytes().as_u64());
+    }
 
     let (stream_messages, signature) =
         prepare_stream(stream_id, signing_provider, &block, lean_shim.is_some())
