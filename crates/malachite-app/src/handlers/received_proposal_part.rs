@@ -32,9 +32,12 @@ use arc_signer::ArcSigningProvider;
 
 use super::skew_gate;
 use crate::block::ConsensusBlock;
-use crate::metrics::{AppMetrics, InvalidPayloadSource, SkewNilVoteSource};
+use crate::metrics::{
+    AppMetrics, InvalidPayloadSource, SkewNilVoteSource, TransientValidationSource,
+};
 use crate::payload::{
-    establish_block_validity, persist_invalid_payload_best_effort, EnginePayloadValidator,
+    establish_block_validity, is_transient, note_lean_abstain, persist_invalid_payload_best_effort,
+    EnginePayloadValidator,
 };
 use crate::proposal_parts::{
     assemble_block_from_parts, resolve_expected_proposer, validate_proposal_parts,
@@ -418,6 +421,20 @@ async fn validate_block(
     )
     .await
     .map(|verdict| verdict.validity())
+    .inspect_err(|e| {
+        // THE LIVE VOTE PATH'S ABSTAIN. The caller logs and replies `None`,
+        // which is a silent non-vote: no Invalid is recorded, no counter moved
+        // (pre-2026-09 this path at least bumped the invalid-payload counter).
+        // A validator whose lean node is behind can sit here every round while
+        // every health check says it is fine — the failure mode CLAUDE.md §6
+        // exists for — so make it count, and say why.
+        note_lean_abstain(metrics, block.height, e);
+        if is_transient(e) {
+            metrics.inc_transient_validation_errors_count(
+                TransientValidationSource::ReceivedProposalPart,
+            );
+        }
+    })
     .wrap_err_with(|| {
         format!(
             "Payload validation failed on block built after \

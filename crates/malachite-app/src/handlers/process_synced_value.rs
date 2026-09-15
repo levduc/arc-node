@@ -99,6 +99,7 @@ pub async fn handle(
                 %height, %round, %proposer,
                 "ProcessSyncedValue: transient dependency error — no verdict, sync will re-request: {e:#}"
             );
+            crate::payload::note_lean_abstain(state.metrics(), height, &e);
             state
                 .metrics()
                 .inc_transient_dependency_skips(crate::metrics::app::TransientSkipSource::Sync);

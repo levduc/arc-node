@@ -36,7 +36,7 @@ pub use arc_eth_engine::transient::is_transient;
 use arc_eth_engine::transient::TransientDependencyError;
 
 use crate::block::ConsensusBlock;
-use crate::metrics::app::{AppMetrics, InvalidPayloadSource};
+use crate::metrics::app::{AppMetrics, InvalidPayloadSource, LeanNoVerdictReason};
 use crate::store::repositories::InvalidPayloadsRepository;
 use arc_consensus_db::invalid_payloads::InvalidPayload;
 
@@ -398,13 +398,119 @@ pub(crate) enum LeanTipVerdict {
     /// Observed protocol violation — `Invalid`, with the forensic reason.
     Violation(String),
     /// We could not get into a position to judge (still behind). No verdict.
-    NoVerdict(String),
+    /// `reason` is the machine-readable half: it becomes the metric label, so
+    /// an abstaining validator is visible in one scrape (CLAUDE.md §6).
+    NoVerdict {
+        reason: LeanNoVerdictReason,
+        detail: String,
+    },
+}
+
+/// "No verdict from the lean lane this round" — an abstain, carrying WHY in a
+/// form the handlers can label a counter with instead of parsing text.
+///
+/// It is transient by construction: either the dependency error that caused it
+/// sits underneath, or a [`TransientDependencyError`] marker does, so
+/// [`is_transient`] keeps answering true through every `wrap_err` the handlers
+/// add on the way up.
+#[derive(Debug)]
+pub struct LeanNoVerdict {
+    pub reason: LeanNoVerdictReason,
+    detail: String,
+    /// The transient marker, when the dependency that caused this was AWAY.
+    /// `None` when the cause was a real (non-transient) failure, so this
+    /// wrapper never launders one into "just wait for the node".
+    source: Option<TransientDependencyError>,
+}
+
+impl std::fmt::Display for LeanNoVerdict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for LeanNoVerdict {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source
+            .as_ref()
+            .map(|e| e as &(dyn std::error::Error + 'static))
+    }
 }
 
 /// "No verdict this round" as a transient error, so the handlers skip /
 /// re-request instead of dying (see [`is_transient`]).
-fn lean_no_verdict(reason: String) -> eyre::Report {
-    eyre::Report::new(TransientDependencyError::new("lean lane node", reason))
+fn lean_no_verdict(reason: LeanNoVerdictReason, detail: String) -> eyre::Report {
+    eyre::Report::new(LeanNoVerdict {
+        reason,
+        detail,
+        source: Some(TransientDependencyError::new(
+            "lean lane node",
+            format!("lean lane: no verdict ({reason})"),
+        )),
+    })
+}
+
+/// Same, but over a dependency error that already explains itself.
+///
+/// The cause is FLATTENED into the message rather than kept as the source: a
+/// boxed `eyre::Report` is opaque to [`is_transient`]'s downcast, so keeping
+/// it would silently lose the transient marker (and with it the "skip the
+/// round" behaviour). The classification is re-derived from the cause here
+/// instead, so a genuinely non-transient failure stays non-transient.
+fn lean_no_verdict_over(
+    reason: LeanNoVerdictReason,
+    detail: impl std::fmt::Display,
+    cause: eyre::Report,
+) -> eyre::Report {
+    let detail = format!("{detail}: {cause:#}");
+    if is_transient(&cause) {
+        return lean_no_verdict(reason, detail);
+    }
+    eyre::Report::new(LeanNoVerdict {
+        reason,
+        detail,
+        source: None,
+    })
+}
+
+/// The lean lane's reason for abstaining, if this report is one — at the root
+/// or anywhere under the `wrap_err` layers the handlers add.
+pub fn lean_no_verdict_reason(report: &eyre::Report) -> Option<LeanNoVerdictReason> {
+    report
+        .downcast_ref::<LeanNoVerdict>()
+        .map(|e| e.reason)
+        .or_else(|| {
+            report
+                .chain()
+                .find_map(|e| e.downcast_ref::<LeanNoVerdict>().map(|e| e.reason))
+        })
+}
+
+/// Height of the last lean abstain we logged, so a validator that abstains on
+/// every round of a stuck height says so once rather than per round. `u64::MAX`
+/// is the "nothing logged yet" sentinel (no real height reaches it).
+static LAST_LEAN_ABSTAIN_WARN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// Count (and, once per height, log) an abstain caused by the LEAN lane.
+///
+/// Called by every handler that turns a no-verdict into "no vote": the vote
+/// path, the round-start paths and value-sync. A no-op for any other error, so
+/// callers can hand it every validation failure they see. Without this, a
+/// validator whose lean node is behind abstains silently — containers up,
+/// agreement passing, no counter moving (CLAUDE.md §6).
+pub fn note_lean_abstain(metrics: &AppMetrics, height: Height, err: &eyre::Report) {
+    let Some(reason) = lean_no_verdict_reason(err) else {
+        return;
+    };
+    metrics.inc_lean_no_verdict(reason);
+    let height_u64 = height.as_u64();
+    if LAST_LEAN_ABSTAIN_WARN.swap(height_u64, std::sync::atomic::Ordering::Relaxed) != height_u64 {
+        warn!(
+            %height, %reason,
+            "🪶 lean lane: no verdict — this node is abstaining for this height: {err:#}"
+        );
+    }
 }
 
 /// Pull the lean blocks between our head and `target` from the peer lean
@@ -419,7 +525,7 @@ async fn catch_up_lean_head(
     mut head: LeanHead,
     target: u64,
     budget: Duration,
-) -> LeanHead {
+) -> (LeanHead, Option<LeanNoVerdictReason>) {
     // `tokio::time::Instant` so the budget arithmetic reads the same clock as
     // the timeouts below — identical to `std::time::Instant` in production,
     // and advancing in virtual time under `#[tokio::test(start_paused)]`.
@@ -431,6 +537,11 @@ async fn catch_up_lean_head(
     // multi-block catch-up that is the whole budget spent on one dead peer.
     let mut dead = vec![false; peers];
     let mut fed = 0u64;
+    // Why we stopped short, if we did — the label on the abstain that follows.
+    let mut stalled: Option<LeanNoVerdictReason> = None;
+    // Our OWN node failed a feed or a head read: that is a local outage, not a
+    // peer one, and the two want different operators looking at them.
+    let mut local_failed = false;
 
     'catchup: while target > head.number.saturating_add(1) {
         let next = head.number.saturating_add(1);
@@ -440,6 +551,7 @@ async fn catch_up_lean_head(
                 continue;
             }
             let Some(left) = remaining() else {
+                stalled = Some(LeanNoVerdictReason::BudgetExhausted);
                 break 'catchup;
             };
             // PER-PEER SLICE. One unresponsive peer must not be able to spend
@@ -471,6 +583,7 @@ async fn catch_up_lean_head(
             // Feeding our OWN node is not the slow peer's fault, so it is
             // bounded by the whole remaining budget rather than a slice.
             let Some(left) = remaining() else {
+                stalled = Some(LeanNoVerdictReason::BudgetExhausted);
                 break 'catchup;
             };
             if matches!(
@@ -481,16 +594,31 @@ async fn catch_up_lean_head(
                 fed = fed.saturating_add(1);
                 break;
             }
+            // Bytes in hand that our own node would not take (down, or still
+            // SYNCING itself): remember it, so if nothing advances the abstain
+            // points at us rather than at the peers.
+            local_failed = true;
         }
         if !advanced {
+            stalled = Some(if local_failed {
+                LeanNoVerdictReason::LocalUnreachable
+            } else if peers == 0 {
+                LeanNoVerdictReason::NoPeers
+            } else {
+                LeanNoVerdictReason::PeersTimedOut
+            });
             break 'catchup;
         }
         let Some(left) = remaining() else {
+            stalled = Some(LeanNoVerdictReason::BudgetExhausted);
             break 'catchup;
         };
         match tokio::time::timeout(left, node.local_head()).await {
             Ok(Ok(h)) => head = h,
-            _ => break 'catchup,
+            _ => {
+                stalled = Some(LeanNoVerdictReason::LocalUnreachable);
+                break 'catchup;
+            }
         }
     }
 
@@ -502,7 +630,7 @@ async fn catch_up_lean_head(
             head.number
         );
     }
-    head
+    (head, stalled)
 }
 
 /// The lean lane's tip rules: catch our node up to the proposal if we are
@@ -514,32 +642,41 @@ pub(crate) async fn validate_lean_tip(
     parent: BlockHash,
     budget: Duration,
 ) -> LeanTipVerdict {
-    let head = if number > head.number.saturating_add(1) {
+    let (head, stalled) = if number > head.number.saturating_add(1) {
         catch_up_lean_head(node, head, number, budget).await
     } else {
-        head
+        (head, None)
     };
 
     // STILL BEHIND: the budget ran out, no peer could serve the next block, or
     // our node stopped answering. Nothing about the PROPOSAL was observed to
     // be wrong — we simply never got into a position to check it. No verdict.
     if number > head.number.saturating_add(1) {
-        return LeanTipVerdict::NoVerdict(format!(
-            "lean lane: still behind after catch-up (block number {number}, local head \
-             {}) — no verdict this round",
-            head.number
-        ));
+        return LeanTipVerdict::NoVerdict {
+            // A catch-up that ran at all says why it stopped; one that never
+            // ran (number was already within reach, but our head moved back?)
+            // cannot, so name the peers as the generic case.
+            reason: stalled.unwrap_or(LeanNoVerdictReason::PeersTimedOut),
+            detail: format!(
+                "lean lane: still behind after catch-up (block number {number}, local head \
+                 {}) — no verdict this round",
+                head.number
+            ),
+        };
     }
     // Our head ran PAST the proposal while we were catching up (gossip). The
     // historic rule (byte-equality against our canonical chain) is the right
     // test now, and it ran against a stale head — re-judge next round rather
     // than fail the tip rule that no longer applies.
     if number <= head.number {
-        return LeanTipVerdict::NoVerdict(format!(
-            "lean lane: local head advanced past the proposal during catch-up (block \
-             number {number}, local head {}) — no verdict this round",
-            head.number
-        ));
+        return LeanTipVerdict::NoVerdict {
+            reason: LeanNoVerdictReason::HeadRanPast,
+            detail: format!(
+                "lean lane: local head advanced past the proposal during catch-up (block \
+                 number {number}, local head {}) — no verdict this round",
+                head.number
+            ),
+        };
     }
     // We are exactly one below the proposal, so its parent MUST be our head:
     // a mismatch is an observed violation (and letting it get certified would
@@ -650,8 +787,10 @@ pub async fn validate_consensus_block(
                 }
                 // The node is AWAY, not answering "no": transient, no verdict.
                 Err(e) => {
-                    return Err(e.wrap_err(
+                    return Err(lean_no_verdict_over(
+                        LeanNoVerdictReason::LocalUnreachable,
                         "lean lane: node unreachable while resolving the header commitment",
+                        e,
                     ));
                 }
             }
@@ -742,8 +881,10 @@ pub async fn validate_consensus_block(
                                 return Ok(Validity::Invalid);
                             }
                             Err(e) => {
-                                return Err(e.wrap_err(
+                                return Err(lean_no_verdict_over(
+                                    LeanNoVerdictReason::LocalUnreachable,
                                     "lean lane: node unreachable during historic validation",
+                                    e,
                                 ));
                             }
                         }
@@ -768,8 +909,8 @@ pub async fn validate_consensus_block(
                             record_invalid_payload(block, &reason, store, metrics).await;
                             return Ok(Validity::Invalid);
                         }
-                        LeanTipVerdict::NoVerdict(reason) => {
-                            return Err(lean_no_verdict(reason));
+                        LeanTipVerdict::NoVerdict { reason, detail } => {
+                            return Err(lean_no_verdict(reason, detail));
                         }
                     }
                     // Vote-gap execution (shim v1.3): stage the block now so
@@ -799,7 +940,11 @@ pub async fn validate_consensus_block(
                     // WITHOUT re-validation, so a transient outage would wedge
                     // the height permanently (measured live 2026-08-22: all-4
                     // rolling restart => 0-precommit deadlock at height 3446).
-                    return Err(e.wrap_err("lean lane: node unreachable during validation"));
+                    return Err(lean_no_verdict_over(
+                        LeanNoVerdictReason::LocalUnreachable,
+                        "lean lane: node unreachable during validation",
+                        e,
+                    ));
                 }
             }
         }
@@ -2042,8 +2187,16 @@ mod tests {
         let started = tokio::time::Instant::now();
         let verdict = validate_lean_tip(&lane, head, 12, parent_of_12, CATCHUP_BUDGET).await;
 
+        // The budget running out surfaces as the peer timeout that consumed
+        // it — which is the more useful label of the two for an operator.
         assert!(
-            matches!(verdict, LeanTipVerdict::NoVerdict(_)),
+            matches!(
+                verdict,
+                LeanTipVerdict::NoVerdict {
+                    reason: LeanNoVerdictReason::PeersTimedOut,
+                    ..
+                }
+            ),
             "an exhausted catch-up budget is a lag, not a verdict: {verdict:?}"
         );
         assert_eq!(
@@ -2098,7 +2251,13 @@ mod tests {
         let verdict = validate_lean_tip(&lane, head, 12, parent_of_12, CATCHUP_BUDGET).await;
 
         assert!(
-            matches!(verdict, LeanTipVerdict::NoVerdict(_)),
+            matches!(
+                verdict,
+                LeanTipVerdict::NoVerdict {
+                    reason: LeanNoVerdictReason::NoPeers,
+                    ..
+                }
+            ),
             "no peers to catch up from is a lag: {verdict:?}"
         );
     }
@@ -2129,8 +2288,70 @@ mod tests {
     /// the round instead of dying (and never record an Invalid).
     #[test]
     fn no_verdict_is_a_transient_error() {
-        let err = lean_no_verdict("lean lane: still behind after catch-up".to_string());
+        let err = lean_no_verdict(
+            LeanNoVerdictReason::BudgetExhausted,
+            "lean lane: still behind after catch-up".to_string(),
+        );
         assert!(is_transient(&err), "marker lost: {err:#}");
+    }
+
+    /// The reason must survive the `wrap_err` layers the handlers add, or the
+    /// abstain gets counted as "unlabelled" exactly when it matters.
+    #[test]
+    fn the_abstain_reason_survives_wrapping() {
+        let err = lean_no_verdict(
+            LeanNoVerdictReason::PeersTimedOut,
+            "lean lane: still behind after catch-up".to_string(),
+        )
+        .wrap_err("Payload validation failed on block built after receiving proposal part");
+
+        assert_eq!(
+            lean_no_verdict_reason(&err),
+            Some(LeanNoVerdictReason::PeersTimedOut)
+        );
+        assert!(is_transient(&err), "marker lost: {err:#}");
+    }
+
+    /// An error that has nothing to do with the lean lane must not be counted
+    /// as a lean abstain — the counter is only useful if it is specific.
+    #[test]
+    fn a_plain_error_is_not_a_lean_abstain() {
+        let metrics = AppMetrics::default();
+        let err = eyre::eyre!("engine call failed");
+
+        note_lean_abstain(&metrics, Height::new(7), &err);
+
+        assert_eq!(
+            LeanNoVerdictReason::ALL
+                .iter()
+                .map(|r| metrics.get_lean_no_verdict(*r))
+                .sum::<u64>(),
+            0
+        );
+    }
+
+    /// The counter the health gate reads: every abstain lands on it, labelled.
+    #[test]
+    fn a_lean_abstain_is_counted_under_its_reason() {
+        let metrics = AppMetrics::default();
+        let err = lean_no_verdict(
+            LeanNoVerdictReason::LocalUnreachable,
+            "lean lane: node unreachable during validation".to_string(),
+        )
+        .wrap_err("Payload validation failed");
+
+        note_lean_abstain(&metrics, Height::new(7), &err);
+        note_lean_abstain(&metrics, Height::new(7), &err);
+
+        assert_eq!(
+            metrics.get_lean_no_verdict(LeanNoVerdictReason::LocalUnreachable),
+            2,
+            "every abstain counts, even when only the first one logs"
+        );
+        assert_eq!(
+            metrics.get_lean_no_verdict(LeanNoVerdictReason::PeersTimedOut),
+            0
+        );
     }
 
     #[tokio::test]

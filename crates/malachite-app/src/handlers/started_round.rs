@@ -362,6 +362,7 @@ async fn process_pending_proposal_parts(
                     %height, %round, %proposer,
                     "Skipping pending parts: transient engine validation error: {e:#}"
                 );
+                crate::payload::note_lean_abstain(metrics, height, &e);
                 metrics.inc_transient_validation_errors_count(
                     TransientValidationSource::StartedRoundPending,
                 );
@@ -505,6 +506,7 @@ async fn validate_undecided_blocks(
                     %height, %round, %block_hash, ?existing_validity,
                     "Re-validation failed transiently; keeping existing verdict: {e:#}",
                 );
+                crate::payload::note_lean_abstain(metrics, height, &e);
                 metrics.inc_transient_validation_errors_count(
                     TransientValidationSource::StartedRoundRevalidation,
                 );

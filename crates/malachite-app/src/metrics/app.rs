@@ -127,6 +127,12 @@ pub struct Inner {
     /// error), labelled by source.
     transient_validation_errors_count: Family<TransientValidationSourceLabel, Counter>,
 
+    /// Number of rounds the LEAN lane abstained on (no verdict), labelled by
+    /// why. A validator whose lean node is behind votes on nothing while
+    /// looking perfectly healthy otherwise, so this counter is the only thing
+    /// that separates "quiet" from "contributing" (CLAUDE.md §6).
+    lean_no_verdict: Family<LeanNoVerdictReasonLabel, Counter>,
+
     /// Number of times the node stopped because a payload was not bound to its
     /// place in the chain, labelled by the path that found it. Any non-zero value
     /// is an alert, and the label says where to start reading.
@@ -188,6 +194,7 @@ impl Inner {
             transient_dependency_skips: Family::default(),
             clock_skew_nil_vote_count: Family::default(),
             transient_validation_errors_count: Family::default(),
+            lean_no_verdict: Family::default(),
             binding_halt_count: Family::default(),
             pending_proposal_parts_count: Gauge::default(),
             consensus_params: Family::default(),
@@ -362,6 +369,12 @@ impl AppMetrics {
                 "transient_validation_errors_count",
                 "Number of transient (no-verdict) payload validation errors, labelled by source",
                 metrics.transient_validation_errors_count.clone(),
+            );
+
+            registry.register(
+                "lean_no_verdict",
+                "Number of rounds the lean lane abstained on (no verdict), labelled by reason",
+                metrics.lean_no_verdict.clone(),
             );
 
             registry.register(
@@ -634,6 +647,21 @@ impl AppMetrics {
     ) -> u64 {
         self.transient_validation_errors_count
             .get_or_create(&TransientValidationSourceLabel::new(source))
+            .get()
+    }
+
+    /// The lean lane produced no verdict for a round: record why.
+    pub fn inc_lean_no_verdict(&self, reason: LeanNoVerdictReason) {
+        self.lean_no_verdict
+            .get_or_create(&LeanNoVerdictReasonLabel::new(reason))
+            .inc();
+    }
+
+    /// Number of lean-lane abstains recorded for a specific reason.
+    #[cfg(test)]
+    pub fn get_lean_no_verdict(&self, reason: LeanNoVerdictReason) -> u64 {
+        self.lean_no_verdict
+            .get_or_create(&LeanNoVerdictReasonLabel::new(reason))
             .get()
     }
 
@@ -925,17 +953,24 @@ pub enum TransientValidationSource {
     StartedRoundPending,
     /// Re-validating already-stored undecided blocks when a round starts.
     StartedRoundRevalidation,
+    /// The LIVE vote path: a proposal that arrived over the wire could not be
+    /// judged, so this node replies `None` and prevotes nothing this round.
+    ReceivedProposalPart,
 }
 
 impl TransientValidationSource {
     #[cfg(test)]
-    pub(super) const ALL: [TransientValidationSource; 2] =
-        [Self::StartedRoundPending, Self::StartedRoundRevalidation];
+    pub(super) const ALL: [TransientValidationSource; 3] = [
+        Self::StartedRoundPending,
+        Self::StartedRoundRevalidation,
+        Self::ReceivedProposalPart,
+    ];
 
     fn as_str(&self) -> &'static str {
         match self {
             Self::StartedRoundPending => "started_round_pending",
             Self::StartedRoundRevalidation => "started_round_revalidation",
+            Self::ReceivedProposalPart => "received_proposal_part",
         }
     }
 }
@@ -949,6 +984,68 @@ impl TransientValidationSourceLabel {
     fn new(source: TransientValidationSource) -> Self {
         Self {
             source: source.as_str(),
+        }
+    }
+}
+
+/// Why the lean lane could not produce a verdict for a round.
+///
+/// Every variant is a property of THIS node (behind, cut off, out of budget),
+/// never of the proposal — a proposal that is observably wrong votes `Invalid`
+/// and is counted as an invalid payload instead. Kept as a label so a
+/// validator that abstains every round says *why* in one scrape.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum LeanNoVerdictReason {
+    /// The catch-up wall-clock budget ran out mid-backlog.
+    BudgetExhausted,
+    /// Every peer lean node timed out, errored, or lacked the next block.
+    PeersTimedOut,
+    /// No peer lean nodes are configured, so there is nothing to catch up from.
+    NoPeers,
+    /// Our OWN lean node did not answer (head fetch, feed, commitment resolve).
+    LocalUnreachable,
+    /// Our head moved past the proposal while we were catching up, so the tip
+    /// rule no longer applies — judge it again next round.
+    HeadRanPast,
+}
+
+impl LeanNoVerdictReason {
+    #[cfg(test)]
+    pub(crate) const ALL: [LeanNoVerdictReason; 5] = [
+        Self::BudgetExhausted,
+        Self::PeersTimedOut,
+        Self::NoPeers,
+        Self::LocalUnreachable,
+        Self::HeadRanPast,
+    ];
+
+    /// Also the metric label: one spelling for logs and Prometheus.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::PeersTimedOut => "peers_timed_out",
+            Self::NoPeers => "no_peers",
+            Self::LocalUnreachable => "local_unreachable",
+            Self::HeadRanPast => "head_ran_past",
+        }
+    }
+}
+
+impl std::fmt::Display for LeanNoVerdictReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct LeanNoVerdictReasonLabel {
+    reason: &'static str,
+}
+
+impl LeanNoVerdictReasonLabel {
+    fn new(reason: LeanNoVerdictReason) -> Self {
+        Self {
+            reason: reason.as_str(),
         }
     }
 }
