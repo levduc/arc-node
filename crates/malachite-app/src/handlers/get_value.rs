@@ -31,6 +31,7 @@ use arc_consensus_types::{Address, ArcContext, Height};
 use arc_eth_engine::deadline::EngineDeadline;
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
+use arc_eth_engine::lean_shim::LeanBytesResolver;
 use arc_signer::ArcSigningProvider;
 
 use crate::block::ConsensusBlock;
@@ -160,7 +161,7 @@ async fn on_get_value(
     stream_id: StreamId,
     timeout: Duration,
 ) -> eyre::Result<Option<LocallyProposedValue<ArcContext>>> {
-    let block = get_previously_built_block(&store, address, height, round)
+    let stored_block = get_previously_built_block(&store, address, height, round)
         .await
         .wrap_err_with(|| {
             format!(
@@ -169,43 +170,21 @@ async fn on_get_value(
             )
         })?;
 
-    // Reuse is only possible if the block can be STREAMED as it was signed.
-    // A store-loaded row lost its lean bytes (the store keeps the EVM payload
-    // only), so in lean mode it must be rehydrated from the lean node by the
-    // commitment its own header carries; a row we cannot rehydrate would be
-    // re-framed without the lean trailer under the old Fin signature and
-    // rejected by every receiver. Falling back to a fresh build is always
-    // safe here — the reused block was never proposed in this round.
-    let reusable = match block {
-        Some(mut block) => {
-            check_reused_block_binding(&block, height, round, previous_block, &metrics)?;
-
-            match lean_shim {
-                None => Some(block),
-                Some(shim) => match rehydrate_lean_payload(&mut block, shim).await {
-                    Ok(true) => Some(block),
-                    Ok(false) => {
-                        warn!(
-                            %height, %round,
-                            block_hash = %block.self_reported_block_hash(),
-                            "Previously built block's lean bytes are not available from the \
-                             lean node; building a fresh block instead of restreaming a frame \
-                             its signature cannot cover",
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        warn!(
-                            %height, %round,
-                            "Lean node unreachable while rehydrating the previously built \
-                             block ({e:#}); building a fresh block",
-                        );
-                        None
-                    }
-                },
-            }
-        }
-        None => None,
+    let reusable = match decide_reuse(
+        stored_block,
+        lean_shim,
+        height,
+        round,
+        previous_block,
+        &metrics,
+    )
+    .await?
+    {
+        Reuse::Restream(block) => Some(*block),
+        Reuse::BuildFresh => None,
+        // No reply: this round produces no proposal and times out, exactly as
+        // the build-timeout path below does.
+        Reuse::Decline => return Ok(None),
     };
 
     let mut block = match reusable {
@@ -507,6 +486,90 @@ fn check_previous_block_is_predecessor(
     .into())
 }
 
+/// What a row this node already stored for this (height, round) is still good for.
+#[derive(Debug)]
+enum Reuse {
+    /// Stream the stored block again, exactly as it was framed and signed.
+    Restream(Box<ConsensusBlock>),
+    /// Nothing signed exists for this round: build a fresh block.
+    BuildFresh,
+    /// A signed proposal for this round already left this node and cannot be
+    /// streamed again: propose nothing at all.
+    Decline,
+}
+
+/// Decides what a stored row for this (height, round) is still good for.
+///
+/// Reuse is only possible if the block can be STREAMED as it was signed. A
+/// store-loaded row lost its lean bytes (the store keeps the EVM payload only),
+/// so in lean mode it must first be rehydrated from the lean node by the
+/// commitment its own header carries; a row that cannot be rehydrated would be
+/// re-framed without the lean trailer under the old Fin signature and rejected
+/// by every receiver.
+///
+/// What to do *then* turns on whether a proposal for this same round already
+/// left this node, and `signature.is_some()` is the field that proves it: the
+/// signature comes from `prepare_stream`, and the row is stored carrying it
+/// BEFORE the parts are streamed, so a signed row is a superset of "streamed":
+/// every streamed proposal was stored signed first, and nothing is streamed
+/// before the store write (a row assembled from our own returning parts carries
+/// the same Fin signature, of a proposal demonstrably on the network). Building
+/// a fresh, different block for a round that already has a signed proposal from
+/// this node is proposer EQUIVOCATION, so the signed case declines the round:
+/// consensus gets no reply, the round times out, and the next round proposes
+/// again — the same cost as the build-timeout path.
+///
+/// Only an unsigned row may be replaced by a fresh build: this node never
+/// framed or signed anything for it, so there is no proposal of ours to
+/// contradict.
+async fn decide_reuse(
+    block: Option<ConsensusBlock>,
+    lean_resolver: Option<&impl LeanBytesResolver>,
+    height: Height,
+    round: Round,
+    previous_block: Option<&ExecutionBlock>,
+    metrics: &AppMetrics,
+) -> eyre::Result<Reuse> {
+    let Some(mut block) = block else {
+        return Ok(Reuse::BuildFresh);
+    };
+
+    check_reused_block_binding(&block, height, round, previous_block, metrics)?;
+
+    let Some(resolver) = lean_resolver else {
+        return Ok(Reuse::Restream(Box::new(block)));
+    };
+
+    let failure = match rehydrate_lean_payload(&mut block, resolver).await {
+        Ok(true) => return Ok(Reuse::Restream(Box::new(block))),
+        Ok(false) => {
+            "the lean node cannot produce the lean block this header commits to".to_owned()
+        }
+        Err(e) => format!("lean node unreachable while rehydrating it ({e:#})"),
+    };
+
+    if block.signature.is_some() {
+        warn!(
+            %height, %round,
+            block_hash = %block.self_reported_block_hash(),
+            "🙅 Declining to propose: a signed proposal for this round already left this node \
+             and cannot be streamed again ({failure}); streaming a different block for the \
+             same round would be equivocation, so this round is skipped",
+        );
+
+        return Ok(Reuse::Decline);
+    }
+
+    warn!(
+        %height, %round,
+        block_hash = %block.self_reported_block_hash(),
+        "Previously built block cannot be restreamed ({failure}); it carries no signature, \
+         so nothing was proposed for this round and a fresh block is built instead",
+    );
+
+    Ok(Reuse::BuildFresh)
+}
+
 /// Applies the binding rules to a stored block before this node re-proposes it.
 ///
 /// Re-proposing is the crash-recovery path, and the one place that streams a payload
@@ -578,7 +641,9 @@ mod tests {
 
     use alloy_primitives::{Address as AlloyAddress, Bloom, Bytes as AlloyBytes, U256};
     use alloy_rpc_types_engine::{ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3};
+    use arc_consensus_types::block::{test_lean_block_bytes, LeanLanePayload};
     use arc_consensus_types::{signing::Signature, B256};
+    use arc_eth_engine::lean_shim::MockLeanBytesResolver;
     use malachitebft_core_types::Validity;
 
     use crate::store::repositories::mocks::MockUndecidedBlocksRepository;
@@ -626,6 +691,234 @@ mod tests {
             signature: Some(Signature::test()),
             lean_payload: None,
         }
+    }
+
+    /// No lean lane: the reuse arm never calls a resolver.
+    const NO_RESOLVER: Option<&MockLeanBytesResolver> = None;
+
+    /// The height a `test_block` payload (block number 1, parent zero) is bound to,
+    /// and the block finalized below it.
+    fn bound_height() -> (Height, Round, ExecutionBlock) {
+        (
+            Height::new(1),
+            Round::new(0),
+            ExecutionBlock {
+                block_hash: B256::ZERO,
+                block_number: 0,
+                parent_hash: B256::ZERO,
+                timestamp: 0,
+            },
+        )
+    }
+
+    /// A lean-mode row as it comes back out of the undecided store: the header
+    /// commits to a lean block (`prev_randao`), but the store keeps the EVM
+    /// payload only, so the lean bytes are gone and must be rehydrated.
+    ///
+    /// `signed` is the whole question this arm turns on: a signature means a
+    /// proposal for this (height, round) already left this node.
+    fn stored_lean_row(signed: bool) -> (ConsensusBlock, Vec<u8>) {
+        let (height, round, _) = bound_height();
+        let bytes = test_lean_block_bytes(B256::repeat_byte(0xAB), 5, 123_456);
+        let lean = LeanLanePayload::new(bytes.clone()).expect("valid lean bytes");
+
+        let mut block = test_block(height, round, Address::new([1u8; 20]), 0xAA);
+        block
+            .execution_payload
+            .payload_inner
+            .payload_inner
+            .prev_randao = lean.commitment();
+        block.signature = signed.then(Signature::test);
+        // The store round trip drops these.
+        block.lean_payload = None;
+
+        (block, bytes)
+    }
+
+    /// THE equivocation guard. The stored row was already signed — a proposal
+    /// for this exact (height, round) left this node — and its lean bytes
+    /// cannot be recovered, so it cannot be streamed again. Building a fresh
+    /// block here would put a SECOND, different signed proposal on the wire for
+    /// one (height, round): proposer equivocation. Decline the round instead.
+    #[tokio::test]
+    async fn signed_stored_block_that_cannot_rehydrate_declines_the_round() {
+        let (height, round, previous_block) = bound_height();
+        let (block, _) = stored_lean_row(true);
+
+        let mut resolver = MockLeanBytesResolver::new();
+        resolver
+            .expect_lean_bytes_by_commitment()
+            .times(1)
+            .returning(|_| Ok(None));
+
+        let decision = decide_reuse(
+            Some(block),
+            Some(&resolver),
+            height,
+            round,
+            Some(&previous_block),
+            &AppMetrics::default(),
+        )
+        .await
+        .expect("declining is not an error");
+
+        assert!(
+            matches!(decision, Reuse::Decline),
+            "a signed proposal already left this node: no second one, and no fresh build, \
+             got {decision:?}",
+        );
+    }
+
+    /// Same ruling when the lean node is unreachable rather than empty-handed:
+    /// the node still cannot prove what it already proposed, so it proposes nothing.
+    #[tokio::test]
+    async fn signed_stored_block_declines_when_the_lean_node_errors() {
+        let (height, round, previous_block) = bound_height();
+        let (block, _) = stored_lean_row(true);
+
+        let mut resolver = MockLeanBytesResolver::new();
+        resolver
+            .expect_lean_bytes_by_commitment()
+            .times(1)
+            .returning(|_| Err(eyre!("lean node unreachable")));
+
+        let decision = decide_reuse(
+            Some(block),
+            Some(&resolver),
+            height,
+            round,
+            Some(&previous_block),
+            &AppMetrics::default(),
+        )
+        .await
+        .expect("a lean node outage skips the round, it does not fail the node");
+
+        assert!(
+            matches!(decision, Reuse::Decline),
+            "an unreachable lean node must not license a second proposal, got {decision:?}",
+        );
+    }
+
+    /// An unsigned row was never signed and never streamed, so nothing on the
+    /// wire can be contradicted: a fresh build is safe and keeps the round.
+    #[tokio::test]
+    async fn unsigned_stored_block_that_cannot_rehydrate_builds_fresh() {
+        let (height, round, previous_block) = bound_height();
+        let (block, _) = stored_lean_row(false);
+
+        let mut resolver = MockLeanBytesResolver::new();
+        resolver
+            .expect_lean_bytes_by_commitment()
+            .times(1)
+            .returning(|_| Ok(None));
+
+        let decision = decide_reuse(
+            Some(block),
+            Some(&resolver),
+            height,
+            round,
+            Some(&previous_block),
+            &AppMetrics::default(),
+        )
+        .await
+        .expect("an unsigned row is replaceable");
+
+        assert!(
+            matches!(decision, Reuse::BuildFresh),
+            "nothing was proposed for this round, so build one, got {decision:?}",
+        );
+    }
+
+    /// The common path: the lean node returns the bytes the header commits to,
+    /// so the SAME block is streamed again under its original signature. No
+    /// second value exists for this round, hence no equivocation.
+    #[tokio::test]
+    async fn signed_stored_block_that_rehydrates_is_reused_unchanged() {
+        let (height, round, previous_block) = bound_height();
+        let (block, bytes) = stored_lean_row(true);
+        let commitment = block.header_lean_commitment().expect("lean-bound header");
+        let expected_hash = block.self_reported_block_hash();
+        let expected_signature = block.signature;
+
+        let mut resolver = MockLeanBytesResolver::new();
+        let answer = bytes.clone();
+        resolver
+            .expect_lean_bytes_by_commitment()
+            .withf(move |c| *c == commitment)
+            .times(1)
+            .returning(move |_| Ok(Some(answer.clone())));
+
+        let decision = decide_reuse(
+            Some(block),
+            Some(&resolver),
+            height,
+            round,
+            Some(&previous_block),
+            &AppMetrics::default(),
+        )
+        .await
+        .expect("a rehydratable row is reusable");
+
+        let Reuse::Restream(reused) = decision else {
+            panic!("expected the stored block to be restreamed, got {decision:?}");
+        };
+        assert_eq!(
+            reused.self_reported_block_hash(),
+            expected_hash,
+            "reuse must stream the same value, never a fresh one",
+        );
+        assert_eq!(
+            reused.signature, expected_signature,
+            "the original signature is what the re-framed parts are covered by",
+        );
+        assert_eq!(
+            reused.lean_payload.as_ref().map(|l| l.bytes.as_slice()),
+            Some(bytes.as_slice()),
+            "the lean bytes are back, so the frame matches what the signature covers",
+        );
+    }
+
+    /// Lean lane off: a stored row is reused as it stands, with no resolver call.
+    #[tokio::test]
+    async fn stored_block_is_reused_without_a_lean_resolver() {
+        let (height, round, previous_block) = bound_height();
+        let block = test_block(height, round, Address::new([1u8; 20]), 0xAA);
+        let expected_hash = block.self_reported_block_hash();
+
+        let decision = decide_reuse(
+            Some(block),
+            NO_RESOLVER,
+            height,
+            round,
+            Some(&previous_block),
+            &AppMetrics::default(),
+        )
+        .await
+        .expect("a single-lane row needs no rehydration");
+
+        let Reuse::Restream(reused) = decision else {
+            panic!("expected the stored block to be restreamed, got {decision:?}");
+        };
+        assert_eq!(reused.self_reported_block_hash(), expected_hash);
+    }
+
+    /// Nothing stored for this (height, round): the ordinary build path.
+    #[tokio::test]
+    async fn no_stored_block_builds_fresh() {
+        let (height, round, previous_block) = bound_height();
+
+        let decision = decide_reuse(
+            None,
+            NO_RESOLVER,
+            height,
+            round,
+            Some(&previous_block),
+            &AppMetrics::default(),
+        )
+        .await
+        .expect("no row is not an error");
+
+        assert!(matches!(decision, Reuse::BuildFresh), "got {decision:?}");
     }
 
     #[test]
