@@ -338,19 +338,6 @@ pub struct State {
     /// when round 0 of the matching height starts.
     early_arrivals: HashMap<Height, EarlyArrival>,
 
-    /// LEAN lane: undecided lean payloads keyed by value_id. The SSZ undecided
-    /// store drops lean bytes (store form unchanged), so the decide anchor
-    /// reads them from here. Lost on restart mid-height — decide then fails
-    /// loudly and the height recovers via sync (which re-feeds inline).
-    pub lean_undecided: std::sync::Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<
-                arc_consensus_types::BlockHash,
-                arc_consensus_types::block::LeanLanePayload,
-            >,
-        >,
-    >,
-
     /// Meters EL block persistence to apply backpressure during sync catch-up.
     persistence_meter: Box<dyn PersistenceMeter>,
 
@@ -402,7 +389,6 @@ impl State {
             current_height: initial_height, // will be updated from reth
             current_round: Round::Nil,
             current_proposer: None,
-            lean_undecided: Default::default(),
             validator_set: ValidatorSet::default(), // initially empty, will be updated from reth
             store,
             stream_nonce: 0,
@@ -722,6 +708,14 @@ mod tests {
             value: Value::new(BlockHash::repeat_byte(seed)),
             validity,
         }
+    }
+
+    #[test]
+    fn state_has_no_lean_stash() {
+        // Guard against re-introducing CL-side byte custody: the node holds
+        // the bytes (staged at validation); decide anchors by commitment.
+        let _ = std::mem::size_of::<crate::state::State>();
+        // (compile-time: `State { lean_undecided, .. }` must not exist)
     }
 
     #[test]

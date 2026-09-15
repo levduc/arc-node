@@ -71,7 +71,6 @@ pub async fn handle(
     let context = HandlerContext {
         engine,
         lean_shim,
-        lean_undecided: state.lean_undecided.clone(),
         store: state.store().clone(),
         metrics: state.metrics().clone(),
         signing_provider: state.signing_provider().clone(),
@@ -199,14 +198,6 @@ fn record_proposal_in_monitor(
 struct HandlerContext<'a, 'b> {
     engine: &'a Engine,
     lean_shim: Option<&'a arc_eth_engine::lean_shim::LeanShim>,
-    lean_undecided: std::sync::Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<
-                arc_consensus_types::BlockHash,
-                arc_consensus_types::block::LeanLanePayload,
-            >,
-        >,
-    >,
     store: Store,
     metrics: AppMetrics,
     signing_provider: ArcSigningProvider,
@@ -341,20 +332,6 @@ async fn handle_complete_parts(
             "Proposal block self-reported hash is not canonical; not storing as undecided",
         );
         return Ok(Disposition::Terminal);
-    }
-
-    // LEAN lane: stash the validated lean payload by value_id for the decide
-    // anchor (the SSZ undecided store drops lean bytes). NO vote-gap execution
-    // for the lean lane — arc_newBlock appends permanently, so only decide may
-    // feed it.
-    if block.validity == Validity::Valid {
-        if let Some(lane) = block.lean_payload.as_ref() {
-            context
-                .lean_undecided
-                .lock()
-                .expect("lean_undecided mutex poisoned")
-                .insert(block.value_id(), lane.clone());
-        }
     }
 
     // The block is stored with its execution-only validity below; only the prevote
@@ -1031,7 +1008,6 @@ mod tests {
         HandlerContext {
             engine,
             lean_shim: None,
-            lean_undecided: Default::default(),
             store: f.store.clone(),
             metrics: f.metrics.clone(),
             signing_provider: f.provider.clone(),

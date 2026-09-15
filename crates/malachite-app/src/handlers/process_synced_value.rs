@@ -70,7 +70,6 @@ pub async fn handle(
     let outcome = match on_process_synced_value(
         EnginePayloadValidator::new(engine, state.metrics()),
         lean_shim,
-        state.lean_undecided.clone(),
         state.store(),
         state.store(),
         state.persistence_meter(),
@@ -139,14 +138,6 @@ async fn on_process_synced_value(
     // streaming path), so synced blocks re-validate the lean lane structurally
     // and reconstruct the same `value_id` the certificate was signed over.
     lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
-    lean_undecided: std::sync::Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<
-                arc_consensus_types::BlockHash,
-                arc_consensus_types::block::LeanLanePayload,
-            >,
-        >,
-    >,
     undecided_blocks_repo: impl UndecidedBlocksRepository,
     invalid_payloads_repo: impl InvalidPayloadsRepository,
     persistence_meter: impl PersistenceMeter,
@@ -216,18 +207,6 @@ async fn on_process_synced_value(
 
     let validity = verdict.validity();
     block.validity = validity;
-
-    // LEAN lane: stash the synced lean payload for the decide anchor (sync
-    // heights are decided through the same decide path; the SSZ store drops
-    // lean bytes).
-    if validity.is_valid() {
-        if let Some(lane) = block.lean_payload.as_ref() {
-            lean_undecided
-                .lock()
-                .expect("lean_undecided mutex poisoned")
-                .insert(block.value_id(), lane.clone());
-        }
-    }
 
     let block_hash = block.self_reported_block_hash();
     // The undecided store is keyed by the consensus value id (commitment over
@@ -398,7 +377,6 @@ mod tests {
         let outcome = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -464,7 +442,6 @@ mod tests {
         let outcome = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -522,7 +499,6 @@ mod tests {
         let outcome = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -583,7 +559,6 @@ mod tests {
         let proposal = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -641,7 +616,6 @@ mod tests {
         let Some(proposal) = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -726,7 +700,6 @@ mod tests {
         let proposal = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -782,7 +755,6 @@ mod tests {
         let result = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -820,7 +792,6 @@ mod tests {
         let proposal = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -867,7 +838,6 @@ mod tests {
         let result = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -907,7 +877,6 @@ mod tests {
         let result = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -957,7 +926,6 @@ mod tests {
         let result = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -1011,7 +979,6 @@ mod tests {
         let proposal = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             persistence_meter,
@@ -1064,7 +1031,6 @@ mod tests {
         let proposal = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             persistence_meter,
@@ -1119,7 +1085,6 @@ mod tests {
         let proposal = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             persistence_meter,
@@ -1199,7 +1164,6 @@ mod tests {
         let proposal = on_process_synced_value(
             engine,
             None,
-            Default::default(),
             undecided,
             invalid,
             persistence_meter,

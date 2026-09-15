@@ -86,7 +86,6 @@ pub async fn handle(
         engine,
         lean_shim,
         lean_budget_gas,
-        state.lean_undecided.clone(),
         metrics,
         store,
         height,
@@ -147,14 +146,6 @@ async fn on_get_value(
     engine: &Engine,
     lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     lean_budget_gas: u64,
-    lean_undecided: std::sync::Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<
-                arc_consensus_types::BlockHash,
-                arc_consensus_types::block::LeanLanePayload,
-            >,
-        >,
-    >,
     metrics: AppMetrics,
     store: Store,
     height: Height,
@@ -176,22 +167,15 @@ async fn on_get_value(
         })?;
 
     let mut block = match block {
-        // LEAN lane: never reuse a store-loaded block — the SSZ store drops
-        // lean bytes, so its value_id is wrong. Lean builds are microseconds;
-        // always build fresh.
-        Some(block) if lean_shim.is_none() => {
+        Some(block) => {
             info!(block_hash = %block.self_reported_block_hash(), "✅ Using previously built block");
 
             check_reused_block_binding(&block, height, round, previous_block, &metrics)?;
 
             block
         }
-        stored => {
-            if stored.is_some() {
-                info!(%height, %round, "lean lane: ignoring previously built block (store drops lean bytes); rebuilding");
-            } else {
-                info!(%height, %round, "🌈 Building new block");
-            }
+        None => {
+            info!(%height, %round, "🌈 Building new block");
 
             let previous_block = previous_block.ok_or_else(|| {
                 eyre!("No previous block available to build new block at height={height} and round={round}")
@@ -233,20 +217,6 @@ async fn on_get_value(
     };
 
     let proposed_value = LocallyProposedValue::from(&block);
-
-    // LEAN lane: the PROPOSER stashes its own build immediately. The stash was
-    // otherwise written only at proposal-part assembly (self-delivery) — and
-    // when decide beats the looped-back parts (measured on the fleet: every
-    // val1-proposed height anchored via a 5s grace + CL peer-fetch, 35 polls,
-    // pinning the whole chain to ~10s on those heights), the proposer's own
-    // decide has no bytes to anchor with. Build-time stashing removes the race
-    // by construction; assembly/sync inserts stay as harmless overwrites.
-    if let Some(lane) = block.lean_payload.clone() {
-        lean_undecided
-            .lock()
-            .expect("lean_undecided mutex poisoned")
-            .insert(block.value_id(), lane);
-    }
 
     debug!(
         %height, %round,
