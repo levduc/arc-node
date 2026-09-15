@@ -11,6 +11,8 @@
 #   scripts/fleet-lean.sh up          # ship + boot + health gate
 #   scripts/fleet-lean.sh load        # LOAD_SECS of fan-out load, 60 s sampler
 #   DISTRIBUTED=1 GENERATORS=8 scripts/fleet-lean.sh load   # one spammer per machine
+#   BUDGET_GAS=225000000 FANOUT=100 scripts/fleet-lean.sh up     # sweep knobs, no fleet.env edit
+#   ARC_HEIGHT_TIMING=1 LEAN_STATS=1 scripts/fleet-lean.sh up    # extra timing instrumentation on
 #   scripts/fleet-lean.sh status
 #   scripts/fleet-lean.sh kill-lean 3 60     # Track A: lean node outage
 #   scripts/fleet-lean.sh restart-cl 3       # Track A: CL restart
@@ -50,7 +52,7 @@ CFG=${FLEET_ENV:-$REPO/scripts/fleet.env}
 # knobs BEFORE sourcing fleet.env, then restore exactly those after — fleet.env
 # still supplies every default the caller didn't set, but the process
 # environment always wins for the ones it did.
-_ENV_OVERRIDABLE="FANOUT LOAD_SECS LOAD_RATE POOL_TARGET GENERATORS DISTRIBUTED BUDGET_GAS BUDGET_TXS"
+_ENV_OVERRIDABLE="FANOUT LOAD_SECS LOAD_RATE POOL_TARGET GENERATORS DISTRIBUTED BUDGET_GAS BUDGET_TXS ARC_HEIGHT_TIMING LEAN_STATS"
 for _v in $_ENV_OVERRIDABLE; do
   [ -n "${!_v+x}" ] && eval "_had_$_v=1; _val_$_v=\${$_v}"
 done
@@ -146,8 +148,10 @@ cl_started(){ rsh "$1" "docker inspect --format '{{.State.StartedAt}}' validator
 
 peers_for(){ local n=$1 p="" j; for j in $(seq 1 $N); do
     [ "$j" = "$n" ] || p="${p}http://$(ip_of "$j"):$LEAN_PORT,"; done; echo "${p%,}"; }
-lean_launch_cmd(){ local n=$1
-  echo "(setsid nohup $ROOT/lean-lane-node run --datadir $ROOT/lean --port $LEAN_PORT --bind 0.0.0.0 --chain-id $CHAIN --shim --peers '$(peers_for "$n")' --fund-file $ROOT/fund.txt --fund-balance 10000000000000000000 >> $ROOT/logs/lean.log 2>&1 < /dev/null &)"; }
+lean_launch_cmd(){ local n=$1 envprefix=""
+  # LEAN_STATS passthrough: only set if the controller's env asked for it.
+  [ -n "${LEAN_STATS:-}" ] && envprefix="LEAN_STATS=1 "
+  echo "(setsid nohup ${envprefix}$ROOT/lean-lane-node run --datadir $ROOT/lean --port $LEAN_PORT --bind 0.0.0.0 --chain-id $CHAIN --shim --peers '$(peers_for "$n")' --fund-file $ROOT/fund.txt --fund-balance 10000000000000000000 >> $ROOT/logs/lean.log 2>&1 < /dev/null &)"; }
 # the lean pid on machine n, matched by the BINARY PATH in argv[1] (never `pkill -f`,
 # which matches the shell carrying the pattern — CLAUDE.md §6)
 lean_pid(){ rsh "$1" "ps -eo pid=,args= | awk -v b=$ROOT/lean-lane-node '\$2==b{print \$1}'" | tr -dc '0-9 ' | awk '{print $1}'; }
@@ -236,6 +240,15 @@ up(){
   sed -E "s/(ARC_PAYMENT_LEAN_BUDGET_GAS = \")[0-9]+(\")/\1${BUDGET_GAS}\2/" "$MANIFEST" > "$EFF_MANIFEST"
   grep -q "ARC_PAYMENT_LEAN_BUDGET_GAS = \"$BUDGET_GAS\"" "$EFF_MANIFEST" \
     || die "failed to template BUDGET_GAS=$BUDGET_GAS into $EFF_MANIFEST (tracked $MANIFEST left untouched)"
+  # ARC_HEIGHT_TIMING, passed through only if the controller set it: inject it
+  # into the top-level [cl.env] table (inherited by every validatorN_cl), same
+  # never-touch-the-tracked-toml rule as BUDGET_GAS above.
+  if [ -n "${ARC_HEIGHT_TIMING:-}" ]; then
+    sed -i '/^\[cl\.env\]/a ARC_HEIGHT_TIMING = "1"' "$EFF_MANIFEST"
+    grep -q '^ARC_HEIGHT_TIMING = "1"' "$EFF_MANIFEST" \
+      || die "failed to inject ARC_HEIGHT_TIMING into $EFF_MANIFEST"
+    say "ARC_HEIGHT_TIMING=1 (from env): injected into every CL's [cl.env]"
+  fi
   say "effective manifest $EFF_MANIFEST (BUDGET_GAS=$BUDGET_GAS; tracked $MANIFEST untouched)"
 
   say "reachability + run root on all $N machines"
@@ -384,6 +397,8 @@ load(){
   local n
   say "effective params: BUDGET_GAS=$BUDGET_GAS BUDGET_TXS=$BUDGET_TXS FANOUT=$FANOUT LOAD_SECS=$LOAD_SECS LOAD_RATE=$LOAD_RATE POOL_TARGET=$POOL_TARGET GENERATORS=$GENERATORS DISTRIBUTED=$DISTRIBUTED FUND_ACCOUNTS=$FUND_ACCOUNTS"
   say "  full block at this budget = $BUDGET_TXS txs (a number without fullness is not a result)"
+  fetch_nproc
+  say "  nproc: $(for n in $(seq 1 $N); do printf 'v%s=%s ' "$n" "${NPROC[$((n-1))]}"; done)"
   # Ingress is PER LEAN NODE (the lane does not propagate transactions between
   # nodes — guide §6: "the proposer packs what it has"), so DISTRIBUTED=1 puts
   # one spammer on each machine against its own node over loopback, with a
@@ -418,6 +433,60 @@ load(){
   status
 }
 
+# nproc on every machine, fetched ONCE (it doesn't change during a run) so the
+# per-tick sampler in sample_loop stays to a single ssh per machine.
+fetch_nproc(){
+  declare -ga NPROC=()
+  local n; local -a pid=()
+  for n in $(seq 1 $N); do
+    ( rsh "$n" "nproc" > "/tmp/.fleet-nproc-$$-$n" 2>/dev/null ) &
+    pid[$n]=$!
+  done
+  for n in $(seq 1 $N); do wait "${pid[$n]}" 2>/dev/null; done
+  for n in $(seq 1 $N); do
+    NPROC+=("$(tr -dc '0-9' < "/tmp/.fleet-nproc-$$-$n" 2>/dev/null)")
+    [ -n "${NPROC[$((n-1))]}" ] || NPROC[$((n-1))]="0"   # 0 = unknown, kept numeric for run.jsonl
+    rm -f "/tmp/.fleet-nproc-$$-$n"
+  done
+}
+
+# One ssh round-trip per machine, run in PARALLEL (explicit PIDs, never a bare
+# `wait` — CLAUDE.md §6): docker stats for the CL+EL containers in one call
+# (pipe-delimited, since docker's MemUsage field itself contains a space —
+# "45.2MiB / 2GiB" — which would misparse a space-delimited format string),
+# the lean node's own %cpu/RSS matched by BINARY PATH the same way lean_pid()
+# does (never `pkill -f`), and the 1-minute load average. Populates the
+# CL_CPU/EL_CPU/LEAN_CPU/LEAN_RSS_MB/LOAD1 arrays, index 0 = validator1.
+sample_cpu_mem(){
+  local n; local -a pid=() tf=()
+  for n in $(seq 1 $N); do
+    tf[$n]=$(mktemp)
+    ( rsh "$n" "
+        docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' validator${n}_cl validator${n}_el 2>/dev/null
+        leanpid=\$(ps -eo pid=,args= 2>/dev/null | awk -v b=$ROOT/lean-lane-node '\$2==b{print \$1}' | head -1)
+        if [ -n \"\$leanpid\" ]; then ps -o %cpu=,rss= -p \"\$leanpid\" 2>/dev/null | awk '{print \"LEAN|\"\$1\"|\"\$2}'
+        else echo 'LEAN|0|0'; fi
+        awk '{print \"LOAD1|\"\$1}' /proc/loadavg
+      " > "${tf[$n]}" 2>/dev/null ) &
+    pid[$n]=$!
+  done
+  for n in $(seq 1 $N); do wait "${pid[$n]}" 2>/dev/null; done
+  CL_CPU=(); EL_CPU=(); LEAN_CPU=(); LEAN_RSS_MB=(); LOAD1=()
+  for n in $(seq 1 $N); do
+    local raw=${tf[$n]} v
+    v=$(awk -F'|' -v c="validator${n}_cl" '$1==c{gsub("%","",$2); print $2}' "$raw" | head -1)
+    CL_CPU+=("${v:-0}")
+    v=$(awk -F'|' -v c="validator${n}_el" '$1==c{gsub("%","",$2); print $2}' "$raw" | head -1)
+    EL_CPU+=("${v:-0}")
+    local leanline; leanline=$(grep '^LEAN|' "$raw" | head -1)
+    v=$(echo "$leanline" | awk -F'|' '{print $2}'); LEAN_CPU+=("${v:-0}")
+    local rss_kb; rss_kb=$(echo "$leanline" | awk -F'|' '{print $3}')
+    v=$(python3 -c "print(round(${rss_kb:-0}/1024,1))" 2>/dev/null); LEAN_RSS_MB+=("${v:-0}")
+    v=$(grep '^LOAD1|' "$raw" | awk -F'|' '{print $2}'); LOAD1+=("${v:-0}")
+    rm -f "$raw"
+  done
+}
+
 sample_loop(){ # sample every 60 s while the spammer (pid $1) runs
   # Two separate per-validator columns, both labelled: pool1/2/3/4 is the PENDING
   # txpool depth of each lean node (ingress health — the lane does not propagate
@@ -425,6 +494,7 @@ sample_loop(){ # sample every 60 s while the spammer (pid $1) runs
   # shallow pool is the thing that silently caps fullness), and restarts1/2/3/4 is
   # each CL container's RestartCount (0 throughout = no CL ever crash-restarted).
   local sp=$1 jf=$LOCAL/run.jsonl t0 prev_h=-1 prev_t=0 s=0
+  local -a CL_CPU=() EL_CPU=() LEAN_CPU=() LEAN_RSS_MB=() LOAD1=()
   t0=$(date +%s)
   printf '%-6s %-7s %-9s %-9s %-7s %-9s %-9s %-22s %s\n' \
     "t(s)" "leanH" "blk/min" "headTxs" "full%" "tx/s" "pay/s" "pool1/2/3/4" "restarts1/2/3/4"
@@ -454,11 +524,25 @@ sample_loop(){ # sample every 60 s while the spammer (pid $1) runs
     full=$(python3 -c "print(f'{100*$mean/$BUDGET_TXS:.0f}')")
     printf '%-6s %-7s %-9s %-9s %-7s %-9s %-9s %-22s %s\n' \
       "$t" "$h" "$bpm" "${txs:-?}" "$full" "$tps" "$pps" "$pools" "$rsts"
+
+    # cadence drifts at constant fullness (114 -> 85 blk/min seen over 10 min)
+    # are a CPU story until proven otherwise: one ssh round-trip per machine,
+    # in parallel, every tick.
+    sample_cpu_mem
+    local cpuline="       cpu cl/el/lean"
+    for n in $(seq 1 $N); do
+      cpuline="$cpuline  v$n ${CL_CPU[$((n-1))]}/${EL_CPU[$((n-1))]}/${LEAN_CPU[$((n-1))]}"
+    done
+    echo "$cpuline"
+
     python3 -c "
 import json
 print(json.dumps({'t':$t,'sample':$s,'lean_height':$h,'blk_per_min':'$bpm','head_txs':${txs:-0},
  'mean_txs_5blk':$mean,'full_pct':'$full','tx_per_s':'$tps','payments_per_s':'$pps',
  'pool':[$(IFS=,; echo "${pool[*]}")],'restarts':[$(IFS=,; echo "${rst[*]}")],
+ 'cl_cpu':[$(IFS=,; echo "${CL_CPU[*]}")],'el_cpu':[$(IFS=,; echo "${EL_CPU[*]}")],
+ 'lean_cpu':[$(IFS=,; echo "${LEAN_CPU[*]}")],'lean_rss_mb':[$(IFS=,; echo "${LEAN_RSS_MB[*]}")],
+ 'load1':[$(IFS=,; echo "${LOAD1[*]}")],'nproc':[$(IFS=,; echo "${NPROC[*]:-}")],
  'budget_gas':$BUDGET_GAS,'budget_txs':$BUDGET_TXS,'fanout':$FANOUT,'load_secs':$LOAD_SECS,
  'load_rate':$LOAD_RATE,'pool_target':$POOL_TARGET,'generators':$GENERATORS,
  'distributed':$DISTRIBUTED}))" >> "$jf"
