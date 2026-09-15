@@ -1225,21 +1225,21 @@ impl Db {
     /// height.
     fn get_pending_proposal_parts_counts(&self) -> Result<Vec<(Height, usize)>, StoreError> {
         let start = Instant::now();
-        let mut read_bytes = 0usize;
         let mut counts = BTreeMap::new();
         let mut total_keys = 0usize;
 
         let tx = self.db.begin_read()?;
         let table = tx.open_table(PENDING_PROPOSAL_PARTS_TABLE)?;
 
+        // Keys only. Calling `value.value()` here copied every row out of the
+        // page cache (50 x ~1.24 MB on the fleet) purely to add its length to
+        // a metric, on every `/status` RPC.
         for result in table.iter()? {
-            let (key, value) = result?;
+            let (key, _value) = result?;
             let (height, _, _) = key.value();
 
-            let bytes = value.value();
             #[allow(clippy::arithmetic_side_effects)]
             {
-                read_bytes += bytes.len();
                 *counts.entry(height).or_insert(0) += 1;
                 total_keys += 1;
             }
@@ -1247,7 +1247,8 @@ impl Db {
 
         #[allow(clippy::arithmetic_side_effects)]
         let key_bytes = size_of::<(Height, Round, BlockHash)>() * total_keys;
-        self.update_read_metrics(read_bytes, key_bytes, start.elapsed());
+        // No value bytes are read on this path.
+        self.update_read_metrics(0, key_bytes, start.elapsed());
 
         Ok(counts.into_iter().collect())
     }
@@ -3885,6 +3886,37 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    /// Counting must not depend on reading values, and must still group by
+    /// height across multiple rounds and proposers.
+    #[tokio::test]
+    async fn test_pending_proposal_parts_counts_groups_by_height() {
+        let store = create_store().await;
+
+        // height 4: two rows at round 0 (distinct proposers) + one at round 1.
+        for (r, p) in [(0u32, 1u8), (0, 2), (1, 3)] {
+            let parts =
+                create_test_proposal_parts(Height::new(4), Round::new(r), Address::new([p; 20]))
+                    .await;
+            assert!(store
+                .store_pending_proposal_parts(parts, 100, Height::new(1))
+                .await
+                .unwrap());
+        }
+        // height 9: one row.
+        let parts =
+            create_test_proposal_parts(Height::new(9), Round::new(0), Address::new([9u8; 20])).await;
+        assert!(store
+            .store_pending_proposal_parts(parts, 100, Height::new(1))
+            .await
+            .unwrap());
+
+        assert_eq!(
+            store.get_pending_proposal_parts_counts().await.unwrap(),
+            vec![(Height::new(4), 3), (Height::new(9), 1)]
+        );
+        assert_eq!(store.get_pending_proposal_parts_count().await.unwrap(), 4);
     }
 
     // ---- timing bench (ignored by default) -------------------------------
