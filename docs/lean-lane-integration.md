@@ -177,7 +177,7 @@ first on any port.
 | Value id is the plain EVM block hash, always | `types::block::tests::to_proposed_value_with_validity_overrides_only_the_vote_validity` — the lean payload never enters the voted value |
 | Proposal/sync framing is stock SSZ | `types::block::lane_tests::encode_value_flag_off_is_stock_ssz` (asserts `== evm.as_ssz_bytes()`), `single_lane_frame_prefix_is_plain_length`, `decode_value_flag_on_rejects_stock_ssz` (a mixed-flag fleet fails closed, never silently) |
 | A lean payload is never silently dropped | `types::block::lane_tests::encode_value_never_drops_a_lean_payload` |
-| The lean seam is a no-op with the flag off | `lean_lane::binding::tests::flag_off_is_a_no_op_that_never_touches_a_lean_node` — a strict double whose every method panics, so this also proves no lean node is contacted; and `a_lane_enabled_node_is_a_no_op_on_an_evm_only_height` |
+| The lean seam is a no-op with the flag off | `lean_lane::binding::tests::flag_off_is_a_no_op_that_never_touches_a_lean_node` (no lean node, no resolver: the flag-off shape) together with `a_lane_enabled_node_is_a_no_op_on_an_evm_only_height` (a strict double whose every method panics, proving no lean node is contacted on an EVM-only height) |
 | Header stays zero, EVM lane unchanged | `types::block::lane_tests::no_lean_payload_is_always_bound_and_zero_header_means_no_lane`; `eth-engine`'s `generate_block` tests pass `B256::ZERO` |
 | Env defaults | `env_config::tests::lean_lane_is_off_and_inert_when_nothing_is_set`, `only_1_and_true_enable_the_lean_lane` |
 | Store rows | `consensus-db`'s `test_store_and_get_undecided_block` — round-trips a row whose `lean_payload` is `None`, through the unchanged SSZ schema |

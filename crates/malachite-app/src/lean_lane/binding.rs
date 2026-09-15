@@ -302,9 +302,11 @@ mod tests {
     /// THE flag-off contract at the seam this module is: with no lean node and
     /// no lean payload — exactly the shape `ARC_PAYMENT_LEAN_LANE` unset
     /// produces at every call site — the lean section is a no-op that returns
-    /// Valid. Both mocks are strict (`MockLeanValidation`/`MockLeanBytesResolver`
-    /// with no expectations panic if called), so this also pins that nothing
-    /// here reaches for a lean node on the stock path.
+    /// Valid. This test passes `None` for both the lean node and the resolver,
+    /// i.e. the exact flag-off shape; the sibling test below drives the same
+    /// stock block through the strict `NeverCalled` double (every method panics)
+    /// to pin that a lane-enabled node does not reach for a lean node on an
+    /// EVM-only height either.
     #[tokio::test]
     async fn flag_off_is_a_no_op_that_never_touches_a_lean_node() {
         let block = stock_block();
