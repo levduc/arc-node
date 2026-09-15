@@ -237,3 +237,74 @@ impl LeanShim {
         }
     }
 }
+
+/// By-name params for the commitment-addressed verbs (v0.2).
+fn commitment_params(commitment: BlockHash) -> Value {
+    json!({ "commitment": format!("{commitment}") })
+}
+
+impl LeanShim {
+    /// v0.2: anchor by commitment. The node promotes its staged copy, applies a
+    /// queued copy, or fetches the bytes from a peer; SYNCING means keep polling.
+    pub async fn new_block_by_commitment(&self, commitment: BlockHash) -> eyre::Result<NewBlockStatus> {
+        let r = self.call("arc_newBlock", commitment_params(commitment)).await?;
+        if r.get("commitment").is_some() {
+            return Ok(NewBlockStatus::Valid(Self::parse_commitment(&r)?));
+        }
+        match r.get("status").and_then(|s| s.as_str()) {
+            Some("SYNCING") => Ok(NewBlockStatus::Syncing),
+            other => Err(eyre!("lean shim: newBlock{{commitment}} response has neither commitment nor a known status (status={other:?})")),
+        }
+    }
+
+    /// v0.2: canonical/staged/queued block bytes by commitment (sync serving).
+    pub async fn get_block_bytes_by_commitment(&self, commitment: BlockHash) -> eyre::Result<Option<Vec<u8>>> {
+        let r = self.call("arc_getBlockBytes", commitment_params(commitment)).await?;
+        match r.get("blockBytes") {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) => Ok(Some(
+                base64::engine::general_purpose::STANDARD.decode(s).wrap_err("lean shim: getBlockBytes bad base64")?,
+            )),
+            Some(other) => Err(eyre!("lean shim: getBlockBytes unexpected type: {other}")),
+        }
+    }
+}
+
+/// A freshly built lean block as the node returned it. The CL recomputes the
+/// commitment from `bytes` before using it (never trust `commitment` alone).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeanBuilt {
+    pub commitment: BlockHash,
+    pub bytes: Vec<u8>,
+}
+
+/// The proposer's view of the lane: build the next block on `parent`.
+/// Mockable so the payload pipeline can be unit-tested without a node.
+// Same shape as `PayloadGenerator` (crates/malachite-app/src/payload.rs):
+// used only within this workspace, so the `Send`-auto-trait caveat on
+// `async fn` in public traits doesn't bite.
+#[allow(async_fn_in_trait)]
+#[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
+pub trait LeanBuilder: Send + Sync {
+    async fn build_lean_block(&self, parent: LeanHead, timestamp_ms: u64, budget_gas: u64) -> eyre::Result<LeanBuilt>;
+}
+
+impl LeanBuilder for LeanShim {
+    async fn build_lean_block(&self, parent: LeanHead, timestamp_ms: u64, budget_gas: u64) -> eyre::Result<LeanBuilt> {
+        let (commitment, bytes) = self.build_block(parent.commitment, parent.number + 1, timestamp_ms, budget_gas).await?;
+        Ok(LeanBuilt { commitment, bytes })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commitment_params_are_by_name_hex() {
+        let c = BlockHash::repeat_byte(0xab);
+        let v = commitment_params(c);
+        assert_eq!(v["commitment"].as_str().unwrap(), format!("{c}"));
+        assert!(v.get("blockBytes").is_none());
+    }
+}
