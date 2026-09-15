@@ -52,7 +52,7 @@ CFG=${FLEET_ENV:-$REPO/scripts/fleet.env}
 # knobs BEFORE sourcing fleet.env, then restore exactly those after — fleet.env
 # still supplies every default the caller didn't set, but the process
 # environment always wins for the ones it did.
-_ENV_OVERRIDABLE="FANOUT LOAD_SECS LOAD_RATE POOL_TARGET GENERATORS DISTRIBUTED BUDGET_GAS BUDGET_TXS ARC_HEIGHT_TIMING LEAN_STATS"
+_ENV_OVERRIDABLE="FANOUT LOAD_SECS LOAD_RATE POOL_TARGET GENERATORS DISTRIBUTED BUDGET_GAS BUDGET_TXS ARC_HEIGHT_TIMING LEAN_STATS CL_EXTRA_ENV"
 for _v in $_ENV_OVERRIDABLE; do
   [ -n "${!_v+x}" ] && eval "_had_$_v=1; _val_$_v=\${$_v}"
 done
@@ -248,6 +248,16 @@ up(){
     grep -q '^ARC_HEIGHT_TIMING = "1"' "$EFF_MANIFEST" \
       || die "failed to inject ARC_HEIGHT_TIMING into $EFF_MANIFEST"
     say "ARC_HEIGHT_TIMING=1 (from env): injected into every CL's [cl.env]"
+  fi
+  # CL_EXTRA_ENV="KEY=VAL KEY2=VAL2": arbitrary extra CL env for A/B knobs
+  # (e.g. ARC_PROPOSAL_CHUNK_SIZE=1048576). Space-separated, no quotes/spaces in values.
+  if [ -n "${CL_EXTRA_ENV:-}" ]; then
+    for kv in $CL_EXTRA_ENV; do
+      k=${kv%%=*}; v=${kv#*=}
+      sed -i "/^\[cl\.env\]/a $k = \"$v\"" "$EFF_MANIFEST"
+      grep -q "^$k = \"$v\"" "$EFF_MANIFEST" || die "failed to inject $k into $EFF_MANIFEST"
+      say "CL_EXTRA_ENV: $k=$v injected into every CL's [cl.env]"
+    done
   fi
   say "effective manifest $EFF_MANIFEST (BUDGET_GAS=$BUDGET_GAS; tracked $MANIFEST untouched)"
 
