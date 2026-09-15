@@ -51,15 +51,17 @@ Verification done on this base (`97f8da0`):
   parks / transient errors.
 - **v0.2 header-binding series, same local testnet, plus a CL restart leg**:
   `up` (~26 s) to 5/5 at height 4, byte-identical; 240 s of fan-out load
-  (offered 3,000 tx/s, N=50, pool-target 1,500 closed-loop governed it down to
-  589 tx/s sent — 143,500 txs / 243.5 s, 7.18 M payments), `restart 3`
-  (`docker restart validator3_cl` only — its lean node never stopped) fired at
-  T+96 s; validator3 read back within 3 heights of the tip immediately
-  (`docker restart` completes in about a second locally). Two `status` samples
-  60 s apart straddling the restart: height 215→310, **86.4 heights/min
+  (N=50, pool-target 1,500) in which the spammer sent 143,500 txs over
+  243.5 s (589 tx/s offered, pool-governed — well under the 3,000 tx/s asked
+  for; a send rate, not a chain result), `restart 3` (`docker restart
+  validator3_cl` only — its lean node never stopped) fired at T+96 s;
+  validator3 read back within 3 heights of the tip immediately (`docker
+  restart` completes in about a second locally). Two `status` samples 60 s
+  apart straddling the restart: height 215→310, **86.4 heights/min
   (~1.44 blk/s)**, every block in both samples 369 txs = 100 % of the 100 M
-  budget, `agreement: all 5 lean nodes identical` at both samples and at load
-  end (height 388, then 421 once the pool drained). `docker inspect
+  budget — the only window fullness was sampled in; fullness outside it was
+  not sampled — `agreement: all 5 lean nodes identical` at both samples and at
+  load end (height 388, then 421 once the pool drained). `docker inspect
   --format '{{.RestartCount}}'` reads 0 on all five — Docker does not count a
   manual `docker restart`, only restart-policy-triggered ones — but
   `State.StartedAt` on validator3 (02:21:54) versus the other four (02:20:05)
