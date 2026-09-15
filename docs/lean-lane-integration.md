@@ -250,7 +250,7 @@ the wifi machine. No comparable 10-minute v0.1 trace exists to say whether v0.1 
 
 ### fleet, overnight 2026-09-15 — the drift was a lean-node log scan; 100k payments/s at 2 blk/s
 
-Same fleet and runner, lean-lane branch `perf` @ 66c1b43 on top of `v0.2`, CL `lean-lane-perf`.
+Same fleet and runner; the lean-lane `perf` branch and the CL `lean-lane-perf` branch used for these runs are now merged into lean-lane `v0.2` (a5b25f0) and `lean-lane-v0.2` (this branch), together with the two must-fix findings from the v0.2 review (get_value reuse-arm equivocation → decline the round; catch-up budget → per-peer slices, lag abstains instead of voting Invalid) and the follow-ups from the pre-merge reviews.
 The 10-minute drift above (114 → 85 at 150 M; 100 → 57 at 225 M) was the lean node's serving path
 `arc_getBlockBytes{commitment}` scanning the whole log backward on an index miss (the CL asks about
 once per height): O(height × block bytes) per call, fixed by capping the scan at the index floor
