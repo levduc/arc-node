@@ -39,7 +39,7 @@ use crate::payload::{
     check_payload_binding, generate_payload_with_retry, validate_consensus_block,
     EnginePayloadGenerator, EnginePayloadValidator, LeanBuild,
 };
-use crate::proposal_parts::{prepare_stream, stream_proposal};
+use crate::proposal_parts::{prepare_stream, rehydrate_lean_payload, stream_proposal};
 use crate::state::State;
 use crate::store::repositories::UndecidedBlocksRepository;
 use crate::store::Store;
@@ -166,11 +166,48 @@ async fn on_get_value(
             )
         })?;
 
-    let mut block = match block {
+    // Reuse is only possible if the block can be STREAMED as it was signed.
+    // A store-loaded row lost its lean bytes (the store keeps the EVM payload
+    // only), so in lean mode it must be rehydrated from the lean node by the
+    // commitment its own header carries; a row we cannot rehydrate would be
+    // re-framed without the lean trailer under the old Fin signature and
+    // rejected by every receiver. Falling back to a fresh build is always
+    // safe here — the reused block was never proposed in this round.
+    let reusable = match block {
+        Some(mut block) => {
+            check_reused_block_binding(&block, height, round, previous_block, &metrics)?;
+
+            match lean_shim {
+                None => Some(block),
+                Some(shim) => match rehydrate_lean_payload(&mut block, shim).await {
+                    Ok(true) => Some(block),
+                    Ok(false) => {
+                        warn!(
+                            %height, %round,
+                            block_hash = %block.self_reported_block_hash(),
+                            "Previously built block's lean bytes are not available from the \
+                             lean node; building a fresh block instead of restreaming a frame \
+                             its signature cannot cover",
+                        );
+                        None
+                    }
+                    Err(e) => {
+                        warn!(
+                            %height, %round,
+                            "Lean node unreachable while rehydrating the previously built \
+                             block ({e:#}); building a fresh block",
+                        );
+                        None
+                    }
+                },
+            }
+        }
+        None => None,
+    };
+
+    let mut block = match reusable {
         Some(block) => {
             info!(block_hash = %block.self_reported_block_hash(), "✅ Using previously built block");
-
-            check_reused_block_binding(&block, height, round, previous_block, &metrics)?;
 
             block
         }
@@ -310,8 +347,17 @@ async fn build_and_validate_block(
     // node has no forkchoice (arc_newBlock appends permanently), so the
     // block is executed once, at the decide anchor. Passing no shim here
     // skips the parent-linkage check, which the build itself guarantees.
-    let validity = validate_consensus_block(&validator, None, &block, store, metrics)
-        .await
+    let validity = validate_consensus_block(
+        &validator,
+        None,
+        lean_shim,
+        // Self-built: the bytes are in hand (and in `block.lean_payload`).
+        false,
+        &block,
+        store,
+        metrics,
+    )
+    .await
         .wrap_err_with(|| {
             format!(
                 "Payload validation failed on self-built block at height={height}, round={round}: {}",

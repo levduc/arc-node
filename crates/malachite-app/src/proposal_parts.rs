@@ -34,6 +34,8 @@ use arc_consensus_types::{
 };
 
 use crate::block::{decode_value, encode_value, ConsensusBlock};
+use arc_consensus_types::block::LeanLanePayload;
+use arc_eth_engine::lean_shim::LeanBytesResolver;
 
 #[cfg_attr(test, mockall::automock(type Error = std::io::Error;))]
 pub trait PublishProposalPart {
@@ -181,6 +183,57 @@ pub async fn make_proposal_parts(
     parts.push(ProposalPart::Fin(ProposalFin::new(signature)));
 
     Ok((parts, signature))
+}
+
+/// Puts the lean bytes back on a block that came out of the undecided store.
+///
+/// The store keeps the EVM payload only — the lean node is canonical for lane
+/// data — so a row read back for re-proposal (`get_value`'s reuse arm) or
+/// restreaming has `lean_payload: None` while its header still commits to a
+/// lean block. Streaming it as-is re-frames the value WITHOUT the lean bytes
+/// while reusing the stored Fin signature, which covered the original framing
+/// that included them: every receiver then rejects the parts as a bad
+/// signature. Rehydrating restores the exact original bytes, so the re-framed
+/// value hashes to what the signature covers.
+///
+/// Returns `true` when the block is ready to stream (nothing to rehydrate, or
+/// the bytes were fetched and verified), `false` when this node cannot produce
+/// the block its own header names. Never trusts the node's answer: the
+/// commitment is recomputed from the returned bytes.
+pub async fn rehydrate_lean_payload(
+    block: &mut ConsensusBlock,
+    resolver: &impl LeanBytesResolver,
+) -> eyre::Result<bool> {
+    if block.lean_payload.is_some() {
+        return Ok(true);
+    }
+    let Some(commitment) = block.header_lean_commitment() else {
+        return Ok(true);
+    };
+    let Some(bytes) = resolver.lean_bytes_by_commitment(commitment).await? else {
+        return Ok(false);
+    };
+    match LeanLanePayload::new(bytes) {
+        Ok(lane) if lane.commitment() == commitment => {
+            block.lean_payload = Some(lane);
+            Ok(true)
+        }
+        Ok(lane) => {
+            warn!(
+                height = %block.height, round = %block.round,
+                "Lean node answered commitment {} for {commitment}; not rehydrating",
+                lane.commitment()
+            );
+            Ok(false)
+        }
+        Err(e) => {
+            warn!(
+                height = %block.height, round = %block.round,
+                "Lean node's bytes for {commitment} failed strict decode ({e:#}); not rehydrating"
+            );
+            Ok(false)
+        }
+    }
 }
 
 /// Validates the proposal parts by checking the proposer and signature.
@@ -652,5 +705,157 @@ mod tests {
         );
     }
 
+    /// A lean-mode block as the proposer built it, and the same row as it comes
+    /// back out of the undecided store (the store keeps the EVM payload only).
+    fn lean_block_and_its_stored_row() -> (ConsensusBlock, ConsensusBlock, Vec<u8>) {
+        use arc_consensus_types::block::{test_lean_block_bytes, LeanLanePayload};
 
+        let bytes = test_lean_block_bytes(alloy_primitives::B256::repeat_byte(0xAB), 5, 123_456);
+        let lean = LeanLanePayload::new(bytes.clone()).expect("valid lean bytes");
+
+        let mut evm_payload = crate::block::tests_payload_helper(0x11, vec![]);
+        evm_payload.payload_inner.payload_inner.prev_randao = lean.commitment();
+
+        let built = ConsensusBlock {
+            height: Height::new(9),
+            round: Round::new(0),
+            valid_round: Round::Nil,
+            proposer: Address::new([7u8; 20]),
+            validity: Validity::Valid,
+            execution_payload: evm_payload,
+            signature: None,
+            lean_payload: Some(lean),
+        };
+
+        let stored = ConsensusBlock {
+            lean_payload: None,
+            ..built.clone()
+        };
+
+        (built, stored, bytes)
+    }
+
+    /// Critical: the store round trip drops the lean bytes, so re-framing a
+    /// stored row under its ORIGINAL signature produces parts that no receiver
+    /// can verify. Rehydrating first makes the re-framed parts byte-identical
+    /// to the original — same hash, same signature, verifies.
+    #[tokio::test]
+    async fn rehydrated_store_row_reframes_to_the_bytes_its_signature_covers() {
+        use arc_eth_engine::lean_shim::MockLeanBytesResolver;
+
+        let (mut built, mut stored, bytes) = lean_block_and_its_stored_row();
+        let (keys, validator_set) = make_validator_set(1);
+        let provider = LocalSigningProvider::new(keys[0].clone());
+        let proposer = Address::from_public_key(&keys[0].public_key());
+        built.proposer = proposer;
+        stored.proposer = proposer;
+
+        // Original stream: signs the framed value INCLUDING the lean bytes.
+        let (original_raw, signature) = make_proposal_parts(&provider, &built, true).await.unwrap();
+        let original = ProposalParts::new(original_raw).unwrap();
+        built.signature = Some(signature);
+        stored.signature = Some(signature);
+
+        // Without rehydration the re-framed value is the EVM lane alone.
+        let (bare_raw, _) = make_proposal_parts(&provider, &stored, true).await.unwrap();
+        let bare = ProposalParts::new(bare_raw).unwrap();
+        assert_ne!(
+            bare.hash(),
+            original.hash(),
+            "an un-rehydrated restream must NOT match — that is the bug being fixed"
+        );
+        let expected = resolve_expected_proposer(&RoundRobin, &validator_set, &bare);
+        assert!(
+            !validate_proposal_parts(&bare, expected, &provider).await,
+            "receivers reject the un-rehydrated restream"
+        );
+
+        // With rehydration it is the original framing again.
+        let mut resolver = MockLeanBytesResolver::new();
+        let commitment = built.header_lean_commitment().unwrap();
+        let answer = bytes.clone();
+        resolver
+            .expect_lean_bytes_by_commitment()
+            .withf(move |c| *c == commitment)
+            .times(1)
+            .returning(move |_| Ok(Some(answer.clone())));
+
+        assert!(rehydrate_lean_payload(&mut stored, &resolver).await.unwrap());
+        assert_eq!(stored.lean_payload, built.lean_payload);
+
+        let (rehydrated_raw, _) = make_proposal_parts(&provider, &stored, true).await.unwrap();
+        let rehydrated = ProposalParts::new(rehydrated_raw).unwrap();
+        assert_eq!(
+            rehydrated.hash(),
+            original.hash(),
+            "rehydrated parts hash to exactly what the stored signature covers"
+        );
+        let expected = resolve_expected_proposer(&RoundRobin, &validator_set, &rehydrated);
+        assert!(
+            validate_proposal_parts(&rehydrated, expected, &provider).await,
+            "rehydrated restream verifies against the original signature"
+        );
+    }
+
+    /// The node does not have the block its own header names: say so, leave the
+    /// block untouched, and let the caller decline to stream it.
+    #[tokio::test]
+    async fn rehydrate_reports_false_and_changes_nothing_when_the_node_lacks_the_block() {
+        use arc_eth_engine::lean_shim::MockLeanBytesResolver;
+
+        let (_, mut stored, _) = lean_block_and_its_stored_row();
+        let before = stored.clone();
+
+        let mut resolver = MockLeanBytesResolver::new();
+        resolver
+            .expect_lean_bytes_by_commitment()
+            .times(1)
+            .returning(|_| Ok(None));
+
+        assert!(!rehydrate_lean_payload(&mut stored, &resolver).await.unwrap());
+        assert_eq!(stored, before);
+    }
+
+    /// Bytes that are not the block the header names are no better than none:
+    /// the commitment is recomputed, never taken on trust.
+    #[tokio::test]
+    async fn rehydrate_rejects_bytes_with_another_commitment() {
+        use arc_consensus_types::block::test_lean_block_bytes;
+        use arc_eth_engine::lean_shim::MockLeanBytesResolver;
+
+        let (_, mut stored, _) = lean_block_and_its_stored_row();
+        let other = test_lean_block_bytes(alloy_primitives::B256::repeat_byte(0xCD), 9, 1);
+
+        let mut resolver = MockLeanBytesResolver::new();
+        resolver
+            .expect_lean_bytes_by_commitment()
+            .times(1)
+            .returning(move |_| Ok(Some(other.clone())));
+
+        assert!(!rehydrate_lean_payload(&mut stored, &resolver).await.unwrap());
+        assert!(stored.lean_payload.is_none());
+    }
+
+    /// Nothing to do: a block that already carries its bytes, and a single-lane
+    /// block whose header commits to nothing, both pass without a shim call.
+    #[tokio::test]
+    async fn rehydrate_is_a_no_op_when_there_is_nothing_to_fetch() {
+        use arc_eth_engine::lean_shim::MockLeanBytesResolver;
+
+        let mut resolver = MockLeanBytesResolver::new();
+        resolver.expect_lean_bytes_by_commitment().times(0);
+
+        let (mut built, _, _) = lean_block_and_its_stored_row();
+        assert!(rehydrate_lean_payload(&mut built, &resolver).await.unwrap());
+
+        let mut single_lane = ConsensusBlock {
+            execution_payload: crate::block::tests_payload_helper(0x22, vec![]),
+            lean_payload: None,
+            ..built
+        };
+        assert!(single_lane.header_lean_commitment().is_none());
+        assert!(rehydrate_lean_payload(&mut single_lane, &resolver)
+            .await
+            .unwrap());
+    }
 }

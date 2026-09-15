@@ -25,7 +25,9 @@ use arc_consensus_types::signing::SigningProvider;
 use arc_consensus_types::{ArcContext, BlockHash, Height, ValueId};
 
 use crate::block::ConsensusBlock;
-use crate::proposal_parts::{prepare_stream, stream_proposal, PublishProposalPart};
+use crate::proposal_parts::{
+    prepare_stream, rehydrate_lean_payload, stream_proposal, PublishProposalPart,
+};
 use crate::state::State;
 use crate::store::repositories::UndecidedBlocksRepository;
 
@@ -43,6 +45,7 @@ use crate::store::repositories::UndecidedBlocksRepository;
 pub async fn handle(
     state: &mut State,
     channels: &mut Channels<ArcContext>,
+    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     height: Height,
     round: Round,
     valid_round: Round,
@@ -51,15 +54,44 @@ pub async fn handle(
     let block_to_restream =
         get_block_to_restream(state.store(), height, value_id.block_hash()).await?;
 
-    if let Some(block) = block_to_restream {
+    if let Some(mut block) = block_to_restream {
         let stream_id = state.next_stream_id(block.height, block.round);
-        let signing_provider = state.signing_provider();
 
         // Restream framing MUST match the ORIGINAL stream: the stored Fin
-        // signature covers the originally framed bytes. With a uniform fleet
-        // flag this holds (proposer's flag == ours). In a mixed-flag fleet a
-        // cross-format restream fails signature verification at receivers —
-        // fail-safe (proposal dropped, round times out), documented limitation.
+        // signature covers the originally framed bytes. The uniform fleet flag
+        // makes the FORMAT match, but not the CONTENT: the store keeps the EVM
+        // payload only, so a lean-mode row comes back without its lean bytes
+        // and would be re-framed as an EVM-only value under a signature that
+        // covered the lean trailer — rejected by every receiver. Put the bytes
+        // back from the lean node first, and decline the restream if this node
+        // cannot; a dropped restream costs a round, a bad-signature stream
+        // costs the same round and looks like proposer misbehaviour.
+        // (In a mixed-flag fleet a cross-format restream still fails
+        // verification at receivers — fail-safe, documented limitation.)
+        if let Some(shim) = lean_shim {
+            match rehydrate_lean_payload(&mut block, shim).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    error!(
+                        %height, %round, %valid_round, %value_id,
+                        "Declining to restream: the lean node cannot produce the lean block \
+                         this header commits to, and a re-framed value without it would not \
+                         verify against the stored signature",
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!(
+                        %height, %round, %valid_round, %value_id,
+                        "Declining to restream: lean node unreachable while rehydrating the \
+                         stored block: {e:#}",
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        let signing_provider = state.signing_provider();
         let lean_lane = state.env_config().payment_lean_lane;
         restream_proposal(&channels.network, stream_id, signing_provider, &block, lean_lane).await
     } else {

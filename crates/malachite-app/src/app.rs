@@ -377,8 +377,10 @@ async fn handle_consensus(
 
             info!(%height, %round, %valid_round, %value_id, "Restreaming proposal");
 
-            restream_proposal::handle(state, channels, height, round, valid_round, value_id)
-                .await?;
+            restream_proposal::handle(
+                state, channels, lean_shim, height, round, valid_round, value_id,
+            )
+            .await?;
         }
 
         // Currently not supported
