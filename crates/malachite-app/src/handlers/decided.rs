@@ -183,7 +183,9 @@ async fn decide(
     // NOTE: here the node searches for the block with maching value_id from any round
     // It needs to read the complete undecided blocks table, but the expectation is it should be small.
     let t_lookup = crate::height_timing::segment_start();
-    let looked_up = undecided_blocks.get_by_hash(height, value_id.block_hash()).await;
+    let looked_up = undecided_blocks
+        .get_by_hash(height, value_id.block_hash())
+        .await;
     crate::height_timing::record(
         height.as_u64(),
         crate::height_timing::Segment::Lookup,
@@ -209,11 +211,7 @@ async fn decide(
     // here whatever the row reads, rather than repeating the height with no reason.
     let t_bind = crate::height_timing::segment_start();
     let binding = check_payload_binding(&block.execution_payload, height, previous_block);
-    crate::height_timing::record(
-        height.as_u64(),
-        crate::height_timing::Segment::Bind,
-        t_bind,
-    );
+    crate::height_timing::record(height.as_u64(), crate::height_timing::Segment::Bind, t_bind);
     if let Err(error) = binding {
         error!(
             %height, %round, %value_id,
@@ -253,8 +251,7 @@ async fn decide(
             crate::height_timing::Segment::AnchorCall,
             t_anchor,
         );
-        anchored
-            .wrap_err_with(|| format!("lean lane: decide anchor failed at height={height}"))?;
+        anchored.wrap_err_with(|| format!("lean lane: decide anchor failed at height={height}"))?;
 
         crate::height_timing::mark_at(height.as_u64(), crate::height_timing::Phase::Anchor);
     }

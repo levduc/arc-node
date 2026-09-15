@@ -124,10 +124,7 @@ pub async fn handle(
     // Handing a complete, valid value back is what consensus's prevote waits
     // on, so this is the application-side prevote instant.
     if let Some(value) = response.as_ref().filter(|v| v.validity.is_valid()) {
-        crate::height_timing::mark_at(
-            value.height.as_u64(),
-            crate::height_timing::Phase::Prevote,
-        );
+        crate::height_timing::mark_at(value.height.as_u64(), crate::height_timing::Phase::Prevote);
     }
 
     if let Err(e) = reply.send(response) {

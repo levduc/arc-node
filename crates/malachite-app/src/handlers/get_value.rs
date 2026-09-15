@@ -267,10 +267,7 @@ async fn on_get_value(
 
     let block_hash = block.self_reported_block_hash();
 
-    crate::height_timing::set_bytes(
-        height.as_u64(),
-        block.size_bytes().as_u64(),
-    );
+    crate::height_timing::set_bytes(height.as_u64(), block.size_bytes().as_u64());
 
     let (stream_messages, signature) =
         prepare_stream(stream_id, signing_provider, &block, lean_shim.is_some())

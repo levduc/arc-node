@@ -240,7 +240,9 @@ pub fn record_part(height: u64, bytes: usize) {
         return;
     }
     t.parts = t.parts.saturating_add(1);
-    t.bytes = t.bytes.saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+    t.bytes = t
+        .bytes
+        .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
     // `FirstPart` keeps the first arrival, `LastPart` advances with each.
     t.mark(Phase::FirstPart);
     t.mark(Phase::LastPart);
@@ -694,7 +696,10 @@ mod tests {
         let early = t.last_part;
         t.mark(Phase::FirstPart);
         t.mark(Phase::LastPart);
-        assert_eq!(t.first_part, pinned, "first_part must keep the first arrival");
+        assert_eq!(
+            t.first_part, pinned,
+            "first_part must keep the first arrival"
+        );
         assert_ne!(t.last_part, early, "last_part must follow the newest part");
     }
 

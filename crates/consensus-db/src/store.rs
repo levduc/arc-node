@@ -4055,7 +4055,8 @@ mod tests {
         }
         // height 9: one row.
         let parts =
-            create_test_proposal_parts(Height::new(9), Round::new(0), Address::new([9u8; 20])).await;
+            create_test_proposal_parts(Height::new(9), Round::new(0), Address::new([9u8; 20]))
+                .await;
         assert!(store
             .store_pending_proposal_parts(parts, 100, Height::new(1))
             .await
@@ -4167,7 +4168,11 @@ mod tests {
         assert_eq!(store.get_pending_proposal_parts_count().await.unwrap(), 3);
         assert_eq!(
             store.get_pending_proposal_parts_counts().await.unwrap(),
-            vec![(Height::new(5), 1), (Height::new(6), 1), (Height::new(7), 1)]
+            vec![
+                (Height::new(5), 1),
+                (Height::new(6), 1),
+                (Height::new(7), 1)
+            ]
         );
         for h in 5u64..=7 {
             assert_eq!(
@@ -4201,14 +4206,9 @@ mod tests {
     const PENDING_BENCH_VALUE_BYTES: usize = 1_240_000;
 
     async fn create_store_with_cache(dir: &std::path::Path, cache: ByteSize) -> Store {
-        Store::open(
-            dir.join("db"),
-            DbMetrics::default(),
-            DbUpgrade::Skip,
-            cache,
-        )
-        .await
-        .unwrap()
+        Store::open(dir.join("db"), DbMetrics::default(), DbUpgrade::Skip, cache)
+            .await
+            .unwrap()
     }
 
     /// Proposal parts carrying a ~1.24 MB data trailer.
@@ -4243,7 +4243,10 @@ mod tests {
         let mut ms = Vec::new();
         for h in 1u64..=20 {
             let t = Instant::now();
-            store.clean_stale_consensus_data(Height::new(h)).await.unwrap();
+            store
+                .clean_stale_consensus_data(Height::new(h))
+                .await
+                .unwrap();
             ms.push(t.elapsed().as_secs_f64() * 1000.0);
         }
         ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
