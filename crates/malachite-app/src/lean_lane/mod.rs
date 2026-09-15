@@ -23,6 +23,7 @@
 //! the delta against upstream is this directory plus one call per arm.
 
 pub(crate) mod anchor;
+pub(crate) mod binding;
 pub(crate) mod catchup;
 #[cfg(test)]
 pub(crate) mod test_lane;
