@@ -359,7 +359,6 @@ mod tests {
     use arc_consensus_types::{Address, ProposalFin, ProposalInit, ValidatorSet};
     use arc_signer::local::{LocalSigningProvider, PrivateKey, PublicKey};
 
-
     fn make_validator_set(n: usize) -> (Vec<PrivateKey>, ValidatorSet) {
         let mut rng = rand::thread_rng();
         let keys: Vec<PrivateKey> = (0..n).map(|_| PrivateKey::generate(&mut rng)).collect();
@@ -692,7 +691,10 @@ mod tests {
 
         let assembled = assemble_block_from_parts(&parts, true).unwrap();
         let assembled_lean = assembled.lean_payload.as_ref().expect("lean lane survives");
-        assert_eq!(assembled_lean.bytes, lean.bytes, "lean bytes byte-identical");
+        assert_eq!(
+            assembled_lean.bytes, lean.bytes,
+            "lean bytes byte-identical"
+        );
         assert_eq!(
             assembled_lean.commitment(),
             lean.commitment(),
@@ -780,7 +782,9 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(Some(answer.clone())));
 
-        assert!(rehydrate_lean_payload(&mut stored, &resolver).await.unwrap());
+        assert!(rehydrate_lean_payload(&mut stored, &resolver)
+            .await
+            .unwrap());
         assert_eq!(stored.lean_payload, built.lean_payload);
 
         let (rehydrated_raw, _) = make_proposal_parts(&provider, &stored, true).await.unwrap();
@@ -812,7 +816,9 @@ mod tests {
             .times(1)
             .returning(|_| Ok(None));
 
-        assert!(!rehydrate_lean_payload(&mut stored, &resolver).await.unwrap());
+        assert!(!rehydrate_lean_payload(&mut stored, &resolver)
+            .await
+            .unwrap());
         assert_eq!(stored, before);
     }
 
@@ -832,7 +838,9 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(Some(other.clone())));
 
-        assert!(!rehydrate_lean_payload(&mut stored, &resolver).await.unwrap());
+        assert!(!rehydrate_lean_payload(&mut stored, &resolver)
+            .await
+            .unwrap());
         assert!(stored.lean_payload.is_none());
     }
 

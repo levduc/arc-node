@@ -289,9 +289,15 @@ async fn anchor_lean_lane(
         match call {
             Ok(Ok(NewBlockStatus::Valid(c))) if c == commitment => {
                 if polls > 2 {
-                    info!("🪶 Lean lane anchored at height {height} after {polls} polls in {:?}", start.elapsed());
+                    info!(
+                        "🪶 Lean lane anchored at height {height} after {polls} polls in {:?}",
+                        start.elapsed()
+                    );
                 } else {
-                    debug!("🪶 Lean lane anchored at decide in {:?} (height {height})", start.elapsed());
+                    debug!(
+                        "🪶 Lean lane anchored at decide in {:?} (height {height})",
+                        start.elapsed()
+                    );
                 }
                 return Ok(());
             }
@@ -313,7 +319,6 @@ async fn anchor_lean_lane(
         }
     }
 }
-
 
 /// Commits a value with the given certificate, cleanup stale consensus data and prune historical data.
 ///

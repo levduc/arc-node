@@ -398,14 +398,14 @@ async fn validate_block(
         metrics,
     )
     .await
-        .map(|verdict| verdict.validity())
-        .wrap_err_with(|| {
-            format!(
-                "Payload validation failed on block built after \
+    .map(|verdict| verdict.validity())
+    .wrap_err_with(|| {
+        format!(
+            "Payload validation failed on block built after \
                  receiving proposal part at height={}, round={} from {}",
-                block.height, block.round, from,
-            )
-        })?;
+            block.height, block.round, from,
+        )
+    })?;
 
     match validity {
         Validity::Invalid => {

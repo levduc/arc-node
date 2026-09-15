@@ -93,7 +93,14 @@ pub async fn handle(
 
         let signing_provider = state.signing_provider();
         let lean_lane = state.env_config().payment_lean_lane;
-        restream_proposal(&channels.network, stream_id, signing_provider, &block, lean_lane).await
+        restream_proposal(
+            &channels.network,
+            stream_id,
+            signing_provider,
+            &block,
+            lean_lane,
+        )
+        .await
     } else {
         error!(%height, %round, %valid_round, "No block found to restream");
 
@@ -125,12 +132,12 @@ pub async fn restream_proposal(
 
     let (stream_messages, _signature) =
         prepare_stream(stream_id, signing_provider, block, lean_lane)
-        .await
-        .wrap_err_with(|| {
-            format!(
+            .await
+            .wrap_err_with(|| {
+                format!(
                 "Failed to prepare proposal parts for restreaming (height={height}, round={round})"
             )
-        })?;
+            })?;
 
     stream_proposal(publish, height, round, stream_messages)
         .await
@@ -334,7 +341,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: payload,
             signature: None,
-        lean_payload: None,
+            lean_payload: None,
         };
 
         let (raw_first, first_sig) = make_proposal_parts(&provider, &block, false).await.unwrap();

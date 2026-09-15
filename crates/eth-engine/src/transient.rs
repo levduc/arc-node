@@ -26,7 +26,10 @@ pub struct TransientDependencyError {
 
 impl TransientDependencyError {
     pub fn new(dependency: &'static str, detail: impl Into<String>) -> Self {
-        Self { dependency, detail: detail.into() }
+        Self {
+            dependency,
+            detail: detail.into(),
+        }
     }
 }
 
@@ -60,7 +63,10 @@ mod tests {
         #[error("rpc: internal error")]
         struct Rpc;
         let err: eyre::Report = eyre::Report::new(Rpc)
-            .wrap_err(TransientDependencyError::new("execution engine", "engine away"))
+            .wrap_err(TransientDependencyError::new(
+                "execution engine",
+                "engine away",
+            ))
             .wrap_err("handler context");
         assert!(is_transient(&err));
         assert!(
@@ -73,8 +79,7 @@ mod tests {
 
     #[test]
     fn marker_survives_wrap_err_layers() {
-        let base: eyre::Report =
-            TransientDependencyError::new("lean lane node", "gone").into();
+        let base: eyre::Report = TransientDependencyError::new("lean lane node", "gone").into();
         let wrapped = base
             .wrap_err("lean lane: node unreachable during validation")
             .wrap_err("Payload validation failed on block built from synced value");

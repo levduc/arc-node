@@ -1032,10 +1032,16 @@ mod tests {
     #[test]
     fn transient_dependency_skips_count_per_source() {
         let metrics = AppMetrics::default();
-        assert_eq!(metrics.get_transient_dependency_skips(TransientSkipSource::Sync), 0);
+        assert_eq!(
+            metrics.get_transient_dependency_skips(TransientSkipSource::Sync),
+            0
+        );
         metrics.inc_transient_dependency_skips(TransientSkipSource::Sync);
         metrics.inc_transient_dependency_skips(TransientSkipSource::Sync);
-        assert_eq!(metrics.get_transient_dependency_skips(TransientSkipSource::Sync), 2);
+        assert_eq!(
+            metrics.get_transient_dependency_skips(TransientSkipSource::Sync),
+            2
+        );
     }
 
     #[test]

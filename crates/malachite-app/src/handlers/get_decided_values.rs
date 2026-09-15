@@ -172,16 +172,21 @@ async fn get_decided_values(
             }
         }
 
-        let (raw_value, raw_bytes_len) =
-            match get_raw_decided_value(&store, execution_payload, lean, height, lean_shim.is_some())
-                .await
-            {
-                Ok(result) => result,
-                Err(e) => {
-                    warn!(%height, "Failed to get decided value at height: {e}");
-                    continue;
-                }
-            };
+        let (raw_value, raw_bytes_len) = match get_raw_decided_value(
+            &store,
+            execution_payload,
+            lean,
+            height,
+            lean_shim.is_some(),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                warn!(%height, "Failed to get decided value at height: {e}");
+                continue;
+            }
+        };
 
         // NOTE: This size estimate slightly over-approximates the true wire size.
         // These estimates assume each value is sent in its own SyncResponse message,
@@ -233,14 +238,20 @@ async fn get_decided_values(
 /// The lean bytes a served height must carry: the block whose recomputed
 /// commitment equals the EVM header's `prev_randao`. The CL never trusts a
 /// claimed commitment — this always recomputes it via [`LeanLanePayload::new`].
-fn lean_bytes_match_header(evm: &ExecutionPayloadV3, bytes: &[u8]) -> eyre::Result<LeanLanePayload> {
+fn lean_bytes_match_header(
+    evm: &ExecutionPayloadV3,
+    bytes: &[u8],
+) -> eyre::Result<LeanLanePayload> {
     let header = evm.payload_inner.payload_inner.prev_randao;
     if header == B256::ZERO {
         return Err(eyre!("EVM header carries no lean commitment"));
     }
     let lane = LeanLanePayload::new(bytes.to_vec()).wrap_err("lean bytes failed strict decode")?;
     if lane.commitment() != header {
-        return Err(eyre!("lean bytes commitment {} != header {header}", lane.commitment()));
+        return Err(eyre!(
+            "lean bytes commitment {} != header {header}",
+            lane.commitment()
+        ));
     }
     Ok(lane)
 }
@@ -624,11 +635,16 @@ mod tests {
     fn served_lean_bytes_must_match_the_header_commitment() {
         let evm = crate::block::tests_payload_helper(0x11, vec![]);
         let bytes = lean_block_bytes(B256::repeat_byte(1), 5, evm.timestamp() * 1000);
-        let c = arc_consensus_types::block::decode_lean_block(&bytes).unwrap().commitment;
+        let c = arc_consensus_types::block::decode_lean_block(&bytes)
+            .unwrap()
+            .commitment;
         let mut bound = evm.clone();
         bound.payload_inner.payload_inner.prev_randao = c;
         assert!(lean_bytes_match_header(&bound, &bytes).is_ok());
-        assert!(lean_bytes_match_header(&evm, &bytes).is_err(), "zero header must not accept lean bytes");
+        assert!(
+            lean_bytes_match_header(&evm, &bytes).is_err(),
+            "zero header must not accept lean bytes"
+        );
         let wrong = lean_block_bytes(B256::repeat_byte(2), 5, evm.timestamp() * 1000);
         assert!(lean_bytes_match_header(&bound, &wrong).is_err());
     }

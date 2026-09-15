@@ -240,8 +240,17 @@ async fn handle_consensus(
         } => {
             let _guard = state.metrics.start_msg_process_timer("StartedRound");
 
-            started_round::handle(state, engine, lean_shim, height, round, proposer, role, reply_value)
-                .await;
+            started_round::handle(
+                state,
+                engine,
+                lean_shim,
+                height,
+                round,
+                proposer,
+                role,
+                reply_value,
+            )
+            .await;
         }
 
         // Request to build a local value to propose.
@@ -378,7 +387,13 @@ async fn handle_consensus(
             info!(%height, %round, %valid_round, %value_id, "Restreaming proposal");
 
             restream_proposal::handle(
-                state, channels, lean_shim, height, round, valid_round, value_id,
+                state,
+                channels,
+                lean_shim,
+                height,
+                round,
+                valid_round,
+                value_id,
             )
             .await?;
         }

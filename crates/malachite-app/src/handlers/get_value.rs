@@ -61,6 +61,7 @@ type NetworkHandle = mpsc::Sender<NetworkMsg<ArcContext>>;
 /// - Otherwise, which should be common case, build a new block using the execution engine.
 /// - Start a new stream to propagate the proposal, with the stored or new block, to all processes.
 /// - Returns to the consensus engine the stored or new block's hash as the proposed value.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle(
     state: &mut State,
     network: NetworkHandle,
@@ -264,14 +265,15 @@ async fn on_get_value(
 
     let block_hash = block.self_reported_block_hash();
 
-    let (stream_messages, signature) = prepare_stream(stream_id, signing_provider, &block, lean_shim.is_some())
-        .await
-        .wrap_err_with(|| {
-            format!(
-                "Proposer failed to prepare stream for block {block_hash} \
+    let (stream_messages, signature) =
+        prepare_stream(stream_id, signing_provider, &block, lean_shim.is_some())
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "Proposer failed to prepare stream for block {block_hash} \
                 it wants to propose at height={height}, round={round}",
-            )
-        })?;
+                )
+            })?;
 
     // Store the block with its signature
     block.signature = Some(signature);
@@ -348,22 +350,17 @@ async fn build_and_validate_block(
     // block is executed once, at the decide anchor. Passing no shim here
     // skips the parent-linkage check, which the build itself guarantees.
     let validity = validate_consensus_block(
-        &validator,
-        None,
-        lean_shim,
+        &validator, None, lean_shim,
         // Self-built: the bytes are in hand (and in `block.lean_payload`).
-        false,
-        &block,
-        store,
-        metrics,
+        false, &block, store, metrics,
     )
     .await
-        .wrap_err_with(|| {
-            format!(
-                "Payload validation failed on self-built block at height={height}, round={round}: {}",
-                block.self_reported_block_hash()
-            )
-        })?;
+    .wrap_err_with(|| {
+        format!(
+            "Payload validation failed on self-built block at height={height}, round={round}: {}",
+            block.self_reported_block_hash()
+        )
+    })?;
 
     if !validity.is_valid() {
         return Err(eyre!(

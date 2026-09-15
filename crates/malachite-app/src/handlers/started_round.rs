@@ -57,6 +57,7 @@ use arc_consensus_db::invalid_payloads::InvalidPayload;
 /// 5. Validates all undecided blocks for the current height and round by sending them
 ///    to the execution client, and updating their validity status
 /// 6. Returns the valid proposed values to the consensus engine
+#[allow(clippy::too_many_arguments)]
 pub async fn handle(
     state: &mut State,
     engine: &Engine,
@@ -67,7 +68,9 @@ pub async fn handle(
     role: Role,
     reply: Reply<Vec<ProposedValue<ArcContext>>>,
 ) {
-    let proposals = match on_started_round(state, engine, lean_shim, height, round, proposer, role).await {
+    let proposals = match on_started_round(state, engine, lean_shim, height, round, proposer, role)
+        .await
+    {
         Ok(proposals) => {
             info!(%height, %round, "StartedRound: sending {} undecided proposals to consensus", proposals.len());
             proposals
@@ -374,6 +377,7 @@ async fn process_pending_proposal_parts(
 /// and the engine answers `Valid` for a genuine block that sits at another
 /// height. Such a row never reaches the engine, so the engine cannot revive it
 /// and its verdict is not read back as an engine verdict change.
+#[allow(clippy::too_many_arguments)]
 async fn validate_undecided_blocks(
     height: Height,
     round: Round,
@@ -1091,7 +1095,6 @@ mod tests {
             &selector,
             &store,
             &engine,
-
             None,
             &provider,
             &metrics,
@@ -1175,7 +1178,6 @@ mod tests {
             &selector,
             &store,
             &engine,
-
             None,
             &provider,
             &metrics,
@@ -1291,7 +1293,6 @@ mod tests {
             &selector,
             &store,
             &engine,
-
             None,
             &provider,
             &metrics,

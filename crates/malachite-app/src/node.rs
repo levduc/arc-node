@@ -801,8 +801,9 @@ impl App {
         // LEAN payment lane (ARC_PAYMENT_LEAN_LANE): a lean-lane node driven over
         // the JSON-RPC shim, committed under the same certificate as the EVM lane.
         let lean_shim = if env_config.payment_lean_lane {
-            let shim = arc_eth_engine::lean_shim::LeanShim::new(env_config.payment_lean_rpc.clone())
-                .with_peers(env_config.payment_lean_peer_rpcs.clone());
+            let shim =
+                arc_eth_engine::lean_shim::LeanShim::new(env_config.payment_lean_rpc.clone())
+                    .with_peers(env_config.payment_lean_peer_rpcs.clone());
             // Same patience as the EVM engine connect: retry forever with a
             // warning. Parking after one ~15 s try was an asymmetry — a CL
             // rebooted by docker into a lean-node restart window parked
@@ -820,7 +821,9 @@ impl App {
                     )
                 })
                 .await
-                .wrap_err("ARC_PAYMENT_LEAN_LANE=1 but the lean lane node is unreachable at boot")?;
+                .wrap_err(
+                    "ARC_PAYMENT_LEAN_LANE=1 but the lean lane node is unreachable at boot",
+                )?;
             info!(
                 url = %shim.url(), number = head.number, commitment = %head.commitment,
                 "🪶 Connected to LEAN payment lane node"

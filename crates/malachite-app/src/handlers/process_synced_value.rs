@@ -57,6 +57,7 @@ const SYNC_PERSISTENCE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 ///   bytes, or a self-reported hash that is not canonical. Penalize and re-request.
 /// - [`SyncedValueOutcome::LocalTransientError`] — a local/transient failure on our side (e.g. the EL
 ///   being temporarily unavailable); the peer is innocent, so re-request without penalizing it.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle(
     state: &mut State,
     engine: &Engine,
@@ -297,6 +298,7 @@ mod tests {
         MockInvalidPayloadsRepository, MockUndecidedBlocksRepository,
     };
 
+    use alloy_rpc_types_engine::ExecutionPayloadV3;
     use arbitrary::{Arbitrary, Unstructured};
     use arc_consensus_types::Value;
     use arc_eth_engine::mocks::MockPersistenceMeter;
@@ -304,7 +306,6 @@ mod tests {
     use bytes::Bytes;
     use malachitebft_core_types::Validity;
     use mockall::predicate::*;
-    use alloy_rpc_types_engine::ExecutionPayloadV3;
     use ssz::Encode;
     use std::io;
 

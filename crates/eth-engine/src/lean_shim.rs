@@ -89,7 +89,7 @@ impl LeanShim {
                 }
                 Err(e) => {
                     last_err = Some(e);
-                    if attempt + 1 < ATTEMPTS {
+                    if attempt.saturating_add(1) < ATTEMPTS {
                         tokio::time::sleep(DELAY).await;
                     }
                 }
@@ -246,8 +246,13 @@ fn commitment_params(commitment: BlockHash) -> Value {
 impl LeanShim {
     /// v0.2: anchor by commitment. The node promotes its staged copy, applies a
     /// queued copy, or fetches the bytes from a peer; SYNCING means keep polling.
-    pub async fn new_block_by_commitment(&self, commitment: BlockHash) -> eyre::Result<NewBlockStatus> {
-        let r = self.call("arc_newBlock", commitment_params(commitment)).await?;
+    pub async fn new_block_by_commitment(
+        &self,
+        commitment: BlockHash,
+    ) -> eyre::Result<NewBlockStatus> {
+        let r = self
+            .call("arc_newBlock", commitment_params(commitment))
+            .await?;
         if r.get("commitment").is_some() {
             return Ok(NewBlockStatus::Valid(Self::parse_commitment(&r)?));
         }
@@ -258,12 +263,19 @@ impl LeanShim {
     }
 
     /// v0.2: canonical/staged/queued block bytes by commitment (sync serving).
-    pub async fn get_block_bytes_by_commitment(&self, commitment: BlockHash) -> eyre::Result<Option<Vec<u8>>> {
-        let r = self.call("arc_getBlockBytes", commitment_params(commitment)).await?;
+    pub async fn get_block_bytes_by_commitment(
+        &self,
+        commitment: BlockHash,
+    ) -> eyre::Result<Option<Vec<u8>>> {
+        let r = self
+            .call("arc_getBlockBytes", commitment_params(commitment))
+            .await?;
         match r.get("blockBytes") {
             None | Some(Value::Null) => Ok(None),
             Some(Value::String(s)) => Ok(Some(
-                base64::engine::general_purpose::STANDARD.decode(s).wrap_err("lean shim: getBlockBytes bad base64")?,
+                base64::engine::general_purpose::STANDARD
+                    .decode(s)
+                    .wrap_err("lean shim: getBlockBytes bad base64")?,
             )),
             Some(other) => Err(eyre!("lean shim: getBlockBytes unexpected type: {other}")),
         }
@@ -286,12 +298,29 @@ pub struct LeanBuilt {
 #[allow(async_fn_in_trait)]
 #[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
 pub trait LeanBuilder: Send + Sync {
-    async fn build_lean_block(&self, parent: LeanHead, timestamp_ms: u64, budget_gas: u64) -> eyre::Result<LeanBuilt>;
+    async fn build_lean_block(
+        &self,
+        parent: LeanHead,
+        timestamp_ms: u64,
+        budget_gas: u64,
+    ) -> eyre::Result<LeanBuilt>;
 }
 
 impl LeanBuilder for LeanShim {
-    async fn build_lean_block(&self, parent: LeanHead, timestamp_ms: u64, budget_gas: u64) -> eyre::Result<LeanBuilt> {
-        let (commitment, bytes) = self.build_block(parent.commitment, parent.number + 1, timestamp_ms, budget_gas).await?;
+    async fn build_lean_block(
+        &self,
+        parent: LeanHead,
+        timestamp_ms: u64,
+        budget_gas: u64,
+    ) -> eyre::Result<LeanBuilt> {
+        let (commitment, bytes) = self
+            .build_block(
+                parent.commitment,
+                parent.number.saturating_add(1),
+                timestamp_ms,
+                budget_gas,
+            )
+            .await?;
         Ok(LeanBuilt { commitment, bytes })
     }
 }
@@ -307,11 +336,17 @@ impl LeanBuilder for LeanShim {
 #[allow(async_fn_in_trait)]
 #[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
 pub trait LeanBytesResolver: Send + Sync {
-    async fn lean_bytes_by_commitment(&self, commitment: BlockHash) -> eyre::Result<Option<Vec<u8>>>;
+    async fn lean_bytes_by_commitment(
+        &self,
+        commitment: BlockHash,
+    ) -> eyre::Result<Option<Vec<u8>>>;
 }
 
 impl LeanBytesResolver for LeanShim {
-    async fn lean_bytes_by_commitment(&self, commitment: BlockHash) -> eyre::Result<Option<Vec<u8>>> {
+    async fn lean_bytes_by_commitment(
+        &self,
+        commitment: BlockHash,
+    ) -> eyre::Result<Option<Vec<u8>>> {
         self.get_block_bytes_by_commitment(commitment).await
     }
 }

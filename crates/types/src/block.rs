@@ -88,11 +88,14 @@ impl ConsensusBlock {
             .block_hash
     }
 
-
     /// The lean commitment the EVM header commits to (`prev_randao`), if any.
     /// Zero means "no lane" — Arc sets zero when the lane is off.
     pub fn header_lean_commitment(&self) -> Option<BlockHash> {
-        let r = self.execution_payload.payload_inner.payload_inner.prev_randao;
+        let r = self
+            .execution_payload
+            .payload_inner
+            .payload_inner
+            .prev_randao;
         (r != BlockHash::ZERO).then_some(r)
     }
 
@@ -308,7 +311,9 @@ pub fn decode_lean_block(bytes: &[u8]) -> eyre::Result<LeanBlockRef> {
     let timestamp_ms = le_u64_at(bytes, 40)?;
     let tx_count = le_u32_at(bytes, 48)?;
     if tx_count as usize > MAX_LEAN_TXS {
-        return Err(eyre::eyre!("lean block carries {tx_count} txs (cap {MAX_LEAN_TXS})"));
+        return Err(eyre::eyre!(
+            "lean block carries {tx_count} txs (cap {MAX_LEAN_TXS})"
+        ));
     }
     let mut off = HDR;
     for i in 0..tx_count {
@@ -705,14 +710,20 @@ mod lane_tests {
             lean_bytes(0xAA, 7, 1000, &[b"tx-one", b"tx-tWo"]),
             lean_bytes(0xAA, 7, 1000, &[b"tx-one"]),
         ] {
-            assert_ne!(decode_lean_block(&variant).unwrap().commitment, a.commitment);
+            assert_ne!(
+                decode_lean_block(&variant).unwrap().commitment,
+                a.commitment
+            );
         }
         // SECURITY: boundary shifts with identical concatenated bodies MUST
         // move the commitment — otherwise two framings of the same bytes share
         // a commitment but decode to different tx lists, and total-STF executes
         // both (same commitment, divergent state; exploitable via sync).
         let b = decode_lean_block(&lean_bytes(0xAA, 7, 1000, &[b"tx-onetx-two"])).unwrap();
-        assert_ne!(b.commitment, a.commitment, "commitment must bind tx FRAMING, not just bodies");
+        assert_ne!(
+            b.commitment, a.commitment,
+            "commitment must bind tx FRAMING, not just bodies"
+        );
     }
 
     #[test]
@@ -744,7 +755,11 @@ mod lane_tests {
         let lb = lean_bytes(0xAA, 3, 500, &[b"tx-a", b"tx-b", b"tx-c"]);
         let framed = frame_lanes_lean(&evm, &lb);
         match unframe_lanes(&framed).unwrap() {
-            LaneFrame::LeanPayment { execution_payload, lean, lean_bytes } => {
+            LaneFrame::LeanPayment {
+                execution_payload,
+                lean,
+                lean_bytes,
+            } => {
                 assert_eq!(execution_payload, evm);
                 assert_eq!(lean_bytes, lb);
                 assert_eq!(lean, decode_lean_block(&lb).unwrap());
@@ -819,7 +834,11 @@ mod lane_tests {
     fn encode_value_flag_off_is_stock_ssz() {
         let evm = payload(0x11);
         let bytes = encode_value(&evm, None, false);
-        assert_eq!(bytes, evm.as_ssz_bytes(), "flag off must be the stock wire format");
+        assert_eq!(
+            bytes,
+            evm.as_ssz_bytes(),
+            "flag off must be the stock wire format"
+        );
         assert_eq!(decode_value(&bytes, false).unwrap(), LaneFrame::Evm(evm));
     }
 

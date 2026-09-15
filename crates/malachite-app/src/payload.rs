@@ -31,9 +31,9 @@ use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
 use arc_eth_engine::lean_shim::{LeanBuilder, LeanBytesResolver, LeanHead};
 use arc_eth_engine::rpc::EngineApiRpcError;
-use arc_eth_engine::transient::TransientDependencyError;
 /// Re-exported for the handlers: "no verdict right now" vs a real failure.
 pub use arc_eth_engine::transient::is_transient;
+use arc_eth_engine::transient::TransientDependencyError;
 
 use crate::block::ConsensusBlock;
 use crate::metrics::app::{AppMetrics, InvalidPayloadSource};
@@ -89,7 +89,7 @@ pub async fn generate_payload_with_retry(
             Some(l) => {
                 let built = l
                     .builder
-                    .build_lean_block(l.head, timestamp * 1000, l.budget_gas)
+                    .build_lean_block(l.head, timestamp.saturating_mul(1000), l.budget_gas)
                     .await
                     .wrap_err("lean lane: buildBlock failed")?;
                 let lane = LeanLanePayload::new(built.bytes)
@@ -422,7 +422,8 @@ pub async fn validate_consensus_block(
     // their bytes live in the lean node, and decide needs none from the CL.
     let mut resolved_lane: Option<LeanLanePayload> = None;
     if block.lean_payload.is_none() && lean_bytes_required {
-        if let (Some(commitment), Some(resolver)) = (block.header_lean_commitment(), lean_resolver) {
+        if let (Some(commitment), Some(resolver)) = (block.header_lean_commitment(), lean_resolver)
+        {
             match resolver.lean_bytes_by_commitment(commitment).await {
                 Ok(Some(bytes)) => match LeanLanePayload::new(bytes) {
                     Ok(lane) if lane.commitment() == commitment => resolved_lane = Some(lane),
@@ -432,7 +433,9 @@ pub async fn validate_consensus_block(
                     _ => {
                         record_invalid_payload(
                             block,
-                            &format!("lean lane: header commits to unknown lean block {commitment}"),
+                            &format!(
+                                "lean lane: header commits to unknown lean block {commitment}"
+                            ),
                             store,
                             metrics,
                         )
@@ -485,7 +488,7 @@ pub async fn validate_consensus_block(
         // Timestamp lockstep with the EVM lane. Numbers are NOT coupled to EVM
         // numbers: the lane may activate mid-chain, so lean numbers advance
         // 1-per-height from activation (sync serving maps by constant offset).
-        if lane.decoded.timestamp_ms != evm.timestamp * 1000 {
+        if lane.decoded.timestamp_ms != evm.timestamp.saturating_mul(1000) {
             record_invalid_payload(
                 block,
                 &format!(
@@ -549,7 +552,7 @@ pub async fn validate_consensus_block(
                         }
                         return Ok(Validity::Valid);
                     }
-                    if lane.decoded.number > head.number + 1 {
+                    if lane.decoded.number > head.number.saturating_add(1) {
                         // This runs INSIDE the vote window, so it gets a hard
                         // wall-clock budget: the shim's own transport retry is
                         // ~15s per call, and an unbounded loop of those misses
@@ -563,8 +566,8 @@ pub async fn validate_consensus_block(
                         let catchup_start = std::time::Instant::now();
                         let remaining = || CATCHUP_BUDGET.checked_sub(catchup_start.elapsed());
                         let mut fed = 0u64;
-                        'catchup: while lane.decoded.number > head.number + 1 {
-                            let next = head.number + 1;
+                        'catchup: while lane.decoded.number > head.number.saturating_add(1) {
+                            let next = head.number.saturating_add(1);
                             let mut advanced = false;
                             for peer in shim.peers() {
                                 let Some(budget) = remaining() else {
@@ -607,7 +610,7 @@ pub async fn validate_consensus_block(
                         }
                     }
                     if lane.decoded.parent != head.commitment
-                        || lane.decoded.number != head.number + 1
+                        || lane.decoded.number != head.number.saturating_add(1)
                     {
                         record_invalid_payload(
                             block,
@@ -776,6 +779,9 @@ impl BlockVerdict {
 /// The binding rules run first. The engine never sees a payload that breaks
 /// them, so such a payload never enters the block tree of the execution client.
 /// A payload that keeps the rules gets its verdict from [`validate_consensus_block`].
+// Two lanes, two repositories and an origin flag: every argument is a distinct
+// collaborator, and bundling them into a struct would only move the list.
+#[allow(clippy::too_many_arguments)]
 pub async fn establish_block_validity(
     payload_validator: &impl PayloadValidator,
     lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
@@ -864,7 +870,7 @@ mod tests {
     use arc_consensus_types::{Address, Height, Round, B256};
     use arc_eth_engine::engine::{MockEngineAPI, MockEthereumAPI};
     use arc_eth_engine::json_structures::ExecutionBlock;
-    use arc_eth_engine::lean_shim::{MockLeanBytesResolver, MockLeanBuilder};
+    use arc_eth_engine::lean_shim::{MockLeanBuilder, MockLeanBytesResolver};
 
     /// Shorthand for "no lean lane" at a `generate_payload_with_retry` call
     /// site: the concrete builder type is otherwise unconstrained.
@@ -1247,10 +1253,18 @@ mod tests {
         let metrics = AppMetrics::default();
         let block = block_at(11, bound_payload(5, B256::ZERO));
 
-        let verdict =
-            establish_block_validity(&validator, None, NO_RESOLVER, true, &block, None, &store, &metrics)
-            .await
-            .expect("a binding error is a verdict, not a failure");
+        let verdict = establish_block_validity(
+            &validator,
+            None,
+            NO_RESOLVER,
+            true,
+            &block,
+            None,
+            &store,
+            &metrics,
+        )
+        .await
+        .expect("a binding error is a verdict, not a failure");
 
         assert_eq!(
             verdict,
@@ -1281,7 +1295,12 @@ mod tests {
         let actual = B256::repeat_byte(0xCD);
         let block = block_at(11, bound_payload(11, actual));
 
-        let verdict = establish_block_validity(&validator, None, NO_RESOLVER, true, &block,
+        let verdict = establish_block_validity(
+            &validator,
+            None,
+            NO_RESOLVER,
+            true,
+            &block,
             Some(&prev_block(10, expected)),
             &store,
             &metrics,
@@ -1315,7 +1334,12 @@ mod tests {
         let metrics = AppMetrics::default();
         let block = block_at(11, bound_payload(11, parent));
 
-        let verdict = establish_block_validity(&validator, None, NO_RESOLVER, true, &block,
+        let verdict = establish_block_validity(
+            &validator,
+            None,
+            NO_RESOLVER,
+            true,
+            &block,
             Some(&prev_block(10, parent)),
             &store,
             &metrics,
@@ -1339,9 +1363,17 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let result = validate_consensus_block(&validator, None, NO_RESOLVER, true, &block, &store, &metrics)
-            .await
-            .expect("should succeed");
+        let result = validate_consensus_block(
+            &validator,
+            None,
+            NO_RESOLVER,
+            true,
+            &block,
+            &store,
+            &metrics,
+        )
+        .await
+        .expect("should succeed");
 
         assert_eq!(result, Validity::Valid);
         assert_eq!(metrics.get_invalid_payloads_count(), 0);
@@ -1371,9 +1403,17 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let result = validate_consensus_block(&validator, None, NO_RESOLVER, true, &block, &store, &metrics)
-            .await
-            .expect("should succeed");
+        let result = validate_consensus_block(
+            &validator,
+            None,
+            NO_RESOLVER,
+            true,
+            &block,
+            &store,
+            &metrics,
+        )
+        .await
+        .expect("should succeed");
 
         assert_eq!(result, Validity::Invalid);
         assert_eq!(metrics.get_invalid_payloads_count(), 1);
@@ -1391,9 +1431,17 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let err = validate_consensus_block(&validator, None, NO_RESOLVER, true, &block, &store, &metrics)
-            .await
-            .expect_err("should propagate error");
+        let err = validate_consensus_block(
+            &validator,
+            None,
+            NO_RESOLVER,
+            true,
+            &block,
+            &store,
+            &metrics,
+        )
+        .await
+        .expect_err("should propagate error");
 
         assert!(
             err.to_string().contains("engine down"),
@@ -1415,14 +1463,28 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let err = validate_consensus_block(&validator, None, NO_RESOLVER, true, &block, &store, &metrics)
-            .await
-            .expect_err("a transient error must propagate as Err (no verdict), never as Invalid");
+        let err = validate_consensus_block(
+            &validator,
+            None,
+            NO_RESOLVER,
+            true,
+            &block,
+            &store,
+            &metrics,
+        )
+        .await
+        .expect_err("a transient error must propagate as Err (no verdict), never as Invalid");
 
-        assert!(is_transient(&err), "marker lost in validate_consensus_block: {err:#}");
+        assert!(
+            is_transient(&err),
+            "marker lost in validate_consensus_block: {err:#}"
+        );
         // ...and through the wrap_err layer every handler adds on the way up.
         let wrapped = err.wrap_err("Payload validation failed on block built from synced value");
-        assert!(is_transient(&wrapped), "marker lost under wrap_err: {wrapped:#}");
+        assert!(
+            is_transient(&wrapped),
+            "marker lost under wrap_err: {wrapped:#}"
+        );
         assert_eq!(metrics.get_invalid_payloads_count(), 0);
     }
 
@@ -1449,9 +1511,17 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let validity = validate_consensus_block(&validator, None, NO_RESOLVER, true, &block, &store, &metrics)
-            .await
-            .expect("verdict should be returned even when forensics persist fails");
+        let validity = validate_consensus_block(
+            &validator,
+            None,
+            NO_RESOLVER,
+            true,
+            &block,
+            &store,
+            &metrics,
+        )
+        .await
+        .expect("verdict should be returned even when forensics persist fails");
 
         assert_eq!(validity, Validity::Invalid);
         assert_eq!(metrics.get_invalid_payloads_count(), 1);
@@ -1463,7 +1533,9 @@ mod tests {
     #[tokio::test]
     async fn lean_header_mismatch_is_invalid_before_any_shim_call() {
         let mut validator = MockPayloadValidator::new();
-        validator.expect_validate_payload().returning(|_| Ok(PayloadValidationResult::Valid));
+        validator
+            .expect_validate_payload()
+            .returning(|_| Ok(PayloadValidationResult::Valid));
         let mut store = MockInvalidPayloadsRepository::new();
         store
             .expect_append()
@@ -1472,10 +1544,28 @@ mod tests {
             .returning(|_| Ok(()));
         let metrics = AppMetrics::default();
         let mut block = test_block();
-        let bytes = lean_block_bytes(B256::repeat_byte(1), 5, block.execution_payload.timestamp() * 1000);
+        let bytes = lean_block_bytes(
+            B256::repeat_byte(1),
+            5,
+            block.execution_payload.timestamp() * 1000,
+        );
         block.lean_payload = Some(LeanLanePayload::new(bytes).unwrap());
-        block.execution_payload.payload_inner.payload_inner.prev_randao = B256::repeat_byte(0xee);
-        let v = validate_consensus_block(&validator, None, NO_RESOLVER, true, &block, &store, &metrics).await.unwrap();
+        block
+            .execution_payload
+            .payload_inner
+            .payload_inner
+            .prev_randao = B256::repeat_byte(0xee);
+        let v = validate_consensus_block(
+            &validator,
+            None,
+            NO_RESOLVER,
+            true,
+            &block,
+            &store,
+            &metrics,
+        )
+        .await
+        .unwrap();
         assert_eq!(v, Validity::Invalid);
     }
 
@@ -1533,8 +1623,7 @@ mod tests {
             .expect_append()
             .times(1)
             .withf(move |ip: &InvalidPayload| {
-                ip.reason
-                    == format!("lean lane: header commits to unknown lean block {commitment}")
+                ip.reason == format!("lean lane: header commits to unknown lean block {commitment}")
             })
             .returning(|_| Ok(()));
         let metrics = AppMetrics::default();
@@ -1851,30 +1940,52 @@ mod tests {
     async fn lean_block_is_built_first_and_its_commitment_becomes_prev_randao() {
         use arc_eth_engine::lean_shim::{LeanBuilt, LeanHead, MockLeanBuilder};
         // a real lean block so the CL's recompute agrees with the claim
-        let parent = LeanHead { commitment: B256::repeat_byte(1), number: 4, timestamp_ms: 0 };
+        let parent = LeanHead {
+            commitment: B256::repeat_byte(1),
+            number: 4,
+            timestamp_ms: 0,
+        };
         let previous_block = test_execution_block(9, 1_000);
         let expect_ts_ms = std::cmp::max(previous_block.timestamp, Engine::timestamp_now()) * 1000;
         let bytes = lean_block_bytes(parent.commitment, 5, expect_ts_ms);
-        let commitment = arc_consensus_types::block::decode_lean_block(&bytes).unwrap().commitment;
+        let commitment = arc_consensus_types::block::decode_lean_block(&bytes)
+            .unwrap()
+            .commitment;
 
         let mut builder = MockLeanBuilder::new();
         let b2 = bytes.clone();
-        builder.expect_build_lean_block()
+        builder
+            .expect_build_lean_block()
             .withf(move |p, ts, budget| p.number == 4 && *ts == expect_ts_ms && *budget == 7)
             .times(1)
-            .returning(move |_, _, _| Ok(LeanBuilt { commitment, bytes: b2.clone() }));
+            .returning(move |_, _, _| {
+                Ok(LeanBuilt {
+                    commitment,
+                    bytes: b2.clone(),
+                })
+            });
 
         let mut generator = MockPayloadGenerator::new();
-        generator.expect_generate_block()
+        generator
+            .expect_generate_block()
             .withf(move |_, _, _, prev_randao| *prev_randao == commitment)
             .times(1)
             .returning(|_, ts, _, _| Ok(test_payload(ts)));
 
         let metrics = AppMetrics::default();
         let (payload, lean) = generate_payload_with_retry(
-            &previous_block, &Address::default(), &generator, &metrics,
-            Some(LeanBuild { builder: &builder, head: parent, budget_gas: 7 }),
-        ).await.unwrap();
+            &previous_block,
+            &Address::default(),
+            &generator,
+            &metrics,
+            Some(LeanBuild {
+                builder: &builder,
+                head: parent,
+                budget_gas: 7,
+            }),
+        )
+        .await
+        .unwrap();
         assert_eq!(lean.unwrap().commitment(), commitment);
         assert_eq!(payload.timestamp() * 1000, expect_ts_ms);
     }
