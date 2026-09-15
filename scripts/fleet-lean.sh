@@ -170,7 +170,16 @@ up(){
 
   # ---- generate the testnet files locally (setup renders, it does NOT start containers)
   say "quake setup -f $MANIFEST --force (render only)"
+  # The containers write validator1's local data as root; a plain rm -rf
+  # leaves reth/store.db/wal behind and the CL then crash-loops on the
+  # handshake ("EL has blocks but CL has no committed state") — measured
+  # 2026-09-15: a whole 10-min fleet run with validator1 restarting every
+  # minute and its proposer turns timing out.
+  if [ -d "$QDIR" ]; then
+    docker run --rm -v "$QDIR":/b --user root alpine sh -c 'rm -rf /b/validator*/reth /b/validator*/malachite/store.db /b/validator*/malachite/wal /b/full*/reth /b/full*/malachite' >/dev/null 2>&1 || true
+  fi
   rm -rf "$QDIR"
+  [ -d "$QDIR" ] && die "could not remove $QDIR (root-owned leftovers?) — refusing to start on stale data"
   "$QUAKE" -f "$MANIFEST" setup --force > "$LOCAL/quake-setup.log" 2>&1 \
     || { tail -20 "$LOCAL/quake-setup.log"; die "quake setup failed (see $LOCAL/quake-setup.log)"; }
   [ -f "$QDIR/compose.yaml" ] || die "quake setup produced no compose.yaml"
@@ -249,6 +258,11 @@ health_gate(){
     [ $ok = 1 ] && break; sleep 3
   done
   [ $ok = 1 ] || { for n in $(seq 1 $N); do echo "validator$n lean=$(lean_height "$n") el=$(el_height "$n")"; done; die "chains did not reach height 3 on all $N"; }
+  # freshness + stability: every EL must be on the new chain and no CL may have restarted at boot
+  for n in $(seq 1 $N); do
+    eh=$(el_height "$n"); [ "$eh" -lt 60 ] || die "validator$n EL is NOT fresh (height $eh): stale data under an old certified chain"
+    rc=$(cl_restarts "$n"); [ "${rc:-0}" = 0 ] || die "validator$n CL restarted $rc times during boot (see its log)"
+  done
   # advancing, not merely non-zero
   declare -a a b
   for n in $(seq 1 $N); do a[$n]=$(lean_height "$n"); done
