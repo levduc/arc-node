@@ -960,3 +960,37 @@ final tree, N=50 / 100 M, 800 accounts, pool-target 1500)
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-15 — v0.2 cadence regression found and fixed: the decide anchor was scanning the log
+
+**Changed**
+- lean-lane `v0.2` f76c189 (tag `v0.2.0-rc2`): `arc_newBlock{commitment}` no longer runs the
+  bounded backward log scan. Idempotency is answered by the in-process index only; staged and
+  queued copies are consulted before anything touching the log; the scan is the last resort of
+  `arc_getBlockBytes{commitment}` (old-height sync serving). New `log_scans` stat + regression
+  test `anchoring_a_staged_block_never_scans_the_log`.
+
+**Measured**
+- Standalone single node, 369-tx blocks, anchor `arc_newBlock{commitment}` latency:
+  before: 32 ms @h10, 74 @50, 126 @100, 228 @200, **331 ms @300** (+1.1 ms per block of history,
+  bounded only at 1024 blocks). After: 23 / 25 / 19 / 17 / **15 ms**, flat.
+- Local 5 validators (latency emulation on, N=50, 100 M, pool-target 1500, 800 accounts), fixed
+  node, CL images unchanged (843f15e): **119 / 118 / 111 heights/min** over three 60 s samples
+  (1.85–1.98 blk/s), **every sampled block 369/369 = 100 % full**, 5/5 byte-identical at 456,
+  0 restarts, 0 parked. This is the pre-v0.2 baseline (117–119) again.
+
+**Broke / retracted**
+- RETRACTED: the v0.2 cadence numbers in the two previous entries (86.4 and 56 heights/min local;
+  0.73 blk/s on the fleet) were measurements of this bug, not of the header-binding design. The
+  bug came from my Task 1/2 rulings (scan anchored at head; miss cache cleared on append) plus
+  the anchor asking "already canonical?" before "staged?". Every decide paid a full recent-chain
+  read+hash. The final reviewer flagged the double lookup as Minor; it was the regression.
+- The fleet number (0.73 blk/s at 553/553) is therefore invalid as a v0.2 result and must be
+  re-measured with rc2 before it is compared with the campaign's 1.93.
+
+**Decided**
+- The anchor path must never touch the log; a test pins `log_scans == 0` for it.
+
+**Open**
+- Fleet re-run with lean-lane rc2 (same runner, `scripts/fleet-lean.sh`), then the v0.1-vs-v0.2 A/B
+  only if a gap remains. The two parked must-fix findings from the final review still stand.
