@@ -782,3 +782,67 @@ file by `sha256sum | cut -c1-16` after transfer, the quake tree by comparing
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-14 (evening, follow-up) — Task 10 review round 1: two fixes
+
+Review of the fleet run found a script bug and an under-specified disclosure.
+Both fixed; the fleet was **not** brought back up for this round, so the
+sampler change is untested against a live fleet.
+
+**Changed**
+- `3bf1796` (arc-lean-v0.1, `lean-lane-v0.2`) — `scripts/fleet-lean.sh`: the
+  sampler's table header said `pool r2/r3/r4` while the body printed only the
+  CL restart counts into that column, so the promised pool depth was never in
+  the table at all; pool depth was read for node 1 only and survived just as
+  the JSONL `pool_node1`, and node 1's own restart count was never sampled.
+  Now every sample reads `txpool_status` pending depth **and** `RestartCount`
+  on all four validators and prints two separate labelled columns,
+  `pool1/2/3/4` and `restarts1/2/3/4`, with the JSONL row carrying
+  `pool: [p1..p4]` and `restarts: [r1..r4]`. A failed probe records `-1` for
+  that node instead of shifting the row.
+  Verified offline against stubbed RPCs — `sample_loop` extracted from the file
+  and driven with a deliberately shallow node 3 and an unreachable node 4
+  prints `2203/2197/61/-1` and `0/0/0/2`, and the emitted rows parse with both
+  arrays at length 4. `bash -n` clean, and `git diff -U0` confirms no hunk
+  falls outside `sample_loop`. **Not exercised against a live fleet** — the
+  next run is its first real test.
+  Per-node pool depth is the column that matters here: the lane does not
+  propagate transactions between lean nodes, so a proposer packs only what its
+  own pool holds and one shallow pool caps fullness while every other signal
+  still looks healthy. That is exactly what the first run had to be diagnosed
+  by hand.
+- `e47e535` (arc-lean-v0.1, `lean-lane-v0.2`) — guide §5 fleet row block now
+  discloses which arm the mid-run script edit landed in.
+
+**Broke / retracted**
+- Sharpening yesterday's disclosure rather than retracting it: the edit I made
+  to `fleet-lean.sh` while it was running was during **arm B — the
+  `DISTRIBUTED=1` 100 %-full arm the headline number comes from**, not the
+  delivery-bound arm A. Arm A's load ran 19:45:32–19:55:36 and was already
+  finished; arm B's ran 19:57:44–20:07:49, and the two-line comment-header edit
+  was in place for **at most ~37 s** inside it (bounded by wall-clock checks at
+  19:58:58 and 19:59:35, around arm B's t≈75–110 s marks) before being
+  reverted.
+- **The exact-revert claim has no hash evidence.** I reverted by removing the
+  two inserted lines; I did not take a sha256 of the file before the edit, and
+  the pre-edit state is not in git, so there is nothing to compare against. All
+  I can show is behavioural: the run continued to completion and the sample
+  series shows no discontinuity across that window (heights 1153 → 1200 → 1246
+  at 47.00 / 45.25 blk/min, every block 553/553). The sampler script was edited
+  during this arm's load for ~37 s and reverted; the sample series shows no
+  discontinuity; **treat the 100 %-full row as n=1 pending the N-sweep re-run.**
+- The rule stands and is now paid for twice: never edit a shell script that is
+  executing. If it must happen, hash the file first.
+
+**Decided**
+- The N-sweep re-run (N ∈ {50, 100} at a fixed 150 M budget, `DISTRIBUTED=1`)
+  now carries two jobs, not one: settle the cadence question, and be the first
+  live exercise of the corrected sampler.
+
+**Open**
+- Unchanged from the entry above: the cadence question, automated
+  proposer-turn attribution in the health gate, and the benign-looking
+  `Received response for unknown request ID` sync warnings.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
