@@ -14,31 +14,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![cfg_attr(
-    test,
-    allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)
-)]
+//! The LEAN payment lane's consensus-layer logic, in one place.
+//!
+//! Everything here is reached only when `ARC_PAYMENT_LEAN_LANE=1` put a
+//! `LeanShim` in the handlers' hands; with the flag off the handlers pass
+//! `None` and none of this runs. Keeping it out of the handler bodies is what
+//! makes each flag-gated arm a single call, and what makes the lane portable:
+//! the delta against upstream is this directory plus one call per arm.
 
-mod app;
-mod block;
-mod config;
-mod env_config;
-mod finalize;
-mod handlers;
-mod height_timing;
-mod lean_lane;
-mod metrics;
-mod payload;
-mod proposal_parts;
-mod state;
-mod stats;
-mod streaming;
-pub mod utils;
-mod validator_proof;
-
-pub mod hardcoded_config;
-pub mod node;
-pub mod request;
-pub mod rpc;
-pub mod rpc_sync;
-pub use arc_consensus_db as store;
+pub(crate) mod anchor;
