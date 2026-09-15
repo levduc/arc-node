@@ -17,16 +17,19 @@
 use std::time::Duration;
 
 use backon::{BackoffBuilder, ConstantBuilder, Retryable};
+use eyre::Context as _;
 use tracing::{error, warn};
 
 use malachitebft_app_channel::app::types::core::Validity;
 
 use alloy_rpc_types_engine::{ExecutionPayloadV3, PayloadStatusEnum};
 
-use arc_consensus_types::{Address, BlockHash, Height, Round};
+use arc_consensus_types::block::LeanLanePayload;
+use arc_consensus_types::{Address, BlockHash, Height, Round, B256};
 use arc_eth_engine::deadline::EngineDeadline;
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
+use arc_eth_engine::lean_shim::{LeanBuilder, LeanHead};
 use arc_eth_engine::rpc::EngineApiRpcError;
 use arc_eth_engine::transient::TransientDependencyError;
 /// Re-exported for the handlers: "no verdict right now" vs a real failure.
@@ -37,16 +40,27 @@ use crate::metrics::app::{AppMetrics, InvalidPayloadSource};
 use crate::store::repositories::InvalidPayloadsRepository;
 use arc_consensus_db::invalid_payloads::InvalidPayload;
 
+/// Everything the proposer needs to build the lean block that the EVM
+/// header will commit to (spec §5.4).
+pub struct LeanBuild<'a, B: LeanBuilder> {
+    pub builder: &'a B,
+    pub head: LeanHead,
+    pub budget_gas: u64,
+}
+
 pub async fn generate_payload_with_retry(
     previous_block: &ExecutionBlock,
     fee_recipient: &Address,
     generator: &impl PayloadGenerator,
     metrics: &AppMetrics,
-) -> eyre::Result<ExecutionPayloadV3> {
+    lean: Option<LeanBuild<'_, impl LeanBuilder>>,
+) -> eyre::Result<(ExecutionPayloadV3, Option<LeanLanePayload>)> {
     const MAX_RETRIES: usize = 5;
     const RETRY_POLICY: ConstantBuilder = ConstantBuilder::new()
         .with_delay(Duration::from_millis(100))
         .with_max_times(MAX_RETRIES);
+
+    let lean = lean.as_ref();
 
     let call_once = || async {
         // Ensure timestamp is non-decreasing by setting it to max(previous_block.timestamp, now())
@@ -66,11 +80,42 @@ pub async fn generate_payload_with_retry(
             );
         }
 
+        // LEAN lane: build the lane block FIRST, timestamp-locked to the EVM
+        // payload we are about to request, and bind it into the EVM header.
+        // The commitment is RECOMPUTED from the returned bytes by
+        // `LeanLanePayload::new` — the shim's claimed commitment is only
+        // cross-checked, never trusted.
+        let lean_payload = match lean {
+            Some(l) => {
+                let built = l
+                    .builder
+                    .build_lean_block(l.head, timestamp * 1000, l.budget_gas)
+                    .await
+                    .wrap_err("lean lane: buildBlock failed")?;
+                let lane = LeanLanePayload::new(built.bytes)
+                    .wrap_err("lean lane: built block failed strict decode")?;
+                if lane.commitment() != built.commitment {
+                    return Err(eyre::eyre!(
+                        "lean lane: recomputed commitment {} != shim's claimed {}",
+                        lane.commitment(),
+                        built.commitment
+                    ));
+                }
+                Some(lane)
+            }
+            None => None,
+        };
+        let prev_randao = lean_payload
+            .as_ref()
+            .map(|l| l.commitment())
+            .unwrap_or(B256::ZERO);
+
         let _guard = metrics.start_engine_api_timer("generate_block");
 
-        generator
-            .generate_block(previous_block, timestamp, fee_recipient)
-            .await
+        let payload = generator
+            .generate_block(previous_block, timestamp, fee_recipient, prev_randao)
+            .await?;
+        Ok((payload, lean_payload))
     };
 
     let mut attempt_num = 0usize;
@@ -108,6 +153,7 @@ pub trait PayloadGenerator: Send + Sync {
         parent: &ExecutionBlock,
         timestamp: u64,
         fee_recipient: &Address,
+        prev_randao: B256,
     ) -> eyre::Result<ExecutionPayloadV3>;
 }
 
@@ -124,9 +170,10 @@ impl<'a> PayloadGenerator for EnginePayloadGenerator<'a> {
         parent: &ExecutionBlock,
         timestamp: u64,
         fee_recipient: &Address,
+        prev_randao: B256,
     ) -> eyre::Result<ExecutionPayloadV3> {
         self.engine
-            .generate_block(parent, timestamp, fee_recipient, self.deadline)
+            .generate_block(parent, timestamp, fee_recipient, prev_randao, self.deadline)
             .await
     }
 }
@@ -709,6 +756,11 @@ mod tests {
     use arc_consensus_types::{Address, Height, Round, B256};
     use arc_eth_engine::engine::{MockEngineAPI, MockEthereumAPI};
     use arc_eth_engine::json_structures::ExecutionBlock;
+    use arc_eth_engine::lean_shim::MockLeanBuilder;
+
+    /// Shorthand for "no lean lane" at a `generate_payload_with_retry` call
+    /// site: the concrete builder type is otherwise unconstrained.
+    type NoLean = Option<LeanBuild<'static, MockLeanBuilder>>;
 
     use crate::block::ConsensusBlock;
     use crate::metrics::app::AppMetrics;
@@ -1320,6 +1372,7 @@ mod tests {
             _parent: &ExecutionBlock,
             timestamp: u64,
             _fee_recipient: &Address,
+            _prev_randao: B256,
         ) -> eyre::Result<ExecutionPayloadV3> {
             let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
             match self.scenario {
@@ -1356,10 +1409,16 @@ mod tests {
     #[tokio::test]
     async fn retry_success_first_attempt() {
         let generator = TestPayloadGenerator::new(Scenario::Success);
-        let payload =
-            generate_payload_with_retry(&parent_block(0), &fee_recipient(), &generator, &metrics())
-                .await
-                .expect("payload generation should succeed on first try");
+        let (payload, lean) = generate_payload_with_retry(
+            &parent_block(0),
+            &fee_recipient(),
+            &generator,
+            &metrics(),
+            NoLean::None,
+        )
+        .await
+        .expect("payload generation should succeed on first try");
+        assert!(lean.is_none(), "flag off: no lean payload");
 
         assert_eq!(
             generator.attempts.load(Ordering::SeqCst),
@@ -1373,11 +1432,12 @@ mod tests {
     async fn retry_unknown_until_success() {
         let succeed_on = 6; // 5 failures + 1 success; limit of max retries
         let generator = TestPayloadGenerator::new(Scenario::UnknownPayloadUntil { succeed_on });
-        let payload = generate_payload_with_retry(
+        let (payload, _lean) = generate_payload_with_retry(
             &parent_block(10),
             &fee_recipient(),
             &generator,
             &metrics(),
+            NoLean::None,
         )
         .await
         .expect("payload should eventually succeed");
@@ -1399,6 +1459,7 @@ mod tests {
             &fee_recipient(),
             &generator,
             &metrics(),
+            NoLean::None,
         )
         .await
         .expect_err("should fail after exhausting retries");
@@ -1424,6 +1485,7 @@ mod tests {
             &fee_recipient(),
             &generator,
             &metrics(),
+            NoLean::None,
         )
         .await
         .expect_err("should fail immediately without retry");
@@ -1439,5 +1501,56 @@ mod tests {
             1,
             "should only attempt once"
         );
+    }
+
+    fn test_execution_block(number: u64, timestamp: u64) -> ExecutionBlock {
+        ExecutionBlock {
+            block_hash: B256::repeat_byte(number as u8),
+            block_number: number,
+            parent_hash: B256::ZERO,
+            timestamp,
+        }
+    }
+
+    #[tokio::test]
+    async fn lean_block_is_built_first_and_its_commitment_becomes_prev_randao() {
+        use arc_eth_engine::lean_shim::{LeanBuilt, LeanHead, MockLeanBuilder};
+        // a real lean block so the CL's recompute agrees with the claim
+        let parent = LeanHead { commitment: B256::repeat_byte(1), number: 4, timestamp_ms: 0 };
+        let previous_block = test_execution_block(9, 1_000);
+        let expect_ts_ms = std::cmp::max(previous_block.timestamp, Engine::timestamp_now()) * 1000;
+        let bytes = lean_block_bytes(parent.commitment, 5, expect_ts_ms); // helper below
+        let commitment = arc_consensus_types::block::decode_lean_block(&bytes).unwrap().commitment;
+
+        let mut builder = MockLeanBuilder::new();
+        let b2 = bytes.clone();
+        builder.expect_build_lean_block()
+            .withf(move |p, ts, budget| p.number == 4 && *ts == expect_ts_ms && *budget == 7)
+            .times(1)
+            .returning(move |_, _, _| Ok(LeanBuilt { commitment, bytes: b2.clone() }));
+
+        let mut generator = MockPayloadGenerator::new();
+        generator.expect_generate_block()
+            .withf(move |_, _, _, prev_randao| *prev_randao == commitment)
+            .times(1)
+            .returning(|_, ts, _, _| Ok(test_payload(ts)));
+
+        let metrics = AppMetrics::default();
+        let (payload, lean) = generate_payload_with_retry(
+            &previous_block, &Address::default(), &generator, &metrics,
+            Some(LeanBuild { builder: &builder, head: parent, budget_gas: 7 }),
+        ).await.unwrap();
+        assert_eq!(lean.unwrap().commitment(), commitment);
+        assert_eq!(payload.timestamp() * 1000, expect_ts_ms);
+    }
+
+    /// Canonical lean block bytes with no transactions (spec §3 layout).
+    fn lean_block_bytes(parent: B256, number: u64, timestamp_ms: u64) -> Vec<u8> {
+        let mut b = Vec::with_capacity(52);
+        b.extend_from_slice(parent.as_slice());
+        b.extend_from_slice(&number.to_le_bytes());
+        b.extend_from_slice(&timestamp_ms.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b
     }
 }

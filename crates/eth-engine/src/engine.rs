@@ -378,6 +378,10 @@ impl Inner {
     /// - latest_block: The latest block to generate a new block on top of.
     /// - timestamp: Unix timestamp for when the payload is expected to be executed.
     ///   It should be greater than or equal to that of forkchoiceState.headBlockHash.
+    /// - prev_randao: Usually derived from the RANDAO mix of the parent beacon
+    ///   block. Arc has no beacon chain; with the lean payment lane on, the CL
+    ///   places the lean block's commitment here so the EVM header binds it;
+    ///   otherwise zero.
     /// - deadline: Consensus budget for the whole sequence; extends the
     ///   per-call timeout floors when set (proposer path).
     pub async fn generate_block(
@@ -385,6 +389,7 @@ impl Inner {
         latest_block: &ExecutionBlock,
         timestamp: u64,
         suggested_fee_recipient: &Address,
+        prev_randao: B256,
         deadline: Option<EngineDeadline>,
     ) -> eyre::Result<ExecutionPayloadV3> {
         debug!("🟠 Generating block on top of {}", latest_block.block_hash);
@@ -394,15 +399,7 @@ impl Inner {
         let payload_attributes = PayloadAttributes {
             timestamp,
 
-            // Usually derived from the RANDAO mix (randomness accumulator) of the
-            // parent beacon block. The beacon chain generates this value using
-            // aggregated validator signatures over time.
-            // Its purpose is to expose the consensus layer’s randomness to the EVM.
-            // Arc, however, has neither a beacon chain, nor beacon blocks, so we
-            // set it to zero to indicate that Arc doesn't use it.
-            // NOTE: Smart contracts should therefore not rely on this value for
-            // randomness.
-            prev_randao: B256::ZERO,
+            prev_randao,
 
             suggested_fee_recipient: suggested_fee_recipient.to_alloy_address(),
 
@@ -805,6 +802,7 @@ mod tests {
                 &parent_block(),
                 1000,
                 &Address::from(alloy_primitives::Address::ZERO),
+                B256::ZERO,
                 None,
             )
             .await
@@ -820,6 +818,7 @@ mod tests {
                 &parent_block(),
                 1000,
                 &Address::from(alloy_primitives::Address::ZERO),
+                B256::ZERO,
                 Some(deadline),
             )
             .await

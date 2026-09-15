@@ -37,7 +37,7 @@ use crate::block::ConsensusBlock;
 use crate::metrics::{AppMetrics, BindingHaltSite};
 use crate::payload::{
     check_payload_binding, generate_payload_with_retry, validate_consensus_block,
-    EnginePayloadGenerator, EnginePayloadValidator,
+    EnginePayloadGenerator, EnginePayloadValidator, LeanBuild,
 };
 use crate::proposal_parts::{prepare_stream, stream_proposal};
 use crate::state::State;
@@ -385,56 +385,53 @@ pub async fn build_block(
         deadline: Some(deadline),
     }; // TODO: make this configurable
 
-    let execution_payload =
-        generate_payload_with_retry(previous_block, fee_recipient, &generator, metrics).await?;
+    // LEAN payment lane (ARC_PAYMENT_LEAN_LANE): build the next lean block on
+    // the lean node's head BEFORE the EVM payload, timestamp locked to the EVM
+    // lane (ts_ms = evm_ts * 1000) so the two lanes advance in lockstep. Its
+    // commitment is bound into the EVM header as prev_randao; the CL recomputes
+    // the commitment from the returned bytes via LeanLanePayload::new — the
+    // shim's answer is only cross-checked, never trusted (see
+    // generate_payload_with_retry).
+    let lean = match lean_shim {
+        Some(shim) => {
+            let head = shim
+                .get_head()
+                .await
+                .wrap_err("lean lane: failed to fetch head for build")?;
+            Some(LeanBuild {
+                builder: shim,
+                head,
+                budget_gas: lean_budget_gas,
+            })
+        }
+        None => None,
+    };
+
+    let (execution_payload, lean_payload) =
+        generate_payload_with_retry(previous_block, fee_recipient, &generator, metrics, lean)
+            .await?;
 
     debug!(
         "🌈 Got execution payload: {:?}",
         PrettyPayload(&execution_payload)
     );
 
-    // LEAN payment lane (ARC_PAYMENT_LEAN_LANE): build the next lean block on
-    // the lean node's head, timestamp locked to the EVM lane (ts_ms = evm_ts * 1000)
-    // so the two lanes advance in lockstep. The commitment is RECOMPUTED from
-    // the returned bytes by LeanLanePayload::new — the shim's answer is only
-    // cross-checked, never trusted.
-    let lean_payload = match lean_shim {
-        Some(shim) => {
-            let head = shim
-                .get_head()
-                .await
-                .wrap_err("lean lane: failed to fetch head for build")?;
-            let ts_ms = execution_payload.timestamp() * 1000;
-            let (claimed, bytes) = shim
-                .build_block(head.commitment, head.number + 1, ts_ms, lean_budget_gas)
-                .await
-                .wrap_err("lean lane: buildBlock failed")?;
-            let lane = arc_consensus_types::block::LeanLanePayload::new(bytes)
-                .wrap_err("lean lane: built block failed strict decode")?;
-            if lane.commitment() != claimed {
-                return Err(eyre!(
-                    "lean lane: recomputed commitment {} != shim's claimed {claimed}",
-                    lane.commitment()
-                ));
-            }
-            debug!(
-                number = head.number + 1,
-                txs = lane.decoded.tx_count,
-                commitment = %lane.commitment(),
-                "🪶 built lean payment block"
-            );
-            // Vote-gap execution (shim v1.3): the proposer stages its own
-            // build so its decide anchor promotes instantly. Fire-and-forget —
-            // failure just means the anchor takes the full path.
-            let stage_shim = shim.clone();
-            let stage_bytes = lane.bytes.clone();
-            tokio::spawn(async move {
-                let _ = stage_shim.stage_block(&stage_bytes).await;
-            });
-            Some(lane)
-        }
-        None => None,
-    };
+    // Vote-gap execution (shim v1.3): the proposer stages its own build so its
+    // decide anchor promotes instantly. Fire-and-forget — failure just means
+    // the anchor takes the full path.
+    if let (Some(shim), Some(lane)) = (lean_shim, &lean_payload) {
+        debug!(
+            number = lane.decoded.number,
+            txs = lane.decoded.tx_count,
+            commitment = %lane.commitment(),
+            "🪶 built lean payment block"
+        );
+        let stage_shim = shim.clone();
+        let stage_bytes = lane.bytes.clone();
+        tokio::spawn(async move {
+            let _ = stage_shim.stage_block(&stage_bytes).await;
+        });
+    }
 
     Ok(ConsensusBlock {
         height,
