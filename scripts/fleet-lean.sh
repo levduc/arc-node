@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-lean.sh up|load|status|health|restart-cl <n>|kill-lean <n> <secs>|down
+# fleet-lean.sh up|load|status|health|logs|restart-cl <n>|kill-lean <n> <secs>|down
 #
 # The multi-host sibling of scripts/lean-testnet.sh: the same lean payment lane,
 # but validator1 runs here and validators 2..4 each run on their own machine over
@@ -14,11 +14,18 @@
 #   scripts/fleet-lean.sh status
 #   scripts/fleet-lean.sh kill-lean 3 60     # Track A: lean node outage
 #   scripts/fleet-lean.sh restart-cl 3       # Track A: CL restart
+#   scripts/fleet-lean.sh logs               # capture + pull CL/EL logs without tearing down
 #   scripts/fleet-lean.sh down
 #
 # EVERY byte a run writes on a machine lives under $FLEET_ROOT/<run-id>/ :
 #   quake/  compose + assets + validatorN config      lean/   lean datadir
-#   logs/   lean.log, spammer.log                     fund.txt, lean-lane-node, spammer
+#   logs/   lean.log, spammer.log, validatorN_cl.log, validatorN_el.log (the
+#           latter two are written by `logs`/`down` just before teardown — a
+#           plain `compose down` throws the container's own log buffer away)
+#           fund.txt, lean-lane-node, spammer
+# `logs` (and `down`, before it tears anything down) also PULLS each machine's
+# logs/ dir back to this one, into .quake/fleet-runs/<run-id>/logs/validatorN/,
+# for offline analysis (see scripts/fleet-heights.py) after the fleet is gone.
 # Nothing else in $HOME is created, modified or removed, and `down` deletes no
 # data — removing a run is the operator's `rm -rf`, never the script's.
 # Validator 2's machine runs the owner's personal services: the only containers
@@ -420,9 +427,72 @@ kill_lean(){ # kill-lean <n> <secs>: the lean node dies; its CL must survive and
   die "validator$n lean did not catch up after the outage"
 }
 
+# ---------------------------------------------------------------- log capture
+# `compose down` throws the container's own log buffer away with it, so every
+# CL/EL log must be written to a FILE under $ROOT/logs while the container
+# still exists. Idempotent: safe against containers that are already gone
+# (skipped, not fatal) and safe to call twice (docker logs is a plain read,
+# overwriting the same destination file both times).
+capture_logs(){
+  say "capturing CL/EL container logs on all $N machines (before any compose down)"
+  local n report
+  for n in $(seq 1 $N); do
+    report=$(rsh "$n" "mkdir -p $ROOT/logs
+      for kind in cl el; do
+        c=validator${n}_\$kind
+        if docker inspect \$c >/dev/null 2>&1; then
+          if docker logs \$c > $ROOT/logs/\$c.log 2>&1; then echo \"\$kind:ok \$(wc -c < $ROOT/logs/\$c.log) bytes\"
+          else echo \"\$kind:capture-failed\"; fi
+        else
+          echo \"\$kind:no-container\"
+        fi
+      done")
+    echo "    validator$n: $(echo "$report" | tr '\n' ' ')"
+  done
+}
+
+# Pulls $ROOT/logs/*.log from every machine into
+# .quake/fleet-runs/<run-id>/logs/validatorN/, sha-verified AFTER transfer
+# (tailscale ssh exit codes lie — CLAUDE.md §6 — so the check is reading the
+# bytes back and hashing them, exactly like ship_file, not the ssh return code).
+pull_logs(){
+  say "pulling logs/ from all $N machines into $LOCAL/logs/validatorN/"
+  mkdir -p "$LOCAL/logs"
+  local n dest manifest f want have
+  for n in $(seq 1 $N); do
+    dest=$LOCAL/logs/validator$n; mkdir -p "$dest"
+    manifest=$(rsh "$n" "cd $ROOT/logs 2>/dev/null && for f in *.log; do [ -f \"\$f\" ] && printf '%s %s\n' \"\$f\" \$(sha256sum \"\$f\" | cut -c1-16); done")
+    if [ "$n" = 1 ]; then
+      cp -f "$ROOT"/logs/*.log "$dest/" 2>/dev/null
+    elif [ -n "$manifest" ]; then
+      timeout 300 tailscale ssh "$REMOTE_USER@$(ip_of "$n")" "tar cz -C $ROOT logs" 2>/dev/null \
+        | tar xzf - -C "$LOCAL/logs" 2>/dev/null
+      if [ -d "$LOCAL/logs/logs" ]; then
+        cp -f "$LOCAL/logs/logs/"*.log "$dest/" 2>/dev/null
+        rm -rf "$LOCAL/logs/logs"
+      fi
+    fi
+    if [ -z "$manifest" ]; then
+      echo "    validator$n: no remote logs/*.log (nothing captured yet, or unreachable)"
+      continue
+    fi
+    while read -r f want; do
+      [ -n "$f" ] || continue
+      have=$(sha256sum "$dest/$f" 2>/dev/null | cut -c1-16)
+      if [ "$have" = "$want" ]; then
+        echo "    validator$n/$f: $(wc -c < "$dest/$f" 2>/dev/null || echo 0) bytes (sha matches remote)"
+      else
+        echo "    validator$n/$f: MISMATCH (local ${have:-none} != remote $want) — re-run \`$0 logs\`"
+      fi
+    done <<< "$manifest"
+  done
+}
+
 # ---------------------------------------------------------------- down
 down(){
   local n
+  capture_logs
+  pull_logs
   for n in $(seq 1 $N); do
     say "validator$n: compose down + lean node stop"
     rsh "$n" "docker compose -f $(compose_of "$n") down" >/dev/null 2>&1
@@ -438,8 +508,9 @@ case "$ACTION" in
   load) load ;;
   status) status ;;
   health) health_gate ;;
+  logs) capture_logs; pull_logs ;;
   restart-cl) restart_cl "$@" ;;
   kill-lean) kill_lean "$@" ;;
   down) down ;;
-  *) echo "usage: $0 up|load|status|health|restart-cl <n>|kill-lean <n> <secs>|down"; exit 2 ;;
+  *) echo "usage: $0 up|load|status|health|logs|restart-cl <n>|kill-lean <n> <secs>|down"; exit 2 ;;
 esac
