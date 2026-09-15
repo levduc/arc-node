@@ -275,6 +275,26 @@ pub struct LeanBlockRef {
     pub commitment: BlockHash,
 }
 
+/// Fixed-width little-endian read at `off`, without a fallible `try_into` (and
+/// so without an `unwrap` that a future layout change could turn into a panic
+/// on attacker-supplied bytes): a slice too short to hold the field reads as a
+/// decode error, which is what every caller here wants.
+fn le_u64_at(bytes: &[u8], off: usize) -> eyre::Result<u64> {
+    let chunk = bytes
+        .get(off..)
+        .and_then(<[u8]>::first_chunk::<8>)
+        .ok_or_else(|| eyre::eyre!("lean block truncated at offset {off} (u64)"))?;
+    Ok(u64::from_le_bytes(*chunk))
+}
+
+fn le_u32_at(bytes: &[u8], off: usize) -> eyre::Result<u32> {
+    let chunk = bytes
+        .get(off..)
+        .and_then(<[u8]>::first_chunk::<4>)
+        .ok_or_else(|| eyre::eyre!("lean block truncated at offset {off} (u32)"))?;
+    Ok(u32::from_le_bytes(*chunk))
+}
+
 /// Strict decode of the lean node's canonical block bytes:
 /// `[parent 32][number u64 LE][timestamp_ms u64 LE][n u32 LE]([len u32 LE][tx])*`,
 /// recomputing `commitment = keccak(parent ‖ number ‖ timestamp_ms ‖ keccak(framed tx section))`.
@@ -284,9 +304,9 @@ pub fn decode_lean_block(bytes: &[u8]) -> eyre::Result<LeanBlockRef> {
         return Err(eyre::eyre!("lean block bytes too short ({})", bytes.len()));
     }
     let parent = BlockHash::from_slice(&bytes[..32]);
-    let number = u64::from_le_bytes(bytes[32..40].try_into().unwrap());
-    let timestamp_ms = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
-    let tx_count = u32::from_le_bytes(bytes[48..52].try_into().unwrap());
+    let number = le_u64_at(bytes, 32)?;
+    let timestamp_ms = le_u64_at(bytes, 40)?;
+    let tx_count = le_u32_at(bytes, 48)?;
     if tx_count as usize > MAX_LEAN_TXS {
         return Err(eyre::eyre!("lean block carries {tx_count} txs (cap {MAX_LEAN_TXS})"));
     }
@@ -296,7 +316,7 @@ pub fn decode_lean_block(bytes: &[u8]) -> eyre::Result<LeanBlockRef> {
             .checked_add(4)
             .filter(|&e| e <= bytes.len())
             .ok_or_else(|| eyre::eyre!("lean block truncated at tx {i} length"))?;
-        let len = u32::from_le_bytes(bytes[off..len_end].try_into().unwrap()) as usize;
+        let len = le_u32_at(bytes, off)? as usize;
         let tx_end = len_end
             .checked_add(len)
             .filter(|&e| e <= bytes.len())
@@ -306,7 +326,7 @@ pub fn decode_lean_block(bytes: &[u8]) -> eyre::Result<LeanBlockRef> {
     if off != bytes.len() {
         return Err(eyre::eyre!(
             "lean block has {} trailing bytes after {tx_count} txs",
-            bytes.len() - off
+            bytes.len().saturating_sub(off)
         ));
     }
     // txs_hash binds the ENTIRE framed tx section (count + per-tx lengths +
@@ -339,7 +359,7 @@ pub fn decode_lean_block(bytes: &[u8]) -> eyre::Result<LeanBlockRef> {
 pub fn frame_lanes(execution_payload: &ExecutionPayloadV3, lean_bytes: Option<&[u8]>) -> Vec<u8> {
     let evm = execution_payload.as_ssz_bytes();
     let lean_len = lean_bytes.map_or(0, <[u8]>::len);
-    let mut buf = Vec::with_capacity(8 + evm.len() + lean_len);
+    let mut buf = Vec::with_capacity(8usize.saturating_add(evm.len()).saturating_add(lean_len));
     let mut prefix = evm.len() as u64;
     if lean_bytes.is_some() {
         prefix |= LEAN_LANE_BIT;
@@ -430,7 +450,7 @@ pub fn unframe_lanes(bytes: &[u8]) -> eyre::Result<LaneFrame> {
     if bytes.len() < 8 {
         return Err(eyre::eyre!("lane bytes too short to contain length prefix"));
     }
-    let raw = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+    let raw = le_u64_at(bytes, 0)?;
     let flags = raw & !LANE_LEN_MASK;
     if flags & !LEAN_LANE_BIT != 0 {
         return Err(eyre::eyre!(
@@ -456,7 +476,7 @@ pub fn unframe_lanes(bytes: &[u8]) -> eyre::Result<LaneFrame> {
     if bytes.len() != evm_end {
         return Err(eyre::eyre!(
             "single-lane frame has {} trailing bytes",
-            bytes.len() - evm_end
+            bytes.len().saturating_sub(evm_end)
         ));
     }
     Ok(LaneFrame::Evm(execution_payload))
@@ -642,7 +662,9 @@ mod lane_tests {
 
     /// A block carrying a lean payload of `n_txs` tiny transactions.
     fn block_with_lean(seed: u8, n_txs: usize) -> ConsensusBlock {
-        let txs: Vec<Vec<u8>> = (0..n_txs).map(|i| vec![seed, i as u8]).collect();
+        let txs: Vec<Vec<u8>> = (0..n_txs)
+            .map(|i| vec![seed, u8::try_from(i % 256).unwrap()])
+            .collect();
         let tx_refs: Vec<&[u8]> = txs.iter().map(Vec::as_slice).collect();
         block(payload(seed), Some(lean(seed, 1, 1000, &tx_refs)))
     }
@@ -659,9 +681,9 @@ mod lane_tests {
         b.extend_from_slice(B256::repeat_byte(parent).as_slice());
         b.extend_from_slice(&number.to_le_bytes());
         b.extend_from_slice(&ts_ms.to_le_bytes());
-        b.extend_from_slice(&(txs.len() as u32).to_le_bytes());
+        b.extend_from_slice(&u32::try_from(txs.len()).unwrap().to_le_bytes());
         for t in txs {
-            b.extend_from_slice(&(t.len() as u32).to_le_bytes());
+            b.extend_from_slice(&u32::try_from(t.len()).unwrap().to_le_bytes());
             b.extend_from_slice(t);
         }
         b
@@ -707,7 +729,7 @@ mod lane_tests {
         assert!(decode_lean_block(&good[..40]).is_err());
         // absurd tx count with no bodies
         let mut c = lean_bytes(0xAA, 1, 1, &[]);
-        let n = (MAX_LEAN_TXS as u32 + 1).to_le_bytes();
+        let n = (u32::try_from(MAX_LEAN_TXS).unwrap() + 1).to_le_bytes();
         c[48..52].copy_from_slice(&n);
         assert!(decode_lean_block(&c).is_err());
         // claimed count larger than actual bodies
@@ -825,7 +847,7 @@ mod lane_tests {
 
     #[test]
     fn binding_ok_when_header_carries_the_lean_commitment() {
-        let mut b = block_with_lean(0x11, 3); // existing helper building a ConsensusBlock with a lean payload
+        let mut b = block_with_lean(0x11, 3);
         let c = b.lean_payload.as_ref().unwrap().commitment();
         b.execution_payload.payload_inner.payload_inner.prev_randao = c;
         assert!(b.lean_binding_ok());
@@ -837,6 +859,24 @@ mod lane_tests {
         let mut b = block_with_lean(0x11, 3);
         b.execution_payload.payload_inner.payload_inner.prev_randao = B256::repeat_byte(0xee);
         assert!(!b.lean_binding_ok());
+    }
+
+    /// The exact safety case: lean bytes carried, header left at zero. The
+    /// bytes are then bound to nothing the certificate covers — a proposer
+    /// could swap them freely — so the block must not read as bound.
+    #[test]
+    fn binding_fails_when_a_lean_block_is_carried_under_a_zero_header() {
+        let b = block_with_lean(0x11, 3);
+        assert_eq!(
+            b.execution_payload.payload_inner.payload_inner.prev_randao,
+            B256::ZERO,
+            "the helper leaves prev_randao unset",
+        );
+        assert_eq!(b.header_lean_commitment(), None);
+        assert!(
+            !b.lean_binding_ok(),
+            "lean bytes under a zero prev_randao are not committed to by anything"
+        );
     }
 
     #[test]
