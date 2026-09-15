@@ -264,6 +264,16 @@ once per height): O(height × block bytes) per call, fixed by capping the scan a
 | 400 M (F11 / F16 with two anchor fixes) | 1.58–1.75 / 1.60–1.83 | — | 121,042–134,225 / 122,963–140,217 | 100 % |
 | 450 M (F12) | 1.52–1.58 | 1,308–1,362 | 130,798–136,192 | 863/863 = 100 % |
 
+**N=1 (one payment per signature), same stack, 2026-09-15 morning** — with enough offered load
+(4–12k tx/s per machine, pool target 8–30k) the lane is pacer-bound far above the old 6.4k row:
+
+| config (N=1, 500 ms pacer) | blk/s | tx/s = payments/s | fullness |
+|---|---|---|---|
+| 150 M (F20 v02-0915-0948) | 1.90–1.95 | 10,989–11,263 | 5,769/5,769 = 100 % |
+| 300 M (F21 v02-0915-1001) | 1.92–1.97 | 22,175–22,715 | 11,538/11,538 = 100 % |
+| **450 M (F22 v02-0915-1013)** | **1.81–1.84** | **31,317–31,910** | 17,307/17,307 = 100 % |
+| 600 M (F23 v02-0915-1022) | 1.43–1.48 | 33,016–34,253 | 23,076/23,076 = 100 % |
+
 All runs: 0 CL restarts, 4/4 lean nodes byte-identical at the end, one spammer per machine. Chunk
 size (128 KiB → 1 MiB) does not move the stream (127 → 123 ms for 1.65 MB): not the bound. Above
 350 M the fleet saturates near ~3.9 MB/s of block bytes through consensus; at 300 M it is pacer-bound
