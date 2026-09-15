@@ -1,0 +1,38 @@
+# fleet4-lean — the LEAN PAYMENT LANE on a 4-machine tailscale fleet.
+#
+# This scenario is generated LOCALLY only (quake `start --force` then `stop`) to
+# render .quake/fleet4-lean/{compose.yaml,assets,validatorN}; scripts/fleet-lean.sh
+# then runs scripts/fleet-split-compose.py over it to move validators 2..4 onto
+# their own hosts and keep validator1 here. Never run these four validators on one
+# machine — the ports collide with nothing, but the whole point is the fleet.
+#
+#   scripts/fleet-lean.sh up | load | status | restart-cl <n> | kill-lean <n> <s> | down
+#
+# Every CL drives a lean-lane node that runs on ITS OWN host on :8560, reached
+# from inside the container through the docker bridge gateway 172.17.0.1 (this is
+# what the campaign used on the remotes; host.docker.internal resolves to the same
+# address via the extra_hosts entry quake adds). The peer list is the four
+# tailscale IPs, so validation/decide-time catch-up crosses the tailnet.
+
+cl.config.execution_persistence_backpressure = true
+
+[cl.env]
+ARC_PAYMENT_LEAN_LANE = "1"
+ARC_PAYMENT_LEAN_BUDGET_GAS = "150000000"
+ARC_PAYMENT_LEAN_PEER_RPCS = "http://100.124.148.61:8560,http://100.85.150.119:8560,http://100.70.62.92:8560,http://100.86.97.40:8560"
+
+[nodes.validator1]
+cl_suggested_fee_recipient = "0x1111111111111111111111111111111111111111"
+cl.env = { ARC_PAYMENT_LEAN_RPC = "http://172.17.0.1:8560" }
+
+[nodes.validator2]
+cl_suggested_fee_recipient = "0x2222222222222222222222222222222222222222"
+cl.env = { ARC_PAYMENT_LEAN_RPC = "http://172.17.0.1:8560" }
+
+[nodes.validator3]
+cl_suggested_fee_recipient = "0x3333333333333333333333333333333333333333"
+cl.env = { ARC_PAYMENT_LEAN_RPC = "http://172.17.0.1:8560" }
+
+[nodes.validator4]
+cl_suggested_fee_recipient = "0x4444444444444444444444444444444444444444"
+cl.env = { ARC_PAYMENT_LEAN_RPC = "http://172.17.0.1:8560" }
