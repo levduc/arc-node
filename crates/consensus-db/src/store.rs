@@ -1165,10 +1165,26 @@ impl Db {
         let table = tx.open_table(PENDING_PROPOSAL_PARTS_TABLE)?;
 
         let mut proposals = Vec::new();
-        for result in table.iter()? {
+
+        // The key is ordered `(height, round, hash)`, so the rows for one
+        // (height, round) are a contiguous prefix: seek to it instead of
+        // walking the whole table. At 50 stashed future-height proposals a
+        // full walk touches every leaf page of a ~62 MB table on the
+        // StartedRound critical path.
+        let range_start = (height, round, BlockHash::new([0; 32]));
+        #[allow(clippy::arithmetic_side_effects)] // round + 1 for range upper bound
+        let range_end = (
+            height,
+            Round::from(round.as_i64() + 1),
+            BlockHash::new([0; 32]),
+        );
+
+        for result in table.range(range_start..range_end)? {
             let (key, value) = result?;
             let (h, r, _) = key.value();
 
+            // Defensive: the range is already exact, but keep the equality
+            // check so the row set is identical to the previous full scan.
             if h == height && r == round {
                 let bytes = value.value();
                 #[allow(clippy::arithmetic_side_effects)]
@@ -3806,5 +3822,211 @@ mod tests {
         };
         let heights: Vec<u64> = items.iter().map(|m| m.height.as_u64()).collect();
         assert_eq!(heights, vec![1, 2, 3, 4, 5]);
+    }
+    /// A ranged read must return exactly the rows for the requested
+    /// (height, round) — no more, no fewer — when neighbouring heights,
+    /// neighbouring rounds and several proposers all have rows.
+    #[tokio::test]
+    async fn test_get_pending_proposal_parts_scopes_to_height_and_round() {
+        let store = create_store().await;
+
+        // (height, round) -> number of distinct proposers
+        let layout = [
+            (2u64, 0u32, 1usize),
+            (3, 0, 3),
+            (3, 1, 2),
+            (3, 7, 1),
+            (4, 0, 2),
+        ];
+
+        for (h, r, proposers) in layout {
+            for p in 0..proposers {
+                #[allow(clippy::cast_possible_truncation)]
+                let proposer = Address::new([(h as u8) * 16 + r as u8 * 4 + p as u8; 20]);
+                let parts =
+                    create_test_proposal_parts(Height::new(h), Round::new(r), proposer).await;
+                assert!(store
+                    .store_pending_proposal_parts(parts, 100, Height::new(1))
+                    .await
+                    .unwrap());
+            }
+        }
+
+        let total: usize = layout.iter().map(|(_, _, n)| n).sum();
+        assert_eq!(
+            store.get_pending_proposal_parts_count().await.unwrap(),
+            total
+        );
+
+        for (h, r, proposers) in layout {
+            let got = store
+                .get_pending_proposal_parts(Height::new(h), Round::new(r))
+                .await
+                .unwrap();
+            assert_eq!(got.len(), proposers, "height {h} round {r}");
+            for parts in &got {
+                assert_eq!(parts.height(), Height::new(h));
+                assert_eq!(parts.round(), Round::new(r));
+            }
+        }
+
+        // Rounds and heights with no rows return nothing.
+        for (h, r) in [(3u64, 2u32), (3, 8), (1, 0), (5, 0)] {
+            assert!(store
+                .get_pending_proposal_parts(Height::new(h), Round::new(r))
+                .await
+                .unwrap()
+                .is_empty());
+        }
+
+        // Round::Nil must not pick up the Round::new(0) rows.
+        assert!(store
+            .get_pending_proposal_parts(Height::new(3), Round::Nil)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    // ---- timing bench (ignored by default) -------------------------------
+    //
+    // Populates a temp redb with `PENDING_BENCH_COUNT` pending proposal-part
+    // rows of ~1.24 MB each (the fleet's consensus value size) and times the
+    // three store operations that sit on the per-height critical path.
+    //
+    //     cargo test -p arc-consensus-db store_bench -- --ignored --nocapture
+
+    const PENDING_BENCH_COUNT: usize = 50;
+    const PENDING_BENCH_VALUE_BYTES: usize = 1_240_000;
+
+    async fn create_store_with_cache(dir: &std::path::Path, cache: ByteSize) -> Store {
+        Store::open(
+            dir.join("db"),
+            DbMetrics::default(),
+            DbUpgrade::Skip,
+            cache,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Proposal parts carrying a ~1.24 MB data trailer.
+    fn create_fat_proposal_parts(height: Height, round: Round, proposer: Address) -> ProposalParts {
+        // Cheap deterministic pseudo-random fill so nothing downstream can
+        // collapse the payload.
+        let mut blob = vec![0u8; PENDING_BENCH_VALUE_BYTES];
+        #[allow(clippy::cast_possible_truncation)]
+        let mut x: u32 = height.as_u64() as u32 ^ 0x9E37_79B9;
+        for b in blob.iter_mut() {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *b = (x >> 24) as u8;
+        }
+
+        let parts = vec![
+            ProposalPart::Init(ProposalInit::new(height, round, Round::Nil, proposer)),
+            ProposalPart::Data(ProposalData::new(Bytes::from(blob))),
+            ProposalPart::Fin(ProposalFin::new(Signature::from_bytes([0u8; 64]))),
+        ];
+        ProposalParts::new(parts).unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "timing bench; run with --ignored --nocapture"]
+    async fn store_bench_pending_proposal_parts() {
+        let dir = tempdir().unwrap();
+        // 1 GiB, matching the production default, so the whole table is cached
+        // and we measure materialization cost rather than disk variance.
+        let store = create_store_with_cache(dir.path(), ByteSize::gib(1)).await;
+
+        let base = Height::new(1);
+        for i in 0..PENDING_BENCH_COUNT {
+            let height = Height::new(base.as_u64() + i as u64);
+            let parts = create_fat_proposal_parts(height, Round::new(0), Address::new([7u8; 20]));
+            let inserted = store
+                .store_pending_proposal_parts(parts, PENDING_BENCH_COUNT, base)
+                .await
+                .unwrap();
+            assert!(inserted, "row {i} should insert");
+        }
+        assert_eq!(
+            store.get_pending_proposal_parts_count().await.unwrap(),
+            PENDING_BENCH_COUNT
+        );
+
+        // StartedRound path: fetch the single row for one (height, round).
+        let mut get_ms = Vec::new();
+        for _ in 0..5 {
+            let t = Instant::now();
+            let got = store
+                .get_pending_proposal_parts(base, Round::new(0))
+                .await
+                .unwrap();
+            get_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(got.len(), 1);
+        }
+
+        // Control: a (height, round) with no row at all. Isolates the cost of
+        // the table walk from the cost of decoding the one matching value.
+        let mut miss_ms = Vec::new();
+        for _ in 0..5 {
+            let t = Instant::now();
+            let got = store
+                .get_pending_proposal_parts(base, Round::new(9))
+                .await
+                .unwrap();
+            miss_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+            assert!(got.is_empty());
+        }
+
+        // /status path: counts grouped by height.
+        let mut counts_ms = Vec::new();
+        for _ in 0..5 {
+            let t = Instant::now();
+            let counts = store.get_pending_proposal_parts_counts().await.unwrap();
+            counts_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(counts.len(), PENDING_BENCH_COUNT);
+        }
+
+        // Decide path, nothing below the decided height (steady state: the node
+        // is at the front, every pending row is for a future height).
+        let mut clean_noop_ms = Vec::new();
+        for _ in 0..5 {
+            let t = Instant::now();
+            store
+                .clean_stale_consensus_data(Height::new(0))
+                .await
+                .unwrap();
+            clean_noop_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        assert_eq!(
+            store.get_pending_proposal_parts_count().await.unwrap(),
+            PENDING_BENCH_COUNT
+        );
+
+        // Decide path, one row actually stale.
+        let t = Instant::now();
+        store.clean_stale_consensus_data(base).await.unwrap();
+        let clean_one_ms = t.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(
+            store.get_pending_proposal_parts_count().await.unwrap(),
+            PENDING_BENCH_COUNT - 1
+        );
+
+        let med = |mut v: Vec<f64>| {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[v.len() / 2]
+        };
+        eprintln!(
+            "store_bench rows={PENDING_BENCH_COUNT} value_bytes={PENDING_BENCH_VALUE_BYTES}\n  \
+             get_pending_proposal_parts (median of 5) = {:.2} ms\n  \
+             get_pending_proposal_parts, no match (median of 5) = {:.3} ms\n  \
+             get_pending_proposal_parts_counts (median of 5) = {:.2} ms\n  \
+             clean_stale_consensus_data, nothing stale (median of 5) = {:.2} ms\n  \
+             clean_stale_consensus_data, 1 stale = {:.2} ms",
+            med(get_ms),
+            med(miss_ms),
+            med(counts_ms),
+            med(clean_noop_ms),
+            clean_one_ms,
+        );
     }
 }
