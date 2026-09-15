@@ -56,10 +56,6 @@ impl LeanShim {
         self
     }
 
-    pub fn peers(&self) -> &[LeanShim] {
-        &self.peers
-    }
-
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -405,6 +401,39 @@ impl LeanCatchup for LeanShim {
 
     async fn local_head(&self) -> eyre::Result<LeanHead> {
         self.get_head().await
+    }
+}
+
+/// What the VOTE path asks of the lean lane beyond the catch-up: "is this
+/// historic block ours?", and the speculative stage that keeps execution off
+/// the decide anchor's critical path.
+///
+/// Split out on top of [`LeanCatchup`] for one reason: the verdict WIRING —
+/// which lean failure abstains and which votes `Invalid` — is a safety rule
+/// (an Invalid on a certified value sticks forever), and it was previously
+/// only reachable with a live node. With this seam the whole of
+/// `validate_consensus_block` runs against a test double.
+// Same `Send`-auto-trait caveat as `LeanBuilder`: workspace-internal only.
+#[allow(async_fn_in_trait)]
+pub trait LeanValidation: LeanCatchup {
+    /// Our OWN canonical bytes for lean block `number`, if we have it.
+    async fn canonical_block_bytes(&self, number: u64) -> eyre::Result<Option<Vec<u8>>>;
+
+    /// Stage a block for the decide anchor. Fire-and-forget by contract:
+    /// staging is speculative, so it must never be awaited on the vote path.
+    fn stage_detached(&self, bytes: Vec<u8>);
+}
+
+impl LeanValidation for LeanShim {
+    async fn canonical_block_bytes(&self, number: u64) -> eyre::Result<Option<Vec<u8>>> {
+        self.get_block_bytes(number).await
+    }
+
+    fn stage_detached(&self, bytes: Vec<u8>) {
+        let shim = self.clone();
+        tokio::spawn(async move {
+            let _ = shim.stage_block(&bytes).await;
+        });
     }
 }
 

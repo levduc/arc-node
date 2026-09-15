@@ -344,9 +344,14 @@ async fn build_and_validate_block(
     // block is executed once, at the decide anchor. Passing no shim here
     // skips the parent-linkage check, which the build itself guarantees.
     let validity = validate_consensus_block(
-        &validator, None, lean_shim,
+        &validator,
+        crate::payload::NO_LEAN_NODE,
+        lean_shim,
         // Self-built: the bytes are in hand (and in `block.lean_payload`).
-        false, &block, store, metrics,
+        false,
+        &block,
+        store,
+        metrics,
     )
     .await
     .wrap_err_with(|| {

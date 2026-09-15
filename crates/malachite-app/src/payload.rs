@@ -29,7 +29,9 @@ use arc_consensus_types::{Address, BlockHash, Height, Round, B256};
 use arc_eth_engine::deadline::EngineDeadline;
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
-use arc_eth_engine::lean_shim::{LeanBuilder, LeanBytesResolver, LeanCatchup, LeanHead};
+use arc_eth_engine::lean_shim::{
+    LeanBuilder, LeanBytesResolver, LeanCatchup, LeanHead, LeanValidation,
+};
 use arc_eth_engine::rpc::EngineApiRpcError;
 /// Re-exported for the handlers: "no verdict right now" vs a real failure.
 pub use arc_eth_engine::transient::is_transient;
@@ -381,6 +383,10 @@ const CATCHUP_BUDGET: Duration = Duration::from_secs(5);
 /// less than the round trip it has to pay for). Always capped by what is
 /// actually left, so the total never exceeds [`CATCHUP_BUDGET`].
 const MIN_PEER_SLICE: Duration = Duration::from_millis(250);
+
+/// "No lean node at this call site" — the concrete type a bare `None` leaves
+/// unconstrained now that the lean node is a trait seam (see [`LeanValidation`]).
+pub const NO_LEAN_NODE: Option<&arc_eth_engine::lean_shim::LeanShim> = None;
 
 /// Ceiling on the lag a validation-time catch-up will even ATTEMPT, in lean
 /// blocks.
@@ -747,7 +753,7 @@ pub(crate) async fn validate_lean_tip(
 ///   `SYNCING`/`ACCEPTED` status, etc.).
 pub async fn validate_consensus_block(
     payload_validator: &impl PayloadValidator,
-    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_shim: Option<&impl LeanValidation>,
     lean_resolver: Option<&impl LeanBytesResolver>,
     lean_bytes_required: bool,
     block: &ConsensusBlock,
@@ -884,7 +890,7 @@ pub async fn validate_consensus_block(
         // local node recomputes every commitment on ingest, and appended
         // certified-chain blocks are exactly what sync would feed anyway.
         if let Some(shim) = lean_shim {
-            match shim.get_head().await {
+            match shim.local_head().await {
                 Ok(head) => {
                     // ALREADY-CANONICAL (sync replay of a historic height):
                     // when consensus lags the lean chain (the node kept up via
@@ -896,7 +902,7 @@ pub async fn validate_consensus_block(
                     // head 15523, lean number 15519 → invalid → sync dead).
                     // Valid iff it IS our canonical block at that number.
                     if lane.decoded.number <= head.number {
-                        match shim.get_block_bytes(lane.decoded.number).await {
+                        match shim.canonical_block_bytes(lane.decoded.number).await {
                             Ok(Some(ours)) if ours == lane.bytes => {
                                 // Canonical replay — lean lane section valid;
                                 // skip tip-linkage checks entirely.
@@ -952,11 +958,7 @@ pub async fn validate_consensus_block(
                     // critical path. Fire-and-forget — staging is speculative;
                     // failure (older node, races) just means the anchor takes
                     // the full path. Never blocks the vote.
-                    let stage_shim = shim.clone();
-                    let stage_bytes = lane.bytes.clone();
-                    tokio::spawn(async move {
-                        let _ = stage_shim.stage_block(&stage_bytes).await;
-                    });
+                    shim.stage_detached(lane.bytes.clone());
 
                     // Everything the vote waits on for the lean lane is done
                     // here: the head fetch, any catch-up feed and the linkage
@@ -1119,7 +1121,7 @@ impl BlockVerdict {
 #[allow(clippy::too_many_arguments)]
 pub async fn establish_block_validity(
     payload_validator: &impl PayloadValidator,
-    lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
+    lean_shim: Option<&impl LeanValidation>,
     lean_resolver: Option<&impl LeanBytesResolver>,
     lean_bytes_required: bool,
     block: &ConsensusBlock,
@@ -1590,7 +1592,7 @@ mod tests {
 
         let verdict = establish_block_validity(
             &validator,
-            None,
+            NO_LEAN_NODE,
             NO_RESOLVER,
             true,
             &block,
@@ -1632,7 +1634,7 @@ mod tests {
 
         let verdict = establish_block_validity(
             &validator,
-            None,
+            NO_LEAN_NODE,
             NO_RESOLVER,
             true,
             &block,
@@ -1671,7 +1673,7 @@ mod tests {
 
         let verdict = establish_block_validity(
             &validator,
-            None,
+            NO_LEAN_NODE,
             NO_RESOLVER,
             true,
             &block,
@@ -1700,7 +1702,7 @@ mod tests {
         let block = test_block();
         let result = validate_consensus_block(
             &validator,
-            None,
+            NO_LEAN_NODE,
             NO_RESOLVER,
             true,
             &block,
@@ -1740,7 +1742,7 @@ mod tests {
         let block = test_block();
         let result = validate_consensus_block(
             &validator,
-            None,
+            NO_LEAN_NODE,
             NO_RESOLVER,
             true,
             &block,
@@ -1768,7 +1770,7 @@ mod tests {
         let block = test_block();
         let err = validate_consensus_block(
             &validator,
-            None,
+            NO_LEAN_NODE,
             NO_RESOLVER,
             true,
             &block,
@@ -1800,7 +1802,7 @@ mod tests {
         let block = test_block();
         let err = validate_consensus_block(
             &validator,
-            None,
+            NO_LEAN_NODE,
             NO_RESOLVER,
             true,
             &block,
@@ -1848,7 +1850,7 @@ mod tests {
         let block = test_block();
         let validity = validate_consensus_block(
             &validator,
-            None,
+            NO_LEAN_NODE,
             NO_RESOLVER,
             true,
             &block,
@@ -1892,7 +1894,7 @@ mod tests {
             .prev_randao = B256::repeat_byte(0xee);
         let v = validate_consensus_block(
             &validator,
-            None,
+            NO_LEAN_NODE,
             NO_RESOLVER,
             true,
             &block,
@@ -1927,7 +1929,7 @@ mod tests {
 
         let v = validate_consensus_block(
             &valid_validator(),
-            None,
+            NO_LEAN_NODE,
             Some(&resolver),
             true,
             &block,
@@ -1966,7 +1968,7 @@ mod tests {
 
         let v = validate_consensus_block(
             &valid_validator(),
-            None,
+            NO_LEAN_NODE,
             Some(&resolver),
             true,
             &block,
@@ -2011,7 +2013,7 @@ mod tests {
 
         let v = validate_consensus_block(
             &valid_validator(),
-            None,
+            NO_LEAN_NODE,
             Some(&resolver),
             true,
             &block,
@@ -2041,7 +2043,7 @@ mod tests {
 
         let v = validate_consensus_block(
             &valid_validator(),
-            None,
+            NO_LEAN_NODE,
             Some(&resolver),
             false,
             &block,
@@ -2070,7 +2072,7 @@ mod tests {
 
         let err = validate_consensus_block(
             &valid_validator(),
-            None,
+            NO_LEAN_NODE,
             Some(&resolver),
             true,
             &block,
@@ -2102,6 +2104,8 @@ mod tests {
         head: std::sync::Mutex<LeanHead>,
         /// Peers asked, in order — this is what pins the slice behaviour.
         asked: std::sync::Mutex<Vec<usize>>,
+        /// Blocks handed to the speculative stage (vote path, fire-and-forget).
+        staged: AtomicUsize,
     }
 
     impl LeanCatchup for TestLane {
@@ -2140,6 +2144,16 @@ mod tests {
         }
     }
 
+    impl LeanValidation for TestLane {
+        async fn canonical_block_bytes(&self, number: u64) -> eyre::Result<Option<Vec<u8>>> {
+            Ok(self.chain.get(&number).cloned())
+        }
+
+        fn stage_detached(&self, _bytes: Vec<u8>) {
+            self.staged.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     fn lean_head(number: u64) -> LeanHead {
         LeanHead {
             commitment: B256::repeat_byte(0x11),
@@ -2174,7 +2188,23 @@ mod tests {
             chain: lean_chain(head, last),
             head: std::sync::Mutex::new(head),
             asked: std::sync::Mutex::new(Vec::new()),
+            staged: AtomicUsize::new(0),
         }
+    }
+
+    /// A lean-mode proposal as it arrives framed: the header commits to the
+    /// lean block it carries, and the timestamps are in lockstep.
+    fn block_with_lean(parent: B256, number: u64) -> ConsensusBlock {
+        let mut block = test_block();
+        let lane = LeanLanePayload::new(lean_block_bytes(parent, number, 0))
+            .expect("test lean block decodes");
+        block
+            .execution_payload
+            .payload_inner
+            .payload_inner
+            .prev_randao = lane.commitment();
+        block.lean_payload = Some(lane);
+        block
     }
 
     /// The fix: each peer gets a SLICE of the remaining budget, so one peer
@@ -2361,6 +2391,122 @@ mod tests {
             11,
             "the catch-up itself succeeded"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // The verdict WIRING, through `validate_consensus_block` itself: which
+    // lean failure abstains and which votes the block down. Tested here and
+    // not only at `validate_lean_tip`, because the two arms are one line apart
+    // and swapping them is a safety bug that no tip-level test would see.
+    // ---------------------------------------------------------------------
+
+    /// LAG ⇒ abstain: an `Err` (no vote), and NOTHING recorded against the
+    /// block — an Invalid here would stick to a value that may yet be
+    /// certified, which the valid-round rule re-proposes un-revalidated.
+    #[tokio::test(start_paused = true)]
+    async fn a_lean_lag_abstains_through_validate_consensus_block() {
+        let head = lean_head(10);
+        // No peers: nothing to catch up from, so the lag stands.
+        let lane = test_lane(head, 13, vec![]);
+        let mut store = MockInvalidPayloadsRepository::new();
+        store.expect_append().times(0);
+        let metrics = AppMetrics::default();
+        let block = block_with_lean(B256::repeat_byte(0x11), 13);
+
+        let err = validate_consensus_block(
+            &valid_validator(),
+            Some(&lane),
+            NO_RESOLVER,
+            true,
+            &block,
+            &store,
+            &metrics,
+        )
+        .await
+        .expect_err("being behind is an abstain, never a verdict");
+
+        assert!(is_transient(&err), "marker lost: {err:#}");
+        assert_eq!(
+            lean_no_verdict_reason(&err),
+            Some(LeanNoVerdictReason::NoPeers)
+        );
+        assert_eq!(metrics.get_invalid_payloads_count(), 0);
+        assert_eq!(
+            lane.staged.load(Ordering::Relaxed),
+            0,
+            "a block we did not judge must not be staged"
+        );
+
+        // And the abstain is visible: this is the counter the health gate reads.
+        note_lean_abstain(&metrics, block.height, &err);
+        assert_eq!(metrics.get_lean_no_verdict(LeanNoVerdictReason::NoPeers), 1);
+    }
+
+    /// VIOLATION ⇒ `Invalid`: a wrong parent against the head we actually
+    /// hold is an observed protocol break, and letting it get certified fails
+    /// the decide anchor network-wide.
+    #[tokio::test(start_paused = true)]
+    async fn a_lean_violation_is_an_invalid_verdict_through_validate_consensus_block() {
+        let head = lean_head(10);
+        let lane = test_lane(head, 12, vec![(Duration::ZERO, true)]);
+        let mut store = MockInvalidPayloadsRepository::new();
+        store
+            .expect_append()
+            .times(1)
+            .withf(|ip: &InvalidPayload| ip.reason.contains("parent/number mismatch"))
+            .returning(|_| Ok(()));
+        let metrics = AppMetrics::default();
+        // Number 11 is one above our head, so no catch-up runs: the parent is
+        // judged directly, and it is not our head.
+        let block = block_with_lean(B256::repeat_byte(0xbb), 11);
+
+        let v = validate_consensus_block(
+            &valid_validator(),
+            Some(&lane),
+            NO_RESOLVER,
+            true,
+            &block,
+            &store,
+            &metrics,
+        )
+        .await
+        .expect("a violation is a verdict, not a failure");
+
+        assert_eq!(v, Validity::Invalid);
+        assert_eq!(metrics.get_invalid_payloads_count(), 1);
+        assert_eq!(
+            lane.staged.load(Ordering::Relaxed),
+            0,
+            "a block we voted down must not be staged"
+        );
+    }
+
+    /// The healthy path through the same seam, so the two above are not
+    /// passing for want of ever reaching a verdict: linked ⇒ Valid, and the
+    /// block is handed to the speculative stage.
+    #[tokio::test(start_paused = true)]
+    async fn a_linked_lean_block_is_valid_and_staged() {
+        let head = lean_head(10);
+        let lane = test_lane(head, 12, vec![(Duration::ZERO, true)]);
+        let mut store = MockInvalidPayloadsRepository::new();
+        store.expect_append().times(0);
+        let metrics = AppMetrics::default();
+        let block = block_with_lean(head.commitment, 11);
+
+        let v = validate_consensus_block(
+            &valid_validator(),
+            Some(&lane),
+            NO_RESOLVER,
+            true,
+            &block,
+            &store,
+            &metrics,
+        )
+        .await
+        .expect("a linked lean block is valid");
+
+        assert_eq!(v, Validity::Valid);
+        assert_eq!(lane.staged.load(Ordering::Relaxed), 1);
     }
 
     /// "No verdict" must reach the handlers as a TRANSIENT error, so they skip
