@@ -32,11 +32,12 @@ use arc_signer::ArcSigningProvider;
 
 use super::skew_gate;
 use crate::block::ConsensusBlock;
+use crate::lean_lane::note_lean_abstain;
 use crate::metrics::{
     AppMetrics, InvalidPayloadSource, SkewNilVoteSource, TransientValidationSource,
 };
 use crate::payload::{
-    establish_block_validity, is_transient, note_lean_abstain, persist_invalid_payload_best_effort,
+    establish_block_validity, is_transient, persist_invalid_payload_best_effort,
     EnginePayloadValidator,
 };
 use crate::proposal_parts::{
