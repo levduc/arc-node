@@ -240,10 +240,18 @@ up(){
   sed -E "s/(ARC_PAYMENT_LEAN_BUDGET_GAS = \")[0-9]+(\")/\1${BUDGET_GAS}\2/" "$MANIFEST" > "$EFF_MANIFEST"
   grep -q "ARC_PAYMENT_LEAN_BUDGET_GAS = \"$BUDGET_GAS\"" "$EFF_MANIFEST" \
     || die "failed to template BUDGET_GAS=$BUDGET_GAS into $EFF_MANIFEST (tracked $MANIFEST left untouched)"
-  # ARC_HEIGHT_TIMING, passed through only if the controller set it: inject it
-  # into the top-level [cl.env] table (inherited by every validatorN_cl), same
-  # never-touch-the-tracked-toml rule as BUDGET_GAS above.
-  if [ -n "${ARC_HEIGHT_TIMING:-}" ]; then
+  # ARC_HEIGHT_TIMING, passed through only if the controller turned it ON:
+  # inject it into the top-level [cl.env] table (inherited by every
+  # validatorN_cl), same never-touch-the-tracked-toml rule as BUDGET_GAS above.
+  # Truthiness matches the CL's own parser (height_timing.rs): 1/true/yes,
+  # case-insensitive; 0, false, empty and anything else are OFF. A bare
+  # -n test would have made ARC_HEIGHT_TIMING=0 turn timing ON, so the obvious
+  # on-vs-off A/B of the instrumentation would silently get "on" in both arms.
+  case "$(printf %s "${ARC_HEIGHT_TIMING:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes) HEIGHT_TIMING_ON=1 ;;
+    *)          HEIGHT_TIMING_ON=0 ;;
+  esac
+  if [ "$HEIGHT_TIMING_ON" = 1 ]; then
     sed -i '/^\[cl\.env\]/a ARC_HEIGHT_TIMING = "1"' "$EFF_MANIFEST"
     grep -q '^ARC_HEIGHT_TIMING = "1"' "$EFF_MANIFEST" \
       || die "failed to inject ARC_HEIGHT_TIMING into $EFF_MANIFEST"
