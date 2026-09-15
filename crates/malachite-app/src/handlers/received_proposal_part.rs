@@ -121,6 +121,15 @@ pub async fn handle(
         ReceivedPart::None => None,
     };
 
+    // Handing a complete, valid value back is what consensus's prevote waits
+    // on, so this is the application-side prevote instant.
+    if let Some(value) = response.as_ref().filter(|v| v.validity.is_valid()) {
+        crate::height_timing::mark_at(
+            value.height.as_u64(),
+            crate::height_timing::Phase::Prevote,
+        );
+    }
+
     if let Err(e) = reply.send(response) {
         error!("🔴 ReceivedProposalPart: Failed to send reply: {e:?}");
     }
@@ -230,9 +239,22 @@ async fn on_received_proposal_part(
     // stream can be marked closed once it leaves `streams`.
     let stream_id = part.stream_id.clone();
 
+    // Proposal-part arrival for the height being timed (ARC_HEIGHT_TIMING=1).
+    // The stream id carries the height, so parts that belong to a future
+    // height streamed early are not counted against the current one.
+    if let Some(height) = crate::streaming::stream_id_height(&stream_id) {
+        crate::height_timing::record_part(height.as_u64(), part_size);
+    }
+
     // Check if we have a full proposal
     let parts = match context.streams_map.insert(from, part) {
-        InsertResult::Complete(parts) => parts,
+        InsertResult::Complete(parts) => {
+            crate::height_timing::mark_at(
+                parts.height().as_u64(),
+                crate::height_timing::Phase::Assembled,
+            );
+            parts
+        }
         InsertResult::Pending => return Ok(ReceivedPart::None),
         // Benign: an old proposal part re-circulating on the network. Dropped
         // without warning — not peer misbehaviour.

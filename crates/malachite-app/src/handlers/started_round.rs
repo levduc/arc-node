@@ -99,9 +99,23 @@ async fn on_started_round(
 ) -> eyre::Result<Vec<ProposedValue<ArcContext>>> {
     // If we are starting a new height, reset the height timer
     if round.as_i64() == 0 {
+        // Per-height phase decomposition (ARC_HEIGHT_TIMING=1): this is the
+        // only reset point, and it also flushes the previous height's line —
+        // by now its decide, anchor and forkchoice update have all happened.
+        crate::height_timing::start_height(
+            height.as_u64(),
+            match role {
+                Role::Proposer => "proposer",
+                Role::Validator => "validator",
+                Role::None => "none",
+            },
+            &proposer,
+        );
+
         let network_id = state.started_height(height, round, proposer);
         info!(%height, %network_id, "🦋 Started height");
     }
+    crate::height_timing::set_round(round.as_i64());
 
     info!(%height, %round, ?role, %proposer, "🔮 Started round");
 

@@ -226,6 +226,8 @@ async fn decide(
         anchor_lean_lane(shim, commitment, height, ANCHOR_DEADLINE)
             .await
             .wrap_err_with(|| format!("lean lane: decide anchor failed at height={height}"))?;
+
+        crate::height_timing::mark_at(height.as_u64(), crate::height_timing::Phase::Anchor);
     }
 
     // Commit the decision to the store before finalizing the block.

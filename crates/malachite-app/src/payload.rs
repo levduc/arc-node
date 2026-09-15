@@ -101,6 +101,8 @@ pub async fn generate_payload_with_retry(
                         built.commitment
                     ));
                 }
+                crate::height_timing::mark(crate::height_timing::Phase::BuildLean);
+                crate::height_timing::set_lean_txs(lane.decoded.tx_count);
                 Some(lane)
             }
             None => None,
@@ -115,6 +117,9 @@ pub async fn generate_payload_with_retry(
         let payload = generator
             .generate_block(previous_block, timestamp, fee_recipient, prev_randao)
             .await?;
+
+        crate::height_timing::mark(crate::height_timing::Phase::BuildEvm);
+
         Ok((payload, lean_payload))
     };
 
@@ -398,6 +403,11 @@ pub async fn validate_consensus_block(
         .validate_payload(&block.execution_payload)
         .await?;
 
+    crate::height_timing::mark_at(
+        block.height.as_u64(),
+        crate::height_timing::Phase::EvmNewPayload,
+    );
+
     if let PayloadValidationResult::Invalid { reason } = result {
         record_invalid_payload(block, &reason, store, metrics).await;
         return Ok(Validity::Invalid);
@@ -464,6 +474,8 @@ pub async fn validate_consensus_block(
     }
 
     if let Some(lane) = block.lean_payload.as_ref().or(resolved_lane.as_ref()) {
+        crate::height_timing::set_lean_txs_at(block.height.as_u64(), lane.decoded.tx_count);
+
         // Header/lean binding: the EVM header's `prev_randao` must carry the
         // recomputed lean commitment (Task 5). This runs before every other
         // lean check and before any shim call — a mismatched header is a
@@ -634,6 +646,14 @@ pub async fn validate_consensus_block(
                     tokio::spawn(async move {
                         let _ = stage_shim.stage_block(&stage_bytes).await;
                     });
+
+                    // Everything the vote waits on for the lean lane is done
+                    // here: the head fetch, any catch-up feed and the linkage
+                    // check. Staging itself is deliberately off the path.
+                    crate::height_timing::mark_at(
+                        block.height.as_u64(),
+                        crate::height_timing::Phase::LeanStage,
+                    );
                 }
                 Err(e) => {
                     // Unreachable past the shim's ~15s transport retry: the

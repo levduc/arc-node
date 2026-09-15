@@ -25,6 +25,7 @@ mod config;
 mod env_config;
 mod finalize;
 mod handlers;
+mod height_timing;
 mod metrics;
 mod payload;
 mod proposal_parts;

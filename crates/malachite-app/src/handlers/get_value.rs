@@ -133,6 +133,8 @@ pub async fn handle(
                 .record_proposed_value(height, round, proposed_value.value.id());
         }
 
+        crate::height_timing::mark_at(height.as_u64(), crate::height_timing::Phase::Prevote);
+
         if let Err(e) = reply.send(proposed_value) {
             error!("🔴 GetValue: Failed to send reply: {e:?}");
         }
@@ -265,6 +267,11 @@ async fn on_get_value(
 
     let block_hash = block.self_reported_block_hash();
 
+    crate::height_timing::set_bytes(
+        height.as_u64(),
+        block.size_bytes().as_u64(),
+    );
+
     let (stream_messages, signature) =
         prepare_stream(stream_id, signing_provider, &block, lean_shim.is_some())
             .await
@@ -286,6 +293,9 @@ async fn on_get_value(
         if let Err(e) = stream_proposal(network, height, round, stream_messages).await {
             error!(%height, %round, "🔴 Failed to stream proposal parts: {e:#}");
         }
+        // Marked inside the task, not at spawn: the streaming itself is the
+        // cost being measured. `mark_at` drops it if the height has moved on.
+        crate::height_timing::mark_at(height.as_u64(), crate::height_timing::Phase::PartsSent);
     });
 
     debug!(%height, %round, "✅ Proposal sent");

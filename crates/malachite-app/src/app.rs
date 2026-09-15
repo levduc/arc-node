@@ -309,6 +309,8 @@ async fn handle_consensus(
 
             info!(%height, %round, %value_id, %signatures, "🎉 Consensus has decided on value");
 
+            crate::height_timing::mark_at(height.as_u64(), crate::height_timing::Phase::Decided);
+
             decided::handle(state, engine, lean_shim, certificate, reply).await?;
         }
 
@@ -400,7 +402,11 @@ async fn handle_consensus(
 
         // Currently not supported
         // Request to extend a precommit
-        AppMsg::ExtendVote { reply, .. } => {
+        AppMsg::ExtendVote { height, reply, .. } => {
+            // Consensus calls ExtendVote immediately before sending its
+            // precommit, so this is the closest observable precommit instant.
+            crate::height_timing::mark_at(height.as_u64(), crate::height_timing::Phase::Precommit);
+
             if let Err(e) = reply.send(None) {
                 error!("🔴 Failed to send ExtendVote reply: {e:?}");
             }

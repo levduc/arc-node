@@ -170,6 +170,12 @@ impl StreamIdExt for StreamId {
     }
 }
 
+/// The height encoded in a proposal-part stream id, or `None` if the id is
+/// not one of ours (too short to carry a height).
+pub(crate) fn stream_id_height(stream_id: &StreamId) -> Option<Height> {
+    stream_id.height()
+}
+
 struct MinSeq<T>(StreamMessage<T>);
 
 impl<T> PartialEq for MinSeq<T> {

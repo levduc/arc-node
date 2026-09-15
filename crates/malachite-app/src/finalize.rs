@@ -119,6 +119,8 @@ async fn finalize_decided_block(
         engine.set_latest_forkchoice_state(new_block_hash).await?
     };
 
+    crate::height_timing::mark_at(height.as_u64(), crate::height_timing::Phase::EvmFcu);
+
     debug!(
         "🚀 Forkchoice updated to height {} for block hash={} and latest_valid_hash={}",
         height, new_block_hash, latest_valid_hash
