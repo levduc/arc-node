@@ -52,7 +52,7 @@ pub struct ConsensusBlock {
     /// `prev_randao` ([`Self::header_lean_commitment`],
     /// [`Self::lean_binding_ok`]), not the certified value id, which is
     /// always the plain EVM block hash. Travels in proposals and value-sync
-    /// via [`frame_lanes_lean`].
+    /// via [`frame_lanes`].
     pub lean_payload: Option<LeanLanePayload>,
 }
 
@@ -410,11 +410,6 @@ pub fn decode_value(bytes: &[u8], lean_lane: bool) -> eyre::Result<LaneFrame> {
     }
 }
 
-/// Frame an EVM payload together with a lean block.
-pub fn frame_lanes_lean(execution_payload: &ExecutionPayloadV3, lean_bytes: &[u8]) -> Vec<u8> {
-    frame_lanes(execution_payload, Some(lean_bytes))
-}
-
 /// A decoded lane frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaneFrame {
@@ -487,7 +482,8 @@ pub fn unframe_lanes(bytes: &[u8]) -> eyre::Result<LaneFrame> {
     Ok(LaneFrame::Evm(execution_payload))
 }
 
-/// Canonical lean block bytes with no transactions (spec §3 layout):
+/// Canonical lean block bytes with no transactions (layout:
+/// docs/lean-lane-integration.md §2):
 /// `[parent 32][number u64 LE][timestamp_ms u64 LE][n=0 u32 LE]`. Public and
 /// doc-hidden (not `#[cfg(test)]`) so both this crate's tests and
 /// `arc-node-consensus`'s can build lean bytes identically without
@@ -753,7 +749,7 @@ mod lane_tests {
     fn lean_frame_round_trips_and_unknown_flags_fail_closed() {
         let evm = payload(0x11);
         let lb = lean_bytes(0xAA, 3, 500, &[b"tx-a", b"tx-b", b"tx-c"]);
-        let framed = frame_lanes_lean(&evm, &lb);
+        let framed = frame_lanes(&evm, Some(&lb));
         match unframe_lanes(&framed).unwrap() {
             LaneFrame::LeanPayment {
                 execution_payload,

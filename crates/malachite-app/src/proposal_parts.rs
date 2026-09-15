@@ -653,7 +653,7 @@ mod tests {
     }
 
     /// LEAN lane wire round-trip: a block carrying lean_payload must stream via
-    /// frame_lanes_lean and assemble back byte-identical, with the SAME
+    /// frame_lanes and assemble back byte-identical, with the SAME
     /// self-reported (voted) EVM block hash on both ends — the lean lane binds
     /// via the EVM header's `prev_randao`, not the voted value.
     #[tokio::test]

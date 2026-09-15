@@ -80,7 +80,7 @@ pub(crate) async fn validate_lean_section(
     // those bytes (staged, queued, canonical, or peer-fetched by the node),
     // in which case validation continues against them exactly as if they had
     // been framed. Self-authored rows re-validated from the local store
-    // (`lean_bytes_required == false`, spec §5.5) keep the EVM-only reading:
+    // (`lean_bytes_required == false`) keep the EVM-only reading:
     // their bytes live in the lean node, and decide needs none from the CL.
     let mut resolved_lane: Option<LeanLanePayload> = None;
     if block.lean_payload.is_none() && lean_bytes_required {
@@ -119,7 +119,7 @@ pub(crate) async fn validate_lean_section(
         crate::height_timing::set_lean_txs_at(block.height.as_u64(), lane.decoded.tx_count);
 
         // Header/lean binding: the EVM header's `prev_randao` must carry the
-        // recomputed lean commitment (Task 5). This runs before every other
+        // recomputed lean commitment. This runs before every other
         // lean check and before any shim call — a mismatched header is a
         // structural forgery regardless of what the lean bytes decode to.
         // (Trivially true for `resolved_lane`, which was fetched BY that

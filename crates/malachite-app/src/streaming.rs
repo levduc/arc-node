@@ -426,7 +426,7 @@ impl StreamState {
 /// Enforces the following limits:
 /// - [`MAX_STREAMS_PER_PEER`] streams per peer
 /// - [`MAX_MESSAGES_PER_STREAM`] messages per stream
-/// - [`chunk_size()`] per data chunk
+/// - [`chunk_size`] per data chunk
 /// - `max_total_streams` total concurrent streams (= `MAX_STREAMS_PER_PEER * num_validators`)
 /// - Evict streams older than [`MAX_STREAM_AGE`]
 /// - Immediately evict streams that exceed message or size limits

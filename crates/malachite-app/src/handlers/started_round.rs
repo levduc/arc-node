@@ -467,7 +467,7 @@ async fn validate_undecided_blocks(
             continue;
         }
 
-        // Store-loaded rows are this node's OWN earlier work (spec §5.5): the
+        // Store-loaded rows are this node's OWN earlier work: the
         // store never held the lean bytes, so "no bytes" here is normal and
         // the EVM-only reading stands. `false` keeps that, and keeps this
         // restart path off the shim.

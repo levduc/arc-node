@@ -42,7 +42,7 @@ use crate::store::repositories::InvalidPayloadsRepository;
 use arc_consensus_db::invalid_payloads::InvalidPayload;
 
 /// Everything the proposer needs to build the lean block that the EVM
-/// header will commit to (spec §5.4).
+/// header will commit to (docs/lean-lane-integration.md §3).
 pub struct LeanBuild<'a, B: LeanBuilder> {
     pub builder: &'a B,
     pub head: LeanHead,

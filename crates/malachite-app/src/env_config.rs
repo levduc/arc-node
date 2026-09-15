@@ -42,6 +42,19 @@ const ARC_PAYMENT_LEAN_RPC: &str = "ARC_PAYMENT_LEAN_RPC";
 const ARC_PAYMENT_LEAN_BUDGET_GAS: &str = "ARC_PAYMENT_LEAN_BUDGET_GAS";
 const ARC_PAYMENT_LEAN_PEER_RPCS: &str = "ARC_PAYMENT_LEAN_PEER_RPCS";
 
+// Two further `ARC_*` variables are deliberately NOT read here, because both
+// are needed before (and outside) any `EnvConfig`:
+//
+// - `ARC_HEIGHT_TIMING` (`crate::height_timing`) — per-height phase
+//   decomposition, read into a `LazyLock` because the marks are taken from
+//   free functions all over the handlers, with no `State` in reach.
+// - `ARC_PROPOSAL_CHUNK_SIZE` (`crate::streaming`) — the proposal-part chunk
+//   size, read into a `LazyLock` because the sender and the receiver must see
+//   the same number and the receiver's limit check runs inside `StreamState`.
+//
+// Every OTHER `ARC_*` variable, the whole lean lane's included, is read here
+// and nowhere else.
+
 /// Default cache size for the database (1 GiB).
 const DEFAULT_DB_CACHE_SIZE: ByteSize = ByteSize::gib(1);
 
@@ -284,6 +297,10 @@ mod tests {
         ARC_CONSENSUS_QUEUE_PER_HEIGHT_CAPACITY,
         ARC_DISCOVERY_EPHEMERAL_CONNECTION_TIMEOUT,
         ARC_REMOTE_SIGNING_TIMEOUT,
+        ARC_PAYMENT_LEAN_LANE,
+        ARC_PAYMENT_LEAN_RPC,
+        ARC_PAYMENT_LEAN_BUDGET_GAS,
+        ARC_PAYMENT_LEAN_PEER_RPCS,
     ];
 
     /// Snapshots and clears all managed env vars on construction, restoring them on drop.
@@ -630,5 +647,83 @@ mod tests {
         assert_eq!(cfg.queue_per_height_capacity, None);
         assert_eq!(cfg.ephemeral_connection_timeout, None);
         assert_eq!(cfg.remote_signing_timeout, None);
+    }
+
+    // lean payment lane
+
+    /// THE flag-off contract: with nothing set, the lane is off and the node
+    /// is stock Arc. Every other lean field is inert in that state, but they
+    /// are pinned too, so a changed default shows up here and not on a fleet.
+    #[test]
+    #[serial]
+    fn lean_lane_is_off_and_inert_when_nothing_is_set() {
+        let _guard = EnvGuard::new();
+        let cfg = EnvConfig::from_env().unwrap();
+        assert!(!cfg.payment_lean_lane, "the lane must default to OFF");
+        assert_eq!(cfg.payment_lean_rpc, "http://127.0.0.1:8560");
+        assert_eq!(cfg.payment_lean_budget_gas, 300_000_000);
+        assert!(cfg.payment_lean_peer_rpcs.is_empty());
+
+        // The `Default` impl is what a test that never calls `from_env` gets,
+        // so it must agree with the unset environment field for field.
+        let d = EnvConfig::default();
+        assert_eq!(cfg.payment_lean_lane, d.payment_lean_lane);
+        assert_eq!(cfg.payment_lean_rpc, d.payment_lean_rpc);
+        assert_eq!(cfg.payment_lean_budget_gas, d.payment_lean_budget_gas);
+        assert_eq!(cfg.payment_lean_peer_rpcs, d.payment_lean_peer_rpcs);
+    }
+
+    /// Only `1` and `true` turn the lane on: anything else — including the
+    /// plausible-looking `yes`, `on` and `0` — leaves a fleet on stock Arc
+    /// rather than half-enabling one validator.
+    #[test]
+    #[serial]
+    fn only_1_and_true_enable_the_lean_lane() {
+        let _guard = EnvGuard::new();
+        for on in ["1", "true", "TRUE", "True"] {
+            unsafe { std::env::set_var(ARC_PAYMENT_LEAN_LANE, on) };
+            assert!(
+                EnvConfig::from_env().unwrap().payment_lean_lane,
+                "{on} must enable the lane"
+            );
+        }
+        for off in ["0", "yes", "on", "", "  "] {
+            unsafe { std::env::set_var(ARC_PAYMENT_LEAN_LANE, off) };
+            assert!(
+                !EnvConfig::from_env().unwrap().payment_lean_lane,
+                "{off:?} must leave the lane off"
+            );
+        }
+    }
+
+    /// Peer RPCs are a comma-separated list; blanks and stray spaces are the
+    /// normal shape of a hand-edited fleet.env and must not become peers.
+    #[test]
+    #[serial]
+    fn peer_rpcs_split_on_commas_and_drop_blanks() {
+        let _guard = EnvGuard::new();
+        unsafe {
+            std::env::set_var(
+                ARC_PAYMENT_LEAN_PEER_RPCS,
+                " http://a:8560 , ,http://b:8560,",
+            )
+        };
+        assert_eq!(
+            EnvConfig::from_env().unwrap().payment_lean_peer_rpcs,
+            vec!["http://a:8560".to_string(), "http://b:8560".to_string()],
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn lean_budget_gas_is_read_and_rejects_nonsense() {
+        let _guard = EnvGuard::new();
+        unsafe { std::env::set_var(ARC_PAYMENT_LEAN_BUDGET_GAS, "225000000") };
+        assert_eq!(
+            EnvConfig::from_env().unwrap().payment_lean_budget_gas,
+            225_000_000
+        );
+        unsafe { std::env::set_var(ARC_PAYMENT_LEAN_BUDGET_GAS, "lots") };
+        assert!(EnvConfig::from_env().is_err());
     }
 }
