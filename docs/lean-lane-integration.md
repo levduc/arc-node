@@ -81,6 +81,143 @@ on `main` with those removed: unit-tested and run on a single-machine
 upstream's validation refactor as described above; the flag-off wire path is
 `main`'s own code.
 
+## 1b. CL delta — what to port
+
+The file-level inventory of `git diff origin/main..HEAD` (`main` = `97f8da0`),
+restricted to code. The rest of the diff is measurement and operations —
+`scripts/` (`fleet-lean.sh`, `lean-testnet.sh`, `fleet-heights.py`,
+`height-timing.py`, `fleet-split-compose.py`, `fleet.env.example`), the
+`Makefile` targets that call them, the `crates/quake` scenarios
+(`localdev-lean.toml`, `fleet4-lean.toml`, the compose template's lean
+service), `docs/` and the plan/spec documents. None of it is needed to run
+the lane; port what your fleet uses.
+
+Line counts are `+added/-removed` against `main`, tests included — most of the
+bulk in every file below is tests and the comments that record why a rule
+exists. "Lean-only" means the file is new or the change is unreachable with
+`ARC_PAYMENT_LEAN_LANE` unset.
+
+### (a) The shim client — new, self-contained
+
+| file | +/- | what it does |
+|---|---|---|
+| `crates/eth-engine/src/lean_shim.rs` | +527/-0 | New. The 5-verb JSON-RPC client (`buildBlock`, `stageBlock`, `newBlock`, `getHead`, `getBlockBytes`, the last two addressable by commitment), its transport retry, and the five trait seams the CL is written against — `LeanBuilder`, `LeanBytesResolver`, `LeanAnchor`, `LeanCatchup`, `LeanValidation` — so every lane path is unit-testable without a node. |
+| `crates/eth-engine/src/transient.rs` | +101/-0 | New. `TransientDependencyError` + `is_transient`: the one distinction that stops a briefly-away dependency from becoming process death. Used by the lean shim and by the EVM engine's SYNCING/internal-error paths. |
+| `crates/eth-engine/src/lib.rs` | +3/-0 | Declares the two modules and re-exports `is_transient`/`TransientDependencyError`. |
+| `crates/eth-engine/Cargo.toml` | +1/-0 | Adds the workspace `base64` dependency (block bytes travel base64 on the shim). |
+
+### (b) Types — the payload, the header binding, the wire format
+
+| file | +/- | what it does |
+|---|---|---|
+| `crates/types/src/block.rs` | +597/-2 | `ConsensusBlock` gains `lean_payload: Option<LeanLanePayload>` (bytes + their decoded, commitment-recomputed view); `header_lean_commitment()`/`lean_binding_ok()` read and check the EVM header's `prev_randao`; `decode_lean_block` (strict, DoS-capped, binds the tx *framing* not just the bodies); `frame_lanes`/`unframe_lanes`/`encode_value`/`decode_value` — the lane frame, selected by the node's own flag and never sniffed from the bytes. Carries the cross-implementation commitment pin against the lean node's `gen_vector`. |
+| `crates/eth-engine/src/engine.rs` | +8/-9 | `generate_block` takes `prev_randao: B256` instead of hardcoding zero. The only upstream signature change; flag-off callers pass `B256::ZERO`, so the header is byte-identical. |
+| `crates/eth-engine/tests/integration.rs` | +2/-1 | Passes `B256::ZERO` at the one `generate_block` call. |
+| `crates/malachite-app/src/block.rs` | +33/-0 | A `#[cfg(test)]` payload builder shared by this crate's tests. Test-only. |
+
+### (c) The lean lane module, and the flag-gated arms in the handlers
+
+Lean-only logic lives in `crates/malachite-app/src/lean_lane/`; each handler arm
+is a single call behind `if let Some(shim)` / an `Option<&LeanShim>` argument.
+
+| file | +/- | what it does |
+|---|---|---|
+| `src/lean_lane/mod.rs` | +218/-0 | New. The abstain vocabulary every handler shares: `LeanNoVerdict`, `lean_no_verdict{,_over}`, `lean_no_verdict_reason`, `note_lean_abstain` (counts and, once per height, logs a round the lane could not judge). |
+| `src/lean_lane/binding.rs` | +346/-0 | New. `validate_lean_section` — the whole lean verdict: resolve unframed bytes by the header commitment, check the header binding, check timestamp lockstep with the EVM lane, check parent linkage (historic replay or the tip rules), stage speculatively for the anchor. Returns Valid/Invalid-with-reason; an abstain is an `Err`, so it can never be recorded against a block. |
+| `src/lean_lane/catchup.rs` | +480/-0 | New. `validate_lean_tip` and `catch_up_lean_head`: the validation-time pull from peer lean nodes under a 5 s budget with a per-peer slice and a dead-peer list, and the lag-vs-violation verdict split that keeps "we are behind" from ever becoming an `Invalid`. |
+| `src/lean_lane/anchor.rs` | +275/-0 | New. `anchor_lean_lane` — the decide-time promote-by-commitment loop: SYNCING polling, transient tolerance, and a 30 s total deadline that bounds every individual call by what is left of it. |
+| `src/lean_lane/test_lane.rs` | +121/-0 | New, `#[cfg(test)]`. The `TestLane` double (local node + peers with configurable latency) shared by `catchup`'s and `payload`'s tests. |
+| `src/payload.rs` | +723/-58 | `generate_payload_with_retry` builds the lean block FIRST, timestamp-locked, and returns its recomputed commitment for the header; `validate_consensus_block` and `establish_block_validity` take the two lean seams and the `lean_bytes_required` origin flag, and call `lean_lane::binding` once after the EVM verdict. Most of the `+` is tests. |
+| `src/proposal_parts.rs` | +301/-19 | `make_proposal_parts`/`prepare_stream`/`assemble_block_from_parts` take a `lean_lane: bool` and go through `encode_value`/`decode_value` instead of raw SSZ; `rehydrate_lean_payload` puts a store-loaded row's lean bytes back from the node before it can be re-framed. |
+| `src/handlers/get_value.rs` | +453/-24 | Proposer path: fetch the lean head, build the lane block, stage it fire-and-forget, frame both lanes. Adds `decide_reuse` — a stored row must be rehydratable to be restreamed, and a *signed* row that cannot be is **declined** rather than rebuilt (that would be proposer equivocation). A build failure now skips the round instead of killing the node. |
+| `src/handlers/received_proposal_part.rs` | +84/-21 | Live vote path: passes the shim into `establish_block_validity` with network origin (`true`), and routes a lean abstain through `note_lean_abstain` + the transient counter instead of a silent `None`. |
+| `src/handlers/started_round.rs` | +79/-13 | Pending-parts path (network origin, `true`) and store-loaded re-validation (`false`, the bytes were never stored); both count lean abstains. |
+| `src/handlers/decided.rs` | +97/-7 | The anchor arm: read the commitment from the decided header, call `lean_lane::anchor`. A lane-on height whose header carries a zero commitment is an error. |
+| `src/handlers/process_synced_value.rs` | +49/-6 | Synced values decode through `decode_value` and re-validate both lanes exactly like a live round; a transient dependency error becomes `LocalTransientError` (re-request, peer innocent) rather than a bare failure. |
+| `src/handlers/restream_proposal.rs` | +63/-14 | Rehydrates the stored row's lean bytes before re-framing, and declines the restream if it cannot — a re-framed value without them would not verify against the stored Fin signature. |
+| `src/handlers/get_decided_values.rs` | +113/-10 | Sync serving: fetch the lean block **by the header's commitment**, never by number; re-verify it against the header before framing it into the response. |
+| `src/handlers/skew_gate.rs` | +1/-0 | Test fixture field. |
+| `src/finalize.rs` | +2/-0 | One timing mark (see (e)). |
+| `src/app.rs` | +42/-8 | Threads `Option<&LeanShim>` to the eight handlers; two timing marks. |
+| `src/node.rs` | +37/-0 | Boot: construct the shim from config, retry `getHead` forever with a warning (parking after one try wedged validators), log the connected head. |
+| `src/lib.rs` | +2/-0 | Declares `height_timing` and `lean_lane`. |
+
+### (d) consensus-db
+
+**The store schema is unchanged and the lane adds one production line.**
+
+| file | +/- | what it does |
+|---|---|---|
+| `crates/consensus-db/src/decoder.rs` | +4/-0 | `decode_block` sets `lean_payload: None` — the store persists the SSZ form only; lane data is canonical in the lean node and reattached by rehydrate/sync. The one production line. |
+| `crates/consensus-db/src/encoder.rs`, `services/pruning.rs` | +1, +1 | Test fixture fields. |
+| `crates/consensus-db/src/store.rs` | +704/-22 | **Not lane code — separable performance work**, motivated by the anchor sitting on the decide path: replaces three full-table scans with prefix `range()` seeks, stops `retain` materialising every value on `clean_stale_consensus_data`, stops `/status` copying every stashed proposal out of the page cache. Same row sets, same schema. Port it or do not; the lane works either way. Three `lean_payload: None` test fixture lines. |
+
+### (e) Instrumentation — optional, flag-gated, portable on its own
+
+| file | +/- | what it does |
+|---|---|---|
+| `src/height_timing.rs` | +836/-0 | New. Per-height phase decomposition behind `ARC_HEIGHT_TIMING=1`; every call site is a no-op when unset. This is how the 57 %-proposal-stream decomposition was measured. |
+| `src/metrics/app.rs` | +172/-2 | Two counter families: `transient_dependency_skips` (by site) and `lean_no_verdict` (by reason) — the only signal separating a validator that is quiet from one that is contributing. |
+| `src/streaming.rs` | +181/-15 | `CHUNK_SIZE` becomes `chunk_size()`, overridable by `ARC_PROPOSAL_CHUNK_SIZE` and clamped to `[128 KiB, 4 MiB]` (the floor is the default, so the knob can only raise). Unset is byte-identical framing. Also exposes the stream id's height for the timing hook. |
+
+### (f) Config and env
+
+| file | +/- | what it does |
+|---|---|---|
+| `src/env_config.rs` | +133/-0 | The four lane variables, read here and nowhere else: `ARC_PAYMENT_LEAN_LANE` (only `1`/`true` enable it), `ARC_PAYMENT_LEAN_RPC` (default `http://127.0.0.1:8560`), `ARC_PAYMENT_LEAN_BUDGET_GAS` (default 300 M), `ARC_PAYMENT_LEAN_PEER_RPCS` (comma-separated). Documents the two variables deliberately read *outside* `EnvConfig` — `ARC_HEIGHT_TIMING` and `ARC_PROPOSAL_CHUNK_SIZE`, both `LazyLock`s with no `State` in reach at their call sites — and pins the flag-off defaults. |
+
+### (g) What pins the flag-off path
+
+With `ARC_PAYMENT_LEAN_LANE` unset the value id, the proposal framing and the
+store rows must be `main`'s, byte for byte. These tests are the pins; run them
+first on any port.
+
+| pin | test |
+|---|---|
+| Value id is the plain EVM block hash, always | `types::block::tests::to_proposed_value_with_validity_overrides_only_the_vote_validity` — the lean payload never enters the voted value |
+| Proposal/sync framing is stock SSZ | `types::block::lane_tests::encode_value_flag_off_is_stock_ssz` (asserts `== evm.as_ssz_bytes()`), `single_lane_frame_prefix_is_plain_length`, `decode_value_flag_on_rejects_stock_ssz` (a mixed-flag fleet fails closed, never silently) |
+| A lean payload is never silently dropped | `types::block::lane_tests::encode_value_never_drops_a_lean_payload` |
+| The lean seam is a no-op with the flag off | `lean_lane::binding::tests::flag_off_is_a_no_op_that_never_touches_a_lean_node` — a strict double whose every method panics, so this also proves no lean node is contacted; and `a_lane_enabled_node_is_a_no_op_on_an_evm_only_height` |
+| Header stays zero, EVM lane unchanged | `types::block::lane_tests::no_lean_payload_is_always_bound_and_zero_header_means_no_lane`; `eth-engine`'s `generate_block` tests pass `B256::ZERO` |
+| Env defaults | `env_config::tests::lean_lane_is_off_and_inert_when_nothing_is_set`, `only_1_and_true_enable_the_lean_lane` |
+| Store rows | `consensus-db`'s `test_store_and_get_undecided_block` — round-trips a row whose `lean_payload` is `None`, through the unchanged SSZ schema |
+
+### Porting checklist, in dependency order
+
+Each step compiles and its tests pass before the next one starts.
+
+1. **`arc-eth-engine` foundations** — `transient.rs`, then `lean_shim.rs`, then
+   the `lib.rs` declarations and the `base64` dependency. Nothing else depends
+   on anything else yet; `cargo test -p arc-eth-engine` is green here.
+2. **`arc-consensus-types`** — the `lean_payload` field, the header-binding
+   helpers, `decode_lean_block`, and the framing functions. This is the step
+   that breaks every `ConsensusBlock` literal in the workspace (add
+   `lean_payload: None`), `consensus-db`'s `decode_block` included. Run the
+   cross-implementation commitment pin against the lean node's `gen_vector`
+   before going further — if the wire format has drifted, nothing downstream
+   is worth building.
+3. **`prev_randao` through the engine** — `generate_block`'s new argument, all
+   callers passing `B256::ZERO`. Verify the EVM header is unchanged flag-off.
+4. **Config** — `EnvConfig`'s four lane fields, and the boot-time shim
+   construction in `node.rs`. Still no behaviour: the lane is off.
+5. **`lean_lane/`** — the four modules and the test double, as a unit. They
+   depend on (1)–(3) and on the two metric families from (e); take
+   `metrics/app.rs`'s `LeanNoVerdictReason` and counters with them.
+6. **The handler arms**, in the order the lane is exercised: `payload.rs` and
+   `proposal_parts.rs` (the seams and the framing) → `get_value` (propose) →
+   `received_proposal_part` + `started_round` (vote) → `decided` (anchor) →
+   `restream_proposal` + `process_synced_value` + `get_decided_values`
+   (recovery and sync) → `app.rs` threading the `Option<&LeanShim>` through.
+7. **Optional, separable, in any order afterwards**: `height_timing.rs` and
+   its call sites; `ARC_PROPOSAL_CHUNK_SIZE` in `streaming.rs`; the
+   `consensus-db` store scan work in (d). None of the three is required for
+   the lane to run, and each ports on its own.
+8. **Verify** — `cargo test -p arc-node-consensus -p arc-eth-engine
+   -p arc-consensus-types -p arc-consensus-db`, `cargo clippy --workspace
+   --all-targets -- -D warnings`, `cargo fmt --all -- --check`; then the (g)
+   flag-off pins with the flag unset, then a lane-enabled local testnet
+   (§4b).
+
 ## 2. Contract with the lean node
 
 Block bytes (opaque to consensus except the header):
