@@ -408,6 +408,24 @@ pub async fn validate_consensus_block(
     // from total STF (invalid tx = no-op, a byzantine proposer can never
     // halt the lane) + the certificate binding the recomputed commitment.
     if let Some(lane) = block.lean_payload.as_ref() {
+        // Header/lean binding: the EVM header's `prev_randao` must carry the
+        // recomputed lean commitment (Task 5). This runs before every other
+        // lean check and before any shim call — a mismatched header is a
+        // structural forgery regardless of what the lean bytes decode to.
+        if !block.lean_binding_ok() {
+            record_invalid_payload(
+                block,
+                &format!(
+                    "lean lane: header/lean mismatch (prev_randao {:?} vs recomputed {})",
+                    block.header_lean_commitment(),
+                    lane.commitment()
+                ),
+                store,
+                metrics,
+            )
+            .await;
+            return Ok(Validity::Invalid);
+        }
         let evm = &block.execution_payload.payload_inner.payload_inner;
         // Timestamp lockstep with the EVM lane. Numbers are NOT coupled to EVM
         // numbers: the lane may activate mid-chain, so lean numbers advance
@@ -1323,6 +1341,28 @@ mod tests {
 
         assert_eq!(validity, Validity::Invalid);
         assert_eq!(metrics.get_invalid_payloads_count(), 1);
+    }
+
+    /// A header whose `prev_randao` disagrees with the carried lean payload's
+    /// recomputed commitment must be rejected before any other lean check
+    /// (timestamp lockstep, parent linkage) or shim call runs.
+    #[tokio::test]
+    async fn lean_header_mismatch_is_invalid_before_any_shim_call() {
+        let mut validator = MockPayloadValidator::new();
+        validator.expect_validate_payload().returning(|_| Ok(PayloadValidationResult::Valid));
+        let mut store = MockInvalidPayloadsRepository::new();
+        store
+            .expect_append()
+            .times(1)
+            .withf(|ip| ip.reason.contains("header/lean mismatch"))
+            .returning(|_| Ok(()));
+        let metrics = AppMetrics::default();
+        let mut block = test_block();
+        let bytes = lean_block_bytes(B256::repeat_byte(1), 5, block.execution_payload.timestamp() * 1000);
+        block.lean_payload = Some(LeanLanePayload::new(bytes).unwrap());
+        block.execution_payload.payload_inner.payload_inner.prev_randao = B256::repeat_byte(0xee);
+        let v = validate_consensus_block(&validator, None, &block, &store, &metrics).await.unwrap();
+        assert_eq!(v, Validity::Invalid);
     }
 
     #[tokio::test]

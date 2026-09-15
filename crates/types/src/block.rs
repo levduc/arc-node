@@ -101,6 +101,22 @@ impl ConsensusBlock {
         self.lean_payload.as_ref().map(|l| l.commitment())
     }
 
+    /// The lean commitment the EVM header commits to (`prev_randao`), if any.
+    /// Zero means "no lane" — Arc sets zero when the lane is off.
+    pub fn header_lean_commitment(&self) -> Option<BlockHash> {
+        let r = self.execution_payload.payload_inner.payload_inner.prev_randao;
+        (r != BlockHash::ZERO).then_some(r)
+    }
+
+    /// True iff the EVM header and the carried lean payload agree: no lean
+    /// payload, or `prev_randao == recomputed lean commitment`.
+    pub fn lean_binding_ok(&self) -> bool {
+        match &self.lean_payload {
+            None => true,
+            Some(l) => self.header_lean_commitment() == Some(l.commitment()),
+        }
+    }
+
     /// Recomputes the canonical block hash from the execution payload contents.
     pub fn canonical_block_hash(&self) -> Result<BlockHash, PayloadError> {
         canonical_block_hash(&self.execution_payload)
@@ -646,6 +662,18 @@ mod lane_tests {
         }
     }
 
+    /// A block carrying a lean payload of `n_txs` tiny transactions.
+    fn block_with_lean(seed: u8, n_txs: usize) -> ConsensusBlock {
+        let txs: Vec<Vec<u8>> = (0..n_txs).map(|i| vec![seed, i as u8]).collect();
+        let tx_refs: Vec<&[u8]> = txs.iter().map(Vec::as_slice).collect();
+        block(payload(seed), Some(lean(seed, 1, 1000, &tx_refs)))
+    }
+
+    /// A single-lane block with no lean payload.
+    fn block_without_lean(seed: u8) -> ConsensusBlock {
+        block(payload(seed), None)
+    }
+
     /// Builds canonical lean block bytes for tests (mirrors the lean-lane-node
     /// encoding: [parent][number LE][ts_ms LE][n u32 LE]([len u32 LE][tx])*).
     fn lean_bytes(parent: u8, number: u64, ts_ms: u64, txs: &[&[u8]]) -> Vec<u8> {
@@ -877,5 +905,28 @@ mod lane_tests {
         let evm = payload(0x11);
         let bytes = encode_value(&evm, Some(b"x"), false);
         assert_eq!(bytes, frame_lanes(&evm, Some(b"x")));
+    }
+
+    #[test]
+    fn binding_ok_when_header_carries_the_lean_commitment() {
+        let mut b = block_with_lean(0x11, 3); // existing helper building a ConsensusBlock with a lean payload
+        let c = b.lean_payload.as_ref().unwrap().commitment();
+        b.execution_payload.payload_inner.payload_inner.prev_randao = c;
+        assert!(b.lean_binding_ok());
+        assert_eq!(b.header_lean_commitment(), Some(c));
+    }
+
+    #[test]
+    fn binding_fails_when_header_disagrees() {
+        let mut b = block_with_lean(0x11, 3);
+        b.execution_payload.payload_inner.payload_inner.prev_randao = B256::repeat_byte(0xee);
+        assert!(!b.lean_binding_ok());
+    }
+
+    #[test]
+    fn no_lean_payload_is_always_bound_and_zero_header_means_no_lane() {
+        let b = block_without_lean(0x11);
+        assert!(b.lean_binding_ok());
+        assert_eq!(b.header_lean_commitment(), None);
     }
 }
