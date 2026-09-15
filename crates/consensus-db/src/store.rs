@@ -1017,11 +1017,24 @@ impl Db {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(UNDECIDED_BLOCKS_TABLE)?;
 
-        // Iterate through all entries to find one that matches height and block_hash
-        for result in table.iter()? {
+        // The key is ordered `(height, round, hash)`, so every row for one
+        // height is a contiguous prefix: seek to it instead of walking the
+        // whole table. This runs on the decide critical path, between the
+        // `Decided` message and the lean lane's anchor, so it must not scale
+        // with rows stashed for other heights.
+        //
+        // `Round::Nil` is the smallest round key (-1; every real round is
+        // >= 0), so `(height, Nil, 0)` is at or before this height's first
+        // row, and `(height + 1, Nil, 0)` is at or before the next height's.
+        let range_start = (height, Round::Nil, BlockHash::new([0; 32]));
+        let range_end = (height.increment(), Round::Nil, BlockHash::new([0; 32]));
+
+        for result in table.range(range_start..range_end)? {
             let (key, value) = result?;
             let (key_height, _key_round, key_block_hash) = key.value();
 
+            // Defensive: the range already scopes to `height`, but keep the
+            // equality check so the row set is identical to the full scan.
             if key_height == height && key_block_hash == block_hash {
                 let bytes = value.value();
                 #[allow(clippy::arithmetic_side_effects)]
@@ -2372,6 +2385,96 @@ mod tests {
 
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap(), block);
+    }
+
+    /// `get_undecided_block_by_height_and_block_hash` reads a prefix range
+    /// rather than the whole table (it is on the decide critical path, ahead
+    /// of the lean-lane anchor). The row set must be identical to the full
+    /// scan: the one row with this (height, hash), found whatever round it
+    /// was stored under, and never a row from a neighbouring height.
+    #[tokio::test]
+    #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
+    async fn test_get_undecided_block_by_hash_scopes_to_the_height() {
+        let store = create_store().await;
+
+        // (height, round) pairs, including Round::Nil (the smallest round key,
+        // which the range's lower bound relies on) and a high round.
+        let layout = [
+            (1u64, Round::new(0)),
+            (2, Round::Nil),
+            (2, Round::new(0)),
+            (2, Round::new(9)),
+            (3, Round::new(0)),
+        ];
+
+        let mut stored = Vec::new();
+        for (i, (h, r)) in layout.into_iter().enumerate() {
+            let mut payload = arbitrary_payload();
+            // Distinct block hash per row, so each is addressable on its own.
+            payload.payload_inner.payload_inner.block_hash = B256::repeat_byte(i as u8 + 1);
+            let block = ConsensusBlock {
+                height: Height::new(h),
+                round: r,
+                valid_round: r,
+                proposer: Address::new([i as u8; 20]),
+                validity: Validity::Valid,
+                execution_payload: payload,
+                signature: None,
+                lean_payload: None,
+            };
+            store.store_undecided_block(block.clone()).await.unwrap();
+            stored.push(block);
+        }
+
+        // Every row is found at its own height, whatever round it carries.
+        for block in &stored {
+            let got = store
+                .get_undecided_block_by_height_and_block_hash(
+                    block.height,
+                    block.self_reported_block_hash(),
+                )
+                .await
+                .unwrap()
+                .expect("the row must be found by (height, hash)");
+            assert_eq!(&got, block);
+        }
+
+        // The same hash at the wrong height is a miss — the range must not
+        // spill into a neighbouring height.
+        for block in &stored {
+            for other in [block.height.decrement(), Some(block.height.increment())] {
+                let Some(other) = other else { continue };
+                if other == block.height {
+                    continue;
+                }
+                assert!(
+                    store
+                        .get_undecided_block_by_height_and_block_hash(
+                            other,
+                            block.self_reported_block_hash(),
+                        )
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "height {other} must not serve height {}'s row",
+                    block.height
+                );
+            }
+        }
+
+        // An unknown hash at a populated height is a miss, not the first row.
+        assert!(store
+            .get_undecided_block_by_height_and_block_hash(Height::new(2), B256::repeat_byte(0xfe))
+            .await
+            .unwrap()
+            .is_none());
+
+        // A height with no rows at all is a miss.
+        assert!(store
+            .get_undecided_block_by_height_and_block_hash(Height::new(99), B256::repeat_byte(1))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -4147,6 +4250,92 @@ mod tests {
         eprintln!(
             "store_bench clean_stale_consensus_data on empty tables (median of 20) = {:.3} ms",
             ms[ms.len() / 2]
+        );
+    }
+
+    /// The store work that sits on the decide path, between the `Decided`
+    /// message and the lean lane's anchor, and just after it. Each of these
+    /// gets a `dec_*` field in the `height_timing` line; this bench is the
+    /// bounded-environment reference the fleet numbers are read against.
+    #[tokio::test]
+    #[ignore = "timing bench; run with --ignored --nocapture"]
+    #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
+    async fn store_bench_decide_path() {
+        let dir = tempdir().unwrap();
+        let store = create_store_with_cache(dir.path(), ByteSize::gib(1)).await;
+
+        // A fat undecided row per height, as the receive path stores them.
+        let fat_tx = alloy_primitives::Bytes::from(vec![0xcdu8; PENDING_BENCH_VALUE_BYTES]);
+        let mut hashes = Vec::new();
+        for i in 0..PENDING_BENCH_COUNT {
+            let height = Height::new(1 + i as u64);
+            let mut payload = arbitrary_payload();
+            payload.payload_inner.payload_inner.block_hash = B256::repeat_byte(i as u8 + 1);
+            payload.payload_inner.payload_inner.transactions = vec![fat_tx.clone()];
+            let block = ConsensusBlock {
+                height,
+                round: Round::new(0),
+                valid_round: Round::Nil,
+                proposer: Address::new([7u8; 20]),
+                validity: Validity::Valid,
+                execution_payload: payload,
+                signature: None,
+                lean_payload: None,
+            };
+            hashes.push((height, block.self_reported_block_hash()));
+            store.store_undecided_block(block).await.unwrap();
+        }
+
+        // dec_lookup: find the decided value's row and SSZ-decode it.
+        let mut lookup_ms = Vec::new();
+        for (height, hash) in hashes.iter().take(5) {
+            let t = Instant::now();
+            let got = store
+                .get_undecided_block_by_height_and_block_hash(*height, *hash)
+                .await
+                .unwrap();
+            lookup_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+            assert!(got.is_some());
+        }
+
+        // Control: a height with no row, isolating the seek from the decode.
+        let mut lookup_miss_ms = Vec::new();
+        for _ in 0..5 {
+            let t = Instant::now();
+            let got = store
+                .get_undecided_block_by_height_and_block_hash(
+                    Height::new(1),
+                    B256::repeat_byte(0xfe),
+                )
+                .await
+                .unwrap();
+            lookup_miss_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+            assert!(got.is_none());
+        }
+
+        // dec_monitor: the telemetry write transaction taken before the
+        // lookup, i.e. ahead of the anchor.
+        let mut monitor_ms = Vec::new();
+        for i in 0..5u64 {
+            let monitor = ProposalMonitor::new(
+                Height::new(1 + i),
+                Address::new([7u8; 20]),
+                SystemTime::now(),
+            );
+            let t = Instant::now();
+            store.store_proposal_monitor_data(monitor).await.unwrap();
+            monitor_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+
+        let med = |mut v: Vec<f64>| {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[v.len() / 2]
+        };
+        eprintln!(
+            "store_bench_decide_path rows={PENDING_BENCH_COUNT}              value_bytes={PENDING_BENCH_VALUE_BYTES}\n               dec_lookup get_undecided_block_by_height_and_block_hash (median of 5) = {:.2} ms\n               dec_lookup, no match (median of 5) = {:.3} ms\n               dec_monitor store_proposal_monitor_data (median of 5) = {:.2} ms",
+            med(lookup_ms),
+            med(lookup_miss_ms),
+            med(monitor_ms),
         );
     }
 
