@@ -367,6 +367,47 @@ impl LeanAnchor for LeanShim {
     }
 }
 
+/// Everything the validation-time catch-up touches: the LOCAL lean node, and
+/// the peer lean nodes it pulls missing blocks from. Split out as a trait so
+/// the budget rules — the per-peer slice, and "budget exhausted is a lag, not
+/// a verdict" — are unit-testable against slow/fast peers without a node.
+// Same `Send`-auto-trait caveat as `LeanBuilder`: workspace-internal only.
+// Not `automock`ed: the tests need peers that are genuinely SLOW (awaiting a
+// sleep inside the call), which mockall's `returning` (a ready value) cannot
+// express; the test double lives next to the tests instead.
+#[allow(async_fn_in_trait)]
+pub trait LeanCatchup: Send + Sync {
+    /// How many peer lean nodes are configured (`ARC_PAYMENT_LEAN_PEER_RPCS`).
+    fn peer_count(&self) -> usize;
+    /// Canonical bytes for lean block `number` from peer `peer`.
+    async fn peer_block_bytes(&self, peer: usize, number: u64) -> eyre::Result<Option<Vec<u8>>>;
+    /// Feed bytes to the LOCAL node (idempotent by commitment).
+    async fn feed_local(&self, bytes: Vec<u8>) -> eyre::Result<NewBlockStatus>;
+    /// The LOCAL node's head.
+    async fn local_head(&self) -> eyre::Result<LeanHead>;
+}
+
+impl LeanCatchup for LeanShim {
+    fn peer_count(&self) -> usize {
+        self.peers.len()
+    }
+
+    async fn peer_block_bytes(&self, peer: usize, number: u64) -> eyre::Result<Option<Vec<u8>>> {
+        match self.peers.get(peer) {
+            Some(p) => p.get_block_bytes(number).await,
+            None => Ok(None),
+        }
+    }
+
+    async fn feed_local(&self, bytes: Vec<u8>) -> eyre::Result<NewBlockStatus> {
+        self.new_block(&bytes).await
+    }
+
+    async fn local_head(&self) -> eyre::Result<LeanHead> {
+        self.get_head().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
