@@ -606,20 +606,24 @@ docker images, `lean-lane-node`/`spammer` from `/home/papaduck/lean-lane`
 `v0.2`, 100 M lean budget, N=50 fan-out, pool-target 1,500, 800 funded
 accounts):
 - `up`: ~26 s to 5/5 validators at lean height 4, byte-identical.
-- 240 s fan-out load, offered 3,000 tx/s: the pool-target-1,500 closed-loop
-  governor held actual sent throughput to 589 tx/s (143,500 txs / 243.5 s,
-  ~7.18 M payments at N=50) — expected on one machine, not a regression.
+- 240 s fan-out load: spammer sent 143,500 txs over 243.5 s (589 tx/s
+  offered, pool-target-1,500 governed — well under the 3,000 tx/s asked for).
+  That send rate is a spammer-side number, not a chain result; block
+  fullness was sampled only in the 66 s window below, not across the full
+  240 s, so no payments-delivered total is reported for the whole load.
 - `restart 3` fired at T+96 s into the load (`docker restart validator3_cl`
   only): validator3 read back within 3 lean heights of the tip immediately —
   `docker restart` completes in about a second on this box and its lean node
   was never touched, so there was nothing to resync.
 - Two `status` samples 60 s apart straddling the restart: lean height
   215→310, **86.4 heights/min (~1.44 blk/s)**, every block in both samples
-  **369 txs = 100 % of the 100 M budget**, `agreement: all 5 lean nodes
-  identical` at both samples and again at load end (height 388) and after
-  the pool drained (height 421, 0 txs). Cadence here is below the steady-
-  state 117–119/min recorded for the v0.1 base in the entry above; this is
-  one sample spanning a restart, not a characterised restart cost.
+  **369 txs = 100 % of the 100 M budget** — the only window fullness was
+  actually sampled in. `agreement: all 5 lean nodes identical` at both
+  samples and again at load end (height 388) and after the pool drained
+  (height 421, 0 txs); fullness outside the 215→310 window was not sampled.
+  Cadence here is below the steady-state 117–119/min recorded for the v0.1
+  base in the entry above; this is one sample spanning a restart, not a
+  characterised restart cost.
 - `docker inspect validator{1..5}_cl --format '{{.RestartCount}}'` reads 0 on
   all five. **This is not "validator3 wasn't restarted"**: Docker's
   `RestartCount` only counts restart-policy-triggered restarts, not a manual
