@@ -48,9 +48,11 @@ pub struct ConsensusBlock {
     /// LEAN payment lane block (`ARC_PAYMENT_LEAN_LANE`): the lane node's
     /// canonical block bytes plus their decoded+verified view. `None` for
     /// single-lane blocks. NOT part of the SSZ store form — the lean node is
-    /// canonical for lane data and the certificate's value_id is the
-    /// authoritative commitment over both lanes. Travels in proposals and
-    /// value-sync via [`frame_lanes_lean`].
+    /// canonical for lane data; the binding to consensus is the EVM header's
+    /// `prev_randao` ([`Self::header_lean_commitment`],
+    /// [`Self::lean_binding_ok`]), not the certified value id, which is
+    /// always the plain EVM block hash. Travels in proposals and value-sync
+    /// via [`frame_lanes_lean`].
     pub lean_payload: Option<LeanLanePayload>,
 }
 
@@ -86,20 +88,6 @@ impl ConsensusBlock {
             .block_hash
     }
 
-
-    /// The value consensus votes on and certifies: exactly the (self-reported)
-    /// EVM block hash for single-lane blocks, or [`commit_lanes`] over both
-    /// lanes when a lean payload is present. Two proposals with the same EVM
-    /// lane but different lean lanes therefore have different value ids — the
-    /// lean lane cannot be forked under one certificate.
-    pub fn value_id(&self) -> BlockHash {
-        commit_lanes(self.self_reported_block_hash(), self.lean_lane_commitment())
-    }
-
-    /// The lean lane's commitment, if this block carries one.
-    pub fn lean_lane_commitment(&self) -> Option<BlockHash> {
-        self.lean_payload.as_ref().map(|l| l.commitment())
-    }
 
     /// The lean commitment the EVM header commits to (`prev_randao`), if any.
     /// Zero means "no lane" — Arc sets zero when the lane is off.
@@ -150,23 +138,25 @@ impl ConsensusBlock {
     /// Builds the [`ProposedValue`] voted on for this block, using `validity` for
     /// the vote instead of the block's persisted [`Self::validity`].
     ///
-    /// The value id is the self-reported (wire) EVM hash peers vote on — or the
-    /// commitment over both lanes when a lean payload is present ([`Self::value_id`]); only
+    /// The value id is always the self-reported (wire) hash peers vote on; only
     /// the vote validity is overridden, so a caller can prevote nil on a block it
-    /// still stores with a different (execution-only) validity.
+    /// still stores with a different (execution-only) validity. A lean payload,
+    /// if present, is bound into the EVM header instead (see
+    /// [`Self::header_lean_commitment`], [`Self::lean_binding_ok`]) — it never
+    /// enters the voted value id.
     pub fn to_proposed_value_with_validity(&self, validity: Validity) -> ProposedValue<ArcContext> {
         ProposedValue {
             height: self.height,
             round: self.round,
             proposer: self.proposer,
             valid_round: self.valid_round,
-            value: Value::new(self.value_id()),
+            value: Value::new(self.self_reported_block_hash()),
             validity,
         }
     }
 }
 
-// The value id is [`ConsensusBlock::value_id`]: the self-reported EVM hash, or the two-lane commitment.
+// The value id is the self-reported (wire) hash that peers vote on.
 impl From<&ConsensusBlock> for ProposedValue<ArcContext> {
     fn from(block: &ConsensusBlock) -> Self {
         block.to_proposed_value_with_validity(block.validity)
@@ -178,7 +168,7 @@ impl From<&ConsensusBlock> for LocallyProposedValue<ArcContext> {
         LocallyProposedValue {
             height: block.height,
             round: block.round,
-            value: Value::new(block.value_id()),
+            value: Value::new(block.self_reported_block_hash()),
         }
     }
 }
@@ -227,56 +217,29 @@ pub struct DecidedBlock {
 }
 
 impl DecidedBlock {
-    /// Build a decided block, asserting that the EVM hash and the (optional)
-    /// lean lane commitment reproduce the certified value id.
-    pub fn new_with_lane_commitment(
+    /// Creates a new decided block from an execution payload and a commit certificate.
+    /// The block hash in the execution payload must match the hash in the commit certificate.
+    pub fn new(
         execution_payload: ExecutionPayloadV3,
-        lane_commitment: Option<BlockHash>,
         certificate: CommitCertificate<ArcContext>,
     ) -> Self {
-        let evm_block_hash = execution_payload.payload_inner.payload_inner.block_hash;
-        let value_id = commit_lanes(evm_block_hash, lane_commitment);
-        let certificate_value_id = certificate.value_id.block_hash();
+        let payload_block_hash = execution_payload.payload_inner.payload_inner.block_hash;
+        let certificate_block_hash = certificate.value_id.block_hash();
+
         assert_eq!(
-            value_id, certificate_value_id,
-            "decided lanes do not reproduce the certified value_id \
-             (evm {evm_block_hash}, lane {lane_commitment:?})"
+            payload_block_hash, certificate_block_hash,
+            "Block hash in the execution payload does not match the hash in the commit certificate"
         );
+
         Self {
             execution_payload,
             certificate,
         }
     }
 
-    /// Rehydrate from the store, which persists the EVM payload only. The
-    /// certificate carries the authoritative (possibly two-lane) value id.
-    pub fn from_stored_evm_only(
-        execution_payload: ExecutionPayloadV3,
-        certificate: CommitCertificate<ArcContext>,
-    ) -> Self {
-        Self {
-            execution_payload,
-            certificate,
-        }
-    }
-
+    /// Returns the height at which the block was decided.
     pub fn height(&self) -> Height {
         self.certificate.height
-    }
-}
-
-/// Commitment over the lanes of a block: exactly the EVM block hash when there
-/// is no second lane (so single-lane chains are byte-for-byte unaffected),
-/// otherwise `keccak(evm_block_hash ‖ lane_commitment)`. Order-sensitive.
-pub fn commit_lanes(evm_block_hash: BlockHash, lane_commitment: Option<BlockHash>) -> BlockHash {
-    match lane_commitment {
-        None => evm_block_hash,
-        Some(lane) => {
-            let mut hasher = Keccak256::new();
-            hasher.update(evm_block_hash.as_slice());
-            hasher.update(lane.as_slice());
-            BlockHash::from_slice(&hasher.finalize())
-        }
     }
 }
 
@@ -499,6 +462,21 @@ pub fn unframe_lanes(bytes: &[u8]) -> eyre::Result<LaneFrame> {
     Ok(LaneFrame::Evm(execution_payload))
 }
 
+/// Canonical lean block bytes with no transactions (spec §3 layout):
+/// `[parent 32][number u64 LE][timestamp_ms u64 LE][n=0 u32 LE]`. Public and
+/// doc-hidden (not `#[cfg(test)]`) so both this crate's tests and
+/// `arc-node-consensus`'s can build lean bytes identically without
+/// duplicating the layout.
+#[doc(hidden)]
+pub fn test_lean_block_bytes(parent: BlockHash, number: u64, timestamp_ms: u64) -> Vec<u8> {
+    let mut b = Vec::with_capacity(52);
+    b.extend_from_slice(parent.as_slice());
+    b.extend_from_slice(&number.to_le_bytes());
+    b.extend_from_slice(&timestamp_ms.to_le_bytes());
+    b.extend_from_slice(&0u32.to_le_bytes());
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,27 +671,6 @@ mod lane_tests {
         LeanLanePayload::new(lean_bytes(parent, number, ts_ms, txs)).unwrap()
     }
 
-    /// Single-lane blocks must commit to exactly the EVM block hash, so existing
-    /// chains and the single-lane path are byte-for-byte unaffected.
-    #[test]
-    fn value_id_equals_block_hash_without_lean_lane() {
-        let b = block(payload(0x11), None);
-        assert_eq!(b.value_id(), b.self_reported_block_hash());
-    }
-
-    /// With a lean lane, the commitment binds BOTH lanes and therefore differs
-    /// from the bare EVM block hash.
-    #[test]
-    fn value_id_binds_lean_lane() {
-        let b = block(payload(0x11), Some(lean(0xAA, 1, 1000, &[b"tx"])));
-        assert_ne!(
-            b.value_id(),
-            b.self_reported_block_hash(),
-            "value_id must not collapse to the EVM hash when a lean lane is present"
-        );
-        assert_eq!(b.value_id(), commit_lanes(b.self_reported_block_hash(), b.lean_lane_commitment()));
-    }
-
     #[test]
     fn lean_decode_recomputes_commitment_and_is_content_sensitive() {
         let a = decode_lean_block(&lean_bytes(0xAA, 7, 1000, &[b"tx-one", b"tx-two"])).unwrap();
@@ -811,47 +768,6 @@ mod lane_tests {
             format!("{:?}", b2.commitment),
             "0x05bbfd6d78e6242a68ee6e45076cf707b3705cfce97ec42b52481d1063827944"
         );
-    }
-
-    /// Equivocation guard: same EVM lane, different lean bytes ⇒ different
-    /// commitment ⇒ different value_id through commit_lanes.
-    #[test]
-    fn lean_commitment_binds_value_id() {
-        let evm_hash = BlockHash::repeat_byte(0x11);
-        let c1 = decode_lean_block(&lean_bytes(0xAA, 3, 500, &[b"tx-a"])).unwrap().commitment;
-        let c2 = decode_lean_block(&lean_bytes(0xAA, 3, 500, &[b"tx-b"])).unwrap().commitment;
-        assert_ne!(commit_lanes(evm_hash, Some(c1)), commit_lanes(evm_hash, Some(c2)));
-        assert_ne!(commit_lanes(evm_hash, Some(c1)), evm_hash);
-    }
-
-    /// The equivocation guard at the block level: two blocks with the SAME EVM
-    /// lane but DIFFERENT lean lanes must produce DIFFERENT value_ids.
-    /// Otherwise a proposer could fork the lean lane under one certificate.
-    #[test]
-    fn value_id_changes_when_only_lean_lane_changes() {
-        let evm = payload(0x11);
-        let b1 = block(evm.clone(), Some(lean(0xAA, 3, 500, &[b"tx-a"])));
-        let b2 = block(evm.clone(), Some(lean(0xAA, 3, 500, &[b"tx-b"])));
-        assert_eq!(b1.self_reported_block_hash(), b2.self_reported_block_hash(), "test setup: EVM lane identical");
-        assert_ne!(
-            b1.lean_lane_commitment(),
-            b2.lean_lane_commitment(),
-            "test setup: lean lanes must differ"
-        );
-        assert_ne!(
-            b1.value_id(),
-            b2.value_id(),
-            "same EVM lane + different lean lane must yield different commitments"
-        );
-    }
-
-    /// `commit_lanes` is order-sensitive: swapping the two hashes yields a
-    /// different commitment (guards against a symmetric-hash mistake).
-    #[test]
-    fn commit_lanes_is_order_sensitive() {
-        let a = BlockHash::from_slice(&[0xAA; 32]);
-        let b = BlockHash::from_slice(&[0xBB; 32]);
-        assert_ne!(commit_lanes(a, Some(b)), commit_lanes(b, Some(a)));
     }
 
     #[test]

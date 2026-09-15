@@ -771,6 +771,7 @@ mod tests {
         ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, PayloadStatus,
     };
 
+    use arc_consensus_types::block::test_lean_block_bytes as lean_block_bytes;
     use arc_consensus_types::{Address, Height, Round, B256};
     use arc_eth_engine::engine::{MockEngineAPI, MockEthereumAPI};
     use arc_eth_engine::json_structures::ExecutionBlock;
@@ -1582,15 +1583,5 @@ mod tests {
         ).await.unwrap();
         assert_eq!(lean.unwrap().commitment(), commitment);
         assert_eq!(payload.timestamp() * 1000, expect_ts_ms);
-    }
-
-    /// Canonical lean block bytes with no transactions (spec §3 layout).
-    fn lean_block_bytes(parent: B256, number: u64, timestamp_ms: u64) -> Vec<u8> {
-        let mut b = Vec::with_capacity(52);
-        b.extend_from_slice(parent.as_slice());
-        b.extend_from_slice(&number.to_le_bytes());
-        b.extend_from_slice(&timestamp_ms.to_le_bytes());
-        b.extend_from_slice(&0u32.to_le_bytes());
-        b
     }
 }

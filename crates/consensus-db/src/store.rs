@@ -474,7 +474,7 @@ impl Db {
         self.update_read_metrics(read_bytes, size_of::<Height>(), start.elapsed());
 
         let decided_block = payload.zip(certificate).map(|(execution_payload, cert)| {
-            DecidedBlock::from_stored_evm_only(execution_payload, cert.certificate)
+            DecidedBlock::new(execution_payload, cert.certificate)
         });
 
         Ok(decided_block)
@@ -1104,10 +1104,7 @@ impl Db {
     ) -> Result<(), StoreError> {
         let start = Instant::now();
 
-        // Key by the consensus value id (the commitment over both lanes), NOT
-        // the EVM block hash: the decide path looks blocks up by
-        // `certificate.value_id`, which binds the payment lane too.
-        let key = (block.height, block.round, block.value_id());
+        let key = (block.height, block.round, block.self_reported_block_hash());
         let value = encode_block(&block);
 
         {
@@ -1669,9 +1666,7 @@ impl Store {
         execution_payload: ExecutionPayloadV3,
         proposer: Address,
     ) -> Result<(), StoreError> {
-        // The CL decided store persists only the EVM payload; the authoritative
-        // commitment over both lanes lives in `certificate.value_id`.
-        let decided_block = DecidedBlock::from_stored_evm_only(execution_payload, certificate);
+        let decided_block = DecidedBlock::new(execution_payload, certificate);
 
         let db = Arc::clone(&self.db);
         tokio::task::spawn_blocking(move || db.insert_decided_block(decided_block, proposer))

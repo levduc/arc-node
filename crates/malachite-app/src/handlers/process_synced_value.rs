@@ -136,7 +136,7 @@ async fn on_process_synced_value(
     engine: impl PayloadValidator,
     // The synced value carries BOTH lanes (framed identically to the proposal-
     // streaming path), so synced blocks re-validate the lean lane structurally
-    // and reconstruct the same `value_id` the certificate was signed over.
+    // against the local lean node before consensus votes on the EVM hash.
     lean_shim: Option<&arc_eth_engine::lean_shim::LeanShim>,
     undecided_blocks_repo: impl UndecidedBlocksRepository,
     invalid_payloads_repo: impl InvalidPayloadsRepository,
@@ -209,9 +209,6 @@ async fn on_process_synced_value(
     block.validity = validity;
 
     let block_hash = block.self_reported_block_hash();
-    // The undecided store is keyed by the consensus value id (commitment over
-    // both lanes), so dedup must probe by value_id, not the EVM block hash.
-    let value_id = block.value_id();
 
     if !validity.is_valid() {
         error!(%height, %round, %proposer, %block_hash, "❌ Received invalid payload via sync");
@@ -243,34 +240,24 @@ async fn on_process_synced_value(
         None
     } else {
         undecided_blocks_repo
-            .get_by_round_and_hash(height, round, value_id)
+            .get_by_round_and_hash(height, round, block_hash)
             .await
             .wrap_err_with(|| {
                 format!(
                     "Failed to query undecided blocks repo for dedup at \
-                     height={height}, round={round}, value_id={value_id}"
+                     height={height}, round={round}, block_hash={block_hash}"
                 )
             })?
     };
 
     if let Some(existing) = existing {
-        if existing.validity != validity {
-            // A validation-code fix legitimately flips verdicts an older binary
-            // persisted; the certificate (2/3+ committed this value) is the
-            // authority, so trust the FRESH verdict and say so loudly.
-            warn!(
-                %height, %round, %block_hash,
-                "sync dedup validity disagreement: stored {:?} vs fresh {validity:?}; using the fresh verdict",
-                existing.validity,
-            );
-        }
-        // Return the FRESH block's proposal, not the stored copy: the SSZ store
-        // drops lean bytes, so `existing.value_id()` collapses to the EVM hash
-        // in lean mode and the framework would reject it against the
-        // certificate forever. The dedup's only job is skipping the
-        // persistence wait + duplicate store.
-        let _ = existing;
-        return Ok(Some(ProposedValue::from(&block)));
+        debug_assert_eq!(
+            existing.validity, validity,
+            "dedup hit at height={height}, round={round}, block_hash={block_hash}: \
+             existing.validity ({:?}) != freshly-computed validity ({validity:?})",
+            existing.validity,
+        );
+        return Ok(Some(ProposedValue::from(&existing)));
     }
 
     let proposal = ProposedValue::from(&block);

@@ -33,7 +33,10 @@ use arc_consensus_types::codec::proto::ProtobufCodec;
 use arc_consensus_types::sync::{Response, ValueResponse};
 use arc_consensus_types::{ArcContext, Height};
 
-use crate::block::{commit_lanes, encode_value};
+use arc_consensus_types::block::{DecidedBlock, LeanLanePayload};
+use arc_consensus_types::B256;
+
+use crate::block::encode_value;
 use crate::metrics::AppMetrics;
 use crate::state::State;
 use crate::store::Store;
@@ -129,118 +132,49 @@ async fn get_decided_values(
 
     let execution_payloads = engine.eth.get_execution_payloads(&block_numbers).await?;
 
-    // LEAN lane: fetch canonical lean block bytes by number for the same
-    // heights (lockstep: lean number == EVM block number, enforced at
-    // validation), so the synced value carries both lanes.
-    // Exactly one lean block anchors per decided height since activation, so
-    // lean_number(h) = lean_head - (latest_decided - h); pre-activation heights
-    // map to <= 0 and serve as EVM-only frames (their certificates bound no
-    // lean lane).
-    let mut lean_bytes_by_height: Vec<Option<Vec<u8>>> = Vec::new();
-    if let Some(shim) = &lean_shim {
-        let head = shim.get_head().await?;
-        let latest = latest_height.as_u64();
-        for (h, ep) in heights.iter().zip(execution_payloads.iter()) {
-            let Some(ep) = ep else {
-                lean_bytes_by_height.push(None);
-                continue;
-            };
-            let evm_hash = ep.payload_inner.payload_inner.block_hash;
-            let Some(cert_vid) = store
-                .get_certificate(Some(*h))
-                .await?
-                .map(|s| s.certificate.value_id.block_hash())
-            else {
-                lean_bytes_by_height.push(None);
-                continue;
-            };
-            // Heights whose certificate bound no lean lane (pre-activation, or
-            // decided EVM-only) serve EVM-only frames.
-            if commit_lanes(evm_hash, None) == cert_vid {
-                lean_bytes_by_height.push(None);
-                continue;
-            }
-            // The offset guess (lean_number = head - (latest - h)) is only
-            // valid when our lane is fully caught up AND every height since
-            // activation carried a lean block. Neither held during the
-            // 2026-08-22 freeze window — a mid-recovery head made this serve
-            // WRONG blocks, every height then failed the certificate check
-            // below, and the syncing peer starved on empty responses. So:
-            // verify the guess against the certificate, and scan outward for
-            // the block that actually reproduces it.
-            let behind = latest.saturating_sub(h.as_u64());
-            let guess = head.number.saturating_sub(behind).max(1);
-            let mut candidates = vec![guess];
-            for d in 1..=128u64 {
-                if guess > d {
-                    candidates.push(guess - d);
-                }
-                if guess + d <= head.number {
-                    candidates.push(guess + d);
-                }
-            }
-            let mut found = None;
-            for n in candidates {
-                if n == 0 || n > head.number {
-                    continue;
-                }
-                if let Some(bytes) = shim.get_block_bytes(n).await? {
-                    if let Ok(lane) =
-                        arc_consensus_types::block::LeanLanePayload::new(bytes.clone())
-                    {
-                        if commit_lanes(evm_hash, Some(lane.commitment())) == cert_vid {
-                            found = Some((n, bytes));
-                            break;
-                        }
-                    }
-                }
-            }
-            match found {
-                Some((n, bytes)) => {
-                    if n != guess {
-                        info!(
-                            height = h.as_u64(), guess, resolved = n,
-                            "GetDecidedValues: lean mapping corrected by certificate scan"
-                        );
-                    }
-                    lean_bytes_by_height.push(Some(bytes));
-                }
-                None => {
-                    warn!(
-                        height = h.as_u64(), latest, lean_head = head.number, guess,
-                        "GetDecidedValues: no lean block reproduces the certificate \
-                         (lane behind or gap > 128) — height not served"
-                    );
-                    lean_bytes_by_height.push(None);
-                }
-            }
-        }
-    } else {
-        lean_bytes_by_height = vec![None; heights.len()];
-    }
-
     let mut values = Vec::with_capacity(range.len());
     let mut total_bytes = ByteSize::b(0);
 
-    for ((height, execution_payload), lean_bytes) in heights
-        .into_iter()
-        .zip(execution_payloads.into_iter())
-        .zip(lean_bytes_by_height.into_iter())
-    {
+    for (height, execution_payload) in heights.into_iter().zip(execution_payloads.into_iter()) {
         let Some(execution_payload) = execution_payload else {
             debug!(%height, "No execution payload found at this height from EL, skipping");
             continue;
         };
 
+        // LEAN lane: serve the block whose recomputed commitment equals the
+        // EVM header's `prev_randao`, fetched by that commitment — never
+        // guessed by number. `None` (no shim, or a zero header) serves an
+        // EVM-only frame for this height.
+        let mut lean: Option<LeanLanePayload> = None;
+        if let Some(shim) = &lean_shim {
+            let header = execution_payload.payload_inner.payload_inner.prev_randao;
+            if header != B256::ZERO {
+                match shim.get_block_bytes_by_commitment(header).await {
+                    Ok(Some(bytes)) => match lean_bytes_match_header(&execution_payload, &bytes) {
+                        Ok(lane_payload) => lean = Some(lane_payload),
+                        Err(e) => {
+                            warn!(%height, %header, "GetDecidedValues: fetched lean bytes do not match the header commitment: {e}");
+                            continue;
+                        }
+                    },
+                    Ok(None) => {
+                        warn!(
+                            %height, %header,
+                            "GetDecidedValues: no lean block for the header commitment — a peer serves it"
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!(%height, %header, "GetDecidedValues: lean shim lookup failed: {e}");
+                        continue;
+                    }
+                }
+            }
+        }
+
         let (raw_value, raw_bytes_len) =
-            match get_raw_decided_value(
-                &store,
-                execution_payload,
-                lean_bytes,
-                height,
-                lean_shim.is_some(),
-            )
-            .await
+            match get_raw_decided_value(&store, execution_payload, lean, height, lean_shim.is_some())
+                .await
             {
                 Ok(result) => result,
                 Err(e) => {
@@ -296,10 +230,25 @@ async fn get_decided_values(
     Ok(values)
 }
 
+/// The lean bytes a served height must carry: the block whose recomputed
+/// commitment equals the EVM header's `prev_randao`. The CL never trusts a
+/// claimed commitment — this always recomputes it via [`LeanLanePayload::new`].
+fn lean_bytes_match_header(evm: &ExecutionPayloadV3, bytes: &[u8]) -> eyre::Result<LeanLanePayload> {
+    let header = evm.payload_inner.payload_inner.prev_randao;
+    if header == B256::ZERO {
+        return Err(eyre!("EVM header carries no lean commitment"));
+    }
+    let lane = LeanLanePayload::new(bytes.to_vec()).wrap_err("lean bytes failed strict decode")?;
+    if lane.commitment() != header {
+        return Err(eyre!("lean bytes commitment {} != header {header}", lane.commitment()));
+    }
+    Ok(lane)
+}
+
 async fn get_raw_decided_value(
     store: &Store,
     execution_payload: ExecutionPayloadV3,
-    lean_bytes: Option<Vec<u8>>,
+    lean: Option<LeanLanePayload>,
     height: Height,
     lean_lane_enabled: bool,
 ) -> eyre::Result<(RawDecidedValue<ArcContext>, ByteSize)> {
@@ -308,40 +257,23 @@ async fn get_raw_decided_value(
         .await?
         .ok_or_else(|| eyre!("No certificate found at height {height}"))?;
 
-    // Verify the lanes we fetched reproduce the committed value_id before shipping
-    // them to a peer. Guards against a lean-node mismatch (wrong/missing block)
-    // that would otherwise send a value the peer cannot validate against the cert.
-    // With the lane off this is exactly the EVM block hash check `DecidedBlock::new`
-    // used to assert.
-    let evm_block_hash = execution_payload.payload_inner.payload_inner.block_hash;
-    let lean_lane = lean_bytes
-        .map(arc_consensus_types::block::LeanLanePayload::new)
-        .transpose()
-        .wrap_err_with(|| {
-            format!("lean lane: fetched block bytes failed strict decode at height {height}")
-        })?;
-    let lane_commitment = lean_lane.as_ref().map(|l| l.commitment());
-    let value_id = commit_lanes(evm_block_hash, lane_commitment);
-    if value_id != stored.certificate.value_id.block_hash() {
-        return Err(eyre!(
-            "commitment over fetched lanes ({value_id}) does not match certificate value_id ({}) at height {height}",
-            stored.certificate.value_id,
-        ));
-    }
+    // Consensus votes on the plain EVM block hash; `DecidedBlock::new` asserts
+    // it reproduces the certificate's value id exactly as upstream.
+    let decided_block = DecidedBlock::new(execution_payload, stored.certificate);
 
     let value_bytes = encode_value(
-        &execution_payload,
-        lean_lane.as_ref().map(|l| l.bytes.as_slice()),
+        &decided_block.execution_payload,
+        lean.as_ref().map(|l| l.bytes.as_slice()),
         lean_lane_enabled,
     );
     debug!(
         height = height.as_u64(),
         len = value_bytes.len(),
-        lean = lean_lane.is_some(),
+        lean = lean.is_some(),
         "GetDecidedValues: serving frame"
     );
     let certificate = ExtendedCommitCertificate::from_commit_certificate_and_extensions(
-        stored.certificate,
+        decided_block.certificate,
         VoteExtensions::default(),
     );
 
@@ -683,5 +615,21 @@ mod tests {
         let result =
             get_clamped_request_range(range.clone(), earliest, latest, batch_size).unwrap();
         assert_eq!(result, h(20, 27));
+    }
+
+    use arc_consensus_types::block::test_lean_block_bytes as lean_block_bytes;
+    use arc_consensus_types::B256;
+
+    #[test]
+    fn served_lean_bytes_must_match_the_header_commitment() {
+        let evm = crate::block::tests_payload_helper(0x11, vec![]);
+        let bytes = lean_block_bytes(B256::repeat_byte(1), 5, evm.timestamp() * 1000);
+        let c = arc_consensus_types::block::decode_lean_block(&bytes).unwrap().commitment;
+        let mut bound = evm.clone();
+        bound.payload_inner.payload_inner.prev_randao = c;
+        assert!(lean_bytes_match_header(&bound, &bytes).is_ok());
+        assert!(lean_bytes_match_header(&evm, &bytes).is_err(), "zero header must not accept lean bytes");
+        let wrong = lean_block_bytes(B256::repeat_byte(2), 5, evm.timestamp() * 1000);
+        assert!(lean_bytes_match_header(&bound, &wrong).is_err());
     }
 }

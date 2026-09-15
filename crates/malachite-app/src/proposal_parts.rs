@@ -601,8 +601,9 @@ mod tests {
     }
 
     /// LEAN lane wire round-trip: a block carrying lean_payload must stream via
-    /// frame_lanes_lean and assemble back byte-identical, with the SAME value_id
-    /// (= keccak(evm_hash ‖ recomputed lean commitment)) on both ends.
+    /// frame_lanes_lean and assemble back byte-identical, with the SAME
+    /// self-reported (voted) EVM block hash on both ends — the lean lane binds
+    /// via the EVM header's `prev_randao`, not the voted value.
     #[tokio::test]
     async fn assemble_block_round_trips_lean_payment() {
         use arc_consensus_types::block::LeanLanePayload;
@@ -645,14 +646,9 @@ mod tests {
             "recomputed commitment identical"
         );
         assert_eq!(
-            assembled.value_id(),
-            block.value_id(),
-            "value_id identical across the wire"
-        );
-        assert_ne!(
-            assembled.value_id(),
             assembled.self_reported_block_hash(),
-            "value_id must bind the lean lane, not collapse to the EVM hash"
+            block.self_reported_block_hash(),
+            "the voted EVM hash is identical across the wire"
         );
     }
 
