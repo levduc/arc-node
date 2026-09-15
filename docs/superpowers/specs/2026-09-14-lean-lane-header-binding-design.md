@@ -53,7 +53,7 @@ Backward compatible: every v0.1 form keeps working.
 | verb | v0.1 | v0.2 addition |
 |---|---|---|
 | `arc_buildBlock{parentCommitment,number,timestampMs,budgetGas}` | `{commitment, blockBytes}` | unchanged |
-| `arc_stageBlock{blockBytes}` | `STAGED` / `SYNCING` | staged entries are kept while their parent is the head **or an ancestor of the head within the last 64 blocks**; they are no longer cleared on every head move. Bounded by the existing queue cap |
+| `arc_stageBlock{blockBytes}` | `STAGED` / `SYNCING` | staged entries are kept while their block `number >= head` — a losing candidate at the settled height stays servable by commitment until the height is passed; they are no longer cleared on every head move. Bounded to **32** entries (FIFO) |
 | `arc_newBlock{blockBytes}` | `VALID` / `SYNCING` | unchanged |
 | `arc_newBlock{commitment}` | — | **new**: promote the staged block with that commitment; if none, look in the sync queue; if none, fetch by commitment from `--peers` (`arc_getBlockBytes{commitment}`), stage and promote; if no peer has it, `{"status":"SYNCING", number}`. Idempotent: already-canonical commitment answers `VALID` |
 | `arc_getBlockBytes{number}` | `{blockBytes|null}` | unchanged |
@@ -204,5 +204,9 @@ before CL v0.2 (the CL calls the new verbs); v0.2 nodes serve v0.1 CLs.
   not today and Arc has no beacon chain. Re-check on each reth bump.
 - A proposer that builds a lean block and then fails the EVM build leaves a
   staged block on its node; staged entries are bounded and reaped, no harm.
-- Retaining staged entries across head moves grows memory; the queue cap
-  (512) and the 64-ancestor rule bound it.
+- Retaining staged entries across head moves grows memory. The bound is the
+  32-entry staged deque plus the `number >= head` rule: at most 32 × (block
+  wire bytes + the touched-account vectors the staged pre-execution holds).
+  At the 225 M / N=50 operating point that is ~32 × 2.6 MB ≈ 83 MB worst case,
+  and in practice one or two entries (a height settles before 32 candidates
+  can be staged).
