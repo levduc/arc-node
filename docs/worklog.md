@@ -1140,3 +1140,40 @@ byte-identical at the end of every run; per-minute samples over 10 min unless no
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-15 (morning) — N=1 ceiling: the single-payment lane does 22.7k tx/s pacer-bound and ~32k at the 2 blk/s knee
+
+**Changed** — nothing in code. Fleet re-authenticated by the user; leftover run v02-0915-0353 torn down.
+
+**Measured** (same fleet/stack as the overnight entry: CL `lean-lane-perf` c46d67b image, lean `perf`
+66c1b43; N=1 fan-out = one payment per signature, 100 B wire; one spammer per machine; every sampled
+block 100 % of budget; 0 restarts; 4/4 byte-identical at the end)
+
+| run | budget | txs/block | blk/min | tx/s = payments/s | offered/pool per machine |
+|---|---|---|---|---|---|
+| F20 v02-0915-0948 | 150 M | 5,769 | 114.3–117.1 (1.90–1.95) | **10,989–11,263** | 4,000 / 8,000 |
+| F21 v02-0915-1001 | 300 M | 11,538 | 115.3–118.1 (1.92–1.97) | **22,175–22,715** | 7,000 / 16,000 |
+| F22 v02-0915-1013 | 450 M | 17,307 | 108.6–110.6 (1.81–1.84) | **31,317–31,910** | 10,000 / 24,000 |
+| F23 v02-0915-1022 | 600 M | 23,076 | 85.9–89.1 (1.43–1.48) | **33,016–34,253** | 12,000 / 30,000 |
+
+- Lean-node CPU rises with signatures: 0.6–1.7 cores at 150 M, 1.3–2.4 at 300 M, 1.75–2.65 at 450 M,
+  up to 2.6 at 600 M (the 20-core and 12-core boxes highest). CL 7–39 %, EL 3–26 %.
+- Block bytes through consensus: 3.2 MB/s at 450 M, 3.4 at 600 M — the same wall as N=100
+  (3.5–3.9 MB/s), a little lower with 10× the signatures.
+
+**Broke / retracted**
+- The campaign's "lean, N=1, 100 M: 6,401 tx/s (85 % full)" row (CLAUDE.md §5) measured the spammer,
+  not the chain: with enough offered load and a deep pool target the same lane is pacer-bound at
+  11.3k (150 M) and 22.7k (300 M). The "at one payment per signature the lanes are equals (~6 k tx/s)"
+  finding is therefore not established for the lean lane; the EVM-lane 6 k figure was not re-measured.
+
+**Decided**
+- Single-payment ceiling on this fleet: ~32k tx/s at the 2 blk/s target (450 M), ~34k absolute (600 M
+  at 1.46 blk/s). Fan-out at N=100 buys ~3.5–4× on top of it (120–136k payments/s) at the same byte wall.
+
+**Open**
+- Re-measure the EVM lane with the same offered-load discipline before comparing the lanes at N=1.
+- Everything from the overnight entry (F18/F19 A/B of 66c1b43, the 30-min decline, parked bugs).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
