@@ -563,3 +563,105 @@ to the honest justification. Three live runs to get one clean.
 **Open**
 - Fleet run of the v0.1 series from the new main (needs the 3 remotes rebuilt from it).
 - Push targets for both repos (arc origin refuses; lean repo has no remote).
+
+## 2026-09-14 — v0.2 header-binding: guide + local testnet restart leg
+
+Branch `lean-lane-v0.2` in `/home/papaduck/arc-lean-v0.1` (worktree; base
+`af5b633`), lean node `/home/papaduck/lean-lane` branch `v0.2`. Task 9 of the
+`2026-09-14-lean-lane-header-binding` plan: the code (five commits
+`275a1cd`..`af5b633`) binds the lean block into the EVM header via
+`prev_randao` instead of the v0.1 two-lane value commitment — consensus votes
+on the plain EVM block hash, the header/lean binding is checked at validate,
+decide anchors by commitment, the CL no longer stashes lean bytes between
+validate and decide. This session updated the guide and local-testnet script
+for that design and proved it, including a CL restart mid-run.
+
+**Changed**
+- `c5d354f` (arc-lean-v0.1, `lean-lane-v0.2`) — `docs/lean-lane-integration.md`:
+  retitled v0.2; §1 series table now lists the five v0.2 commits (was the
+  four-commit v0.1 base); §2 shim table gains the two v0.2 verbs
+  (`arc_newBlock`/`arc_getBlockBytes` by commitment); §3 per-phase table:
+  propose builds the lean block first and binds its commitment as
+  `prev_randao`, validate checks the header/lean binding before anything
+  else, decide anchors `arc_newBlock{commitment}` with the lean node holding
+  the bytes end to end, sync serve looks lean bytes up by header commitment
+  instead of an offset scan; §4 gets a prevrandao-semantics paragraph (the
+  field was already documented non-random; it is now the proposer-chosen
+  lean commitment instead of a hard-coded zero) and a note on what the new
+  `restart` subcommand proves. `grep -n "value_id\|commit_lanes\|stash"
+  docs/lean-lane-integration.md` is empty (every such mention rewritten
+  around the header-commitment design, without using those words even when
+  describing what was removed).
+- `c5d354f` also: `scripts/lean-testnet.sh` gains `restart <n>` —
+  `docker restart validator<n>_cl` only (the lean node underneath stays up),
+  then polls `arc_getHead` on every lean node until validator `n` is within 3
+  heights of the tip. `bash -n` clean.
+- CL delta vs `origin/main` across the four lane crates (`malachite-app`,
+  `eth-engine`, `types`, `consensus-db`) is unchanged by this session (docs/
+  script only): 27 files, +1,997/−129 lines — the ~27 files, +2.0k/−0.13k
+  figure the task started from.
+
+**Measured** (local 5-validator quake testnet, this branch's freshly built
+docker images, `lean-lane-node`/`spammer` from `/home/papaduck/lean-lane`
+`v0.2`, 100 M lean budget, N=50 fan-out, pool-target 1,500, 800 funded
+accounts):
+- `up`: ~26 s to 5/5 validators at lean height 4, byte-identical.
+- 240 s fan-out load, offered 3,000 tx/s: the pool-target-1,500 closed-loop
+  governor held actual sent throughput to 589 tx/s (143,500 txs / 243.5 s,
+  ~7.18 M payments at N=50) — expected on one machine, not a regression.
+- `restart 3` fired at T+96 s into the load (`docker restart validator3_cl`
+  only): validator3 read back within 3 lean heights of the tip immediately —
+  `docker restart` completes in about a second on this box and its lean node
+  was never touched, so there was nothing to resync.
+- Two `status` samples 60 s apart straddling the restart: lean height
+  215→310, **86.4 heights/min (~1.44 blk/s)**, every block in both samples
+  **369 txs = 100 % of the 100 M budget**, `agreement: all 5 lean nodes
+  identical` at both samples and again at load end (height 388) and after
+  the pool drained (height 421, 0 txs). Cadence here is below the steady-
+  state 117–119/min recorded for the v0.1 base in the entry above; this is
+  one sample spanning a restart, not a characterised restart cost.
+- `docker inspect validator{1..5}_cl --format '{{.RestartCount}}'` reads 0 on
+  all five. **This is not "validator3 wasn't restarted"**: Docker's
+  `RestartCount` only counts restart-policy-triggered restarts, not a manual
+  `docker restart`. `State.StartedAt` is the real signal — validator3 reads
+  `02:21:54`, the other four `02:20:05` — confirming only validator3's
+  container restarted and the other four never did.
+- `docker logs validator3_cl 2>&1 | grep -c "Manual intervention"` = 0.
+  Grepping all five CLs' full logs for an `ERROR` mentioning the lean lane:
+  none. The few plain `ERROR` lines present (validator2/3/4, 7/3/2
+  respectively) are all timestamped `02:20:05`, at boot — libp2p
+  `NoPeersSubscribedToTopic` / dial-negotiation noise before the mesh formed,
+  unrelated to the lane or the restart.
+- Teardown verified: `docker ps -q | wc -l` = 0, `ss -ltnp | grep -c
+  ':856[1-5] '` = 0 after `down`.
+
+**Broke / retracted**
+- Nothing broke. One correction to the brief's own expectation: it reads
+  `RestartCount` as the restart signal for validator3; Docker does not
+  increment that field for a manual `docker restart` at all (only for
+  restart-policy restarts), so the correct evidence is `State.StartedAt`
+  (see Measured). Worth fixing in the next brief that asks for this check.
+
+**Decided**
+- Kept `restart` scoped to the CL container only, per the task brief: the
+  lean node staying up is exactly the case the v0.1 CL-side byte copy used to
+  make fragile (a CL that reboots while its lean node is down could park);
+  with the header binding the CL carries nothing across the reboot, so this
+  leg is a reasonable proxy for that failure mode even without also killing
+  the lean node.
+- Left the pool-target-1,500 throttle as configured (589 tx/s sent instead of
+  the 3,000 offered) rather than raising it to chase a higher number: the
+  point of this run was the restart leg and the 100 %-full/agreement/no-park
+  invariants, not a throughput record, and every block stayed full the whole
+  time regardless of the send rate.
+
+**Open**
+- The 86.4 heights/min sample here vs. 117–119/min for the v0.1 base is a
+  single before/after pair around one restart, on shared hardware also
+  running other work this session — not yet enough to call a restart-cost
+  number. A repeat run with a `status` sample immediately before the restart
+  too (three samples, not two) would isolate it.
+- Task 10 (fleet runner under `~/arc-runs/<run-id>`) is next per the plan:
+  ships this same v0.2 series to the 4-machine fleet and repeats the
+  restart-CL and kill-lean legs there, plus records fleet numbers in guide
+  §5.
