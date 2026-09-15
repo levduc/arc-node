@@ -382,6 +382,25 @@ const CATCHUP_BUDGET: Duration = Duration::from_secs(5);
 /// actually left, so the total never exceeds [`CATCHUP_BUDGET`].
 const MIN_PEER_SLICE: Duration = Duration::from_millis(250);
 
+/// Ceiling on the lag a validation-time catch-up will even ATTEMPT, in lean
+/// blocks.
+///
+/// The budget above is 5 s for the whole catch-up, and every block inside it
+/// costs a peer round trip plus a local append — a handful of blocks on a
+/// healthy fleet, dozens at best. 1024 blocks is ~8.5 minutes of chain at the
+/// 2 blk/s product target: three orders of magnitude past anything the budget
+/// could close, so a proposal that far ahead is either value-sync's job (we
+/// are genuinely far behind and consensus will sync us) or a proposer naming
+/// an absurd number. Either way, attempting it only burns the whole vote
+/// window before abstaining anyway.
+///
+/// The verdict stays an abstain rather than an `Invalid`: being this far
+/// behind is still a property of THIS node, and an Invalid on a value that
+/// later gets certified sticks forever (valid-round re-proposal skips
+/// re-validation). A byzantine proposer gains one wasted round, not a halt —
+/// and now pays nothing for it, since no budget is spent.
+const MAX_CATCHUP_LAG: u64 = 1024;
+
 /// Outcome of the lean lane's TIP rules (catch-up + parent linkage).
 ///
 /// The split between the two failure arms is a safety rule, not a style
@@ -642,6 +661,21 @@ pub(crate) async fn validate_lean_tip(
     parent: BlockHash,
     budget: Duration,
 ) -> LeanTipVerdict {
+    // ABSURD LAG FIRST, before any budget is spent: a number this far ahead
+    // cannot be reached inside the vote window no matter which peer answers.
+    if number.saturating_sub(head.number) > MAX_CATCHUP_LAG {
+        return LeanTipVerdict::NoVerdict {
+            reason: LeanNoVerdictReason::GapTooLarge,
+            detail: format!(
+                "lean lane: proposal is {} blocks ahead of our head (block number {number}, \
+                 local head {}) — past the {MAX_CATCHUP_LAG}-block catch-up ceiling, no \
+                 verdict this round",
+                number.saturating_sub(head.number),
+                head.number
+            ),
+        };
+    }
+
     let (head, stalled) = if number > head.number.saturating_add(1) {
         catch_up_lean_head(node, head, number, budget).await
     } else {
@@ -2260,6 +2294,51 @@ mod tests {
             ),
             "no peers to catch up from is a lag: {verdict:?}"
         );
+    }
+
+    /// A proposer naming an absurd lean number must not cost every validator
+    /// the whole catch-up budget: the gap is rejected before a single peer is
+    /// asked. Still an abstain, not an Invalid — being behind is our property,
+    /// and an Invalid would stick to the value if it were later certified.
+    #[tokio::test(start_paused = true)]
+    async fn an_absurd_lag_abstains_without_spending_the_budget() {
+        let head = lean_head(10);
+        let lane = test_lane(head, 12, vec![(Duration::ZERO, true)]);
+        let absurd = head.number + MAX_CATCHUP_LAG + 1;
+
+        let started = tokio::time::Instant::now();
+        let verdict =
+            validate_lean_tip(&lane, head, absurd, B256::repeat_byte(0xbb), CATCHUP_BUDGET).await;
+
+        assert!(
+            matches!(
+                verdict,
+                LeanTipVerdict::NoVerdict {
+                    reason: LeanNoVerdictReason::GapTooLarge,
+                    ..
+                }
+            ),
+            "an unreachable lag is a lag, not a violation: {verdict:?}"
+        );
+        assert!(
+            lane.asked.lock().expect("asked").is_empty(),
+            "no peer may be asked for a gap we cannot close"
+        );
+        assert_eq!(started.elapsed(), Duration::ZERO, "no budget may be spent");
+    }
+
+    /// The ceiling is a ceiling, not a cliff in front of ordinary lag: a
+    /// backlog right at the limit is still caught up and judged.
+    #[tokio::test(start_paused = true)]
+    async fn a_lag_at_the_ceiling_is_still_caught_up() {
+        let head = lean_head(10);
+        let target = head.number + MAX_CATCHUP_LAG;
+        let lane = test_lane(head, target, vec![(Duration::ZERO, true)]);
+        let parent = commitment_of(&lane.chain, target - 1);
+
+        let verdict = validate_lean_tip(&lane, head, target, parent, CATCHUP_BUDGET).await;
+
+        assert_eq!(verdict, LeanTipVerdict::Linked);
     }
 
     /// The other half of the split: once the catch-up HAS put us one block

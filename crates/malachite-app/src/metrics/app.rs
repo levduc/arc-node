@@ -996,6 +996,9 @@ impl TransientValidationSourceLabel {
 /// validator that abstains every round says *why* in one scrape.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum LeanNoVerdictReason {
+    /// The proposal's lean number is so far ahead of our head that no catch-up
+    /// inside a vote window could close it; the budget was not even spent.
+    GapTooLarge,
     /// The catch-up wall-clock budget ran out mid-backlog.
     BudgetExhausted,
     /// Every peer lean node timed out, errored, or lacked the next block.
@@ -1011,7 +1014,8 @@ pub enum LeanNoVerdictReason {
 
 impl LeanNoVerdictReason {
     #[cfg(test)]
-    pub(crate) const ALL: [LeanNoVerdictReason; 5] = [
+    pub(crate) const ALL: [LeanNoVerdictReason; 6] = [
+        Self::GapTooLarge,
         Self::BudgetExhausted,
         Self::PeersTimedOut,
         Self::NoPeers,
@@ -1022,6 +1026,7 @@ impl LeanNoVerdictReason {
     /// Also the metric label: one spelling for logs and Prometheus.
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::GapTooLarge => "gap_too_large",
             Self::BudgetExhausted => "budget_exhausted",
             Self::PeersTimedOut => "peers_timed_out",
             Self::NoPeers => "no_peers",
