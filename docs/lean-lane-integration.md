@@ -218,14 +218,48 @@ lean node beyond its own head.
 
 ### fleet, v0.2 on main 97f8da0
 
-First fleet run of the header-binding series (2026-09-14, run `v02-0914-1945`,
-`scripts/fleet-lean.sh`; 4 machines, lean budget 150 M, N=50, so a **100 %-full block
-is 553 txs**: `21000 + 5000 × 50 = 271,000` gas each).
+Fleet runs of the header-binding series (2026-09-14, `scripts/fleet-lean.sh`; 4 machines,
+lean budget 150 M, N=50, so a **100 %-full block is 553 txs**: `21000 + 5000 × 50 =
+271,000` gas each).
+
+**The measured point (lean-lane `v0.2.0-rc2`, run `v02-0914-2301`, one spammer per
+machine, 10 min, health gate PASS, CL restarts 0/0/0/0 throughout, 4/4 lean nodes
+byte-identical at height 1054):**
+
+| minute | blk/min | blk/s | fullness | tx/s | payments/s | pools (val1/2/3/4) |
+|---|---|---|---|---|---|---|
+| 2 | 114.10 | 1.90 | 553/553 = 100 % | 1,052 | **52,580** | 1635/2142/2246/1512 |
+| 3 | 110.16 | 1.84 | 100 % | 1,015 | 50,767 | 2347/1859/2527/2313 |
+| 4 | 107.00 | 1.78 | 100 % | 986 | 49,309 | 2081/1860/1467/1838 |
+| 5 | 103.28 | 1.72 | 100 % | 952 | 47,594 | 1908/1889/2036/1552 |
+| 6 | 94.43 | 1.57 | 100 % | 870 | 43,515 | 2276/2149/2470/1913 |
+| 7 | 90.49 | 1.51 | 100 % | 834 | 41,702 | 2017/2052/1551/2516 |
+| 8 | 84.59 | 1.41 | 100 % | 780 | 38,982 | 1878/2371/2436/1706 |
+| 9 | 93.00 | 1.55 | 100 % | 857 | 42,858 | 1896/2398/1859/1880 |
+
+Every sampled head block was exactly 553 txs, so this is a chain result, not a delivery
+one. The opening window (1.90 blk/s, 52.6 k payments/s at N=50) matches the v0.1
+campaign point (1.93 blk/s, 55.5 k at N=100/150 M) on a block of almost the same wire
+size. **Open:** cadence drifts down over the ten minutes (114 → 85–93 blk/min) with pools
+steady at 1.5–2.5 k and no restarts; not the anchor scan (fixed in rc2, anchor flat at
+15–25 ms) and not starvation. Candidates: the growing lean log/EL persistence, host load on
+the wifi machine. No comparable 10-minute v0.1 trace exists to say whether v0.1 drifts too.
+
+**Superseded rows** (lean-lane `v0.2.0-rc1`, run `v02-0914-1945`). The 0.73 blk/s was a
+lean-node bug, not the design: rc1's `arc_newBlock{commitment}` scanned the whole log on
+every decide (+1.1 ms per block of history), so the anchor grew with chain length. Fixed
+in rc2 (`by_commitment` index checked first; `log_scans` stat; test
+`anchoring_a_staged_block_never_scans_the_log`).
 
 | config | blk/s | tx/s | payments/s | fullness |
 |---|---|---|---|---|
-| v0.2, N=50, 150 M, one spammer per machine | 0.73 | 404 | **20,227** | 553/553 = **100 %** on every sample |
-| v0.2, N=50, 150 M, one spammer here driving all four | 1.54 | 491 | 24,539 | 202–474 of 553 = 38 % → 81 %, **delivery-bound** |
+| rc1, N=50, 150 M, one spammer per machine — **retracted** (scan bug) | 0.73 | 404 | 20,227 | 553/553 = 100 % on every sample |
+| rc1, N=50, 150 M, one spammer here driving all four | 1.54 | 491 | 24,539 | 202–474 of 553 = 38 % → 81 %, **delivery-bound** |
+
+A first rc2 re-run (`v02-0914-2243`) is **invalid** and not reported: validator1's
+root-owned reth data survived the runner's `rm -rf`, its EL came up stale at 1584 and its
+CL crash-looped (restarts 11 → 19). The runner now wipes root-owned data through a
+container and dies at `up` if any EL is not fresh or any CL has restarted (c1f469a).
 
 The second row is not a chain result: a single sender in backpressure mode offers about
 `generators / RTT`, and it fed four pools that the lane never cross-propagates, so each
@@ -258,12 +292,9 @@ principle make a running shell resume mid-line. The revert was done by removing 
 inserted lines, **not verified against a pre-edit hash — there is no hash evidence that the
 file was restored byte-for-byte**; the behavioural evidence is that the run continued to
 completion and the sample series shows no discontinuity across that window (heights
-1153 → 1200 → 1246 at 47.00 / 45.25 blk/min, every block 553/553). Treat this row as n=1
-pending the N-sweep re-run, which will also be the first exercise of the corrected
-per-validator sampler. The 0.73 blk/s at N=50 sits well
-under the campaign's 1.93 blk/s at N=100/150 M for a block of almost the same wire size
-(814 KB vs 824 KB) but twice the signatures (553 vs 287) — a cross-run comparison on a
-different base, not a controlled experiment, and the cause is open.
+1153 → 1200 → 1246 at 47.00 / 45.25 blk/min, every block 553/553). That row is now
+retracted anyway (scan bug above); the rc2 run was measured by the corrected
+per-validator sampler with no mid-run edits.
 
 Execution is 7–15 % of a height on both lanes; consensus transport (proposal
 stream 57 %, votes 13 %, anchor 10 %) is the bound. ±15 % run-to-run, n=1 for
