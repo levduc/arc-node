@@ -1079,14 +1079,14 @@ impl Db {
 
         // Iterate through all entries that start with (height, round, *)
         let range_start = (height, round, BlockHash::new([0; 32]));
-        #[allow(clippy::arithmetic_side_effects)] // round + 1 for range upper bound
-        let range_end = (
-            height,
-            Round::from(round.as_i64() + 1),
-            BlockHash::new([0; 32]),
-        );
+        // Inclusive upper bound at the largest possible hash for (height,
+        // round), as in `stale_keys`: the same row set as an exclusive bound at
+        // `round + 1`, and no increment. `impl From<i64> for Round` asserts
+        // `round <= u32::MAX`, so `round + 1` at `Round::Some(u32::MAX)` would
+        // panic here.
+        let range_end = (height, round, BlockHash::new([0xff; 32]));
 
-        for result in table.range(range_start..range_end)? {
+        for result in table.range(range_start..=range_end)? {
             let (key, value) = result?;
             let key_tuple = key.value();
 
@@ -1185,14 +1185,14 @@ impl Db {
         // full walk touches every leaf page of a ~62 MB table on the
         // StartedRound critical path.
         let range_start = (height, round, BlockHash::new([0; 32]));
-        #[allow(clippy::arithmetic_side_effects)] // round + 1 for range upper bound
-        let range_end = (
-            height,
-            Round::from(round.as_i64() + 1),
-            BlockHash::new([0; 32]),
-        );
+        // Inclusive upper bound at the largest possible hash for (height,
+        // round), as in `stale_keys`: the same row set as an exclusive bound at
+        // `round + 1`, and no increment. `impl From<i64> for Round` asserts
+        // `round <= u32::MAX`, so `round + 1` at `Round::Some(u32::MAX)` would
+        // panic here.
+        let range_end = (height, round, BlockHash::new([0xff; 32]));
 
-        for result in table.range(range_start..range_end)? {
+        for result in table.range(range_start..=range_end)? {
             let (key, value) = result?;
             let (h, r, _) = key.value();
 
