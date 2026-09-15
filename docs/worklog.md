@@ -1036,3 +1036,107 @@ restarts 0/0/0/0 throughout, 4/4 byte-identical at 1054, DOWN_EXIT=0):
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-15 (overnight, unattended) — 100k payments/s reached and held on the 4-machine fleet; the 10-minute drift was a lean-node log scan on the serving path
+
+**Changed** (nothing pushed; both branches are new and leave `lean-lane-v0.2` / `v0.2` untouched)
+- arc branch `lean-lane-perf` (worktree `~/arc-lean-perf`, base `lean-lane-v0.2` @ a9d36a8):
+  887f17b 85ca308 7c2a04e aacce21 07bba98 fa5af41 72fd970 fleet runner (CL/EL log capture before
+  teardown, env overrides incl. `BUDGET_GAS`, `CL_EXTRA_ENV`, per-tick CPU/RSS/load per process,
+  tailscale-direct + disk preflight, `scripts/fleet-heights.py`); 977f07c one `height_timing` line
+  per height behind `ARC_HEIGHT_TIMING=1` + `scripts/height-timing.py`, 6138555 nine `dec_*`
+  decide-path fields; 229d558 `ARC_PROPOSAL_CHUNK_SIZE`; 3a93b4b d0477af c46d67b 0c78943
+  consensus-db reads key-only / prefix-range, ranged delete on the decide path.
+- lean-lane branch `perf` (= `perf-cow`, worktree `~/lean-lane-cow`, base `v0.2` @ f76c189):
+  96fb0f2 exact `scan_misses` invalidation; 0dd9185 `LEAN_STATS=1` periodic stats; ff90345 append
+  timing + `LEAN_FSYNC=0`; a7c6200 `lean_anchor`/`lean_stage` per-call lines;
+  **b627da2 backward log scan capped at the index floor** (the drift fix); cc09ca0 `arc_buildBlock`
+  stages its own result; e841e8a `pre_ms`/`locate_ms`/`peer_ms`; 2982dbf announce never backfills
+  a block already held; 66c1b43 the anchor waits for the stage it races instead of peer-pulling.
+- Fleet data: `~/arc-runs/v02-0914-2322 … v02-0915-0353` on every machine; run logs, captured CL/EL
+  logs and timing lines under `~/arc-lean-v0.1/.quake/fleet-runs/<run-id>/`; campaign ledger with
+  every ruling and retraction: `~/arc-lean-perf/.superpowers/perf-100k/ledger.md`.
+
+**Measured** (4 machines over tailscale-direct LAN, N=100 fan-out unless noted, one spammer per
+machine, 500 ms pacer, every sampled block 100 % of budget, 0 CL restarts, 4/4 lean nodes
+byte-identical at the end of every run; per-minute samples over 10 min unless noted)
+
+| run | stack | budget | blk/min over the run | payments/s |
+|---|---|---|---|---|
+| F1 v02-0914-2322 | rc2 | 225 M | 100.3 → 57.1 (drift) | 72,069 → 40,980 |
+| F2 v02-0914-2336 | rc2 | 50 M (99 % full) | 119 → 118 flat | 18.8k |
+| F3 v02-0914-2352 | rc2, N=500 | 225 M | 97.4 → 63.0 (drift) | 72,221 → 46,689 |
+| F4 v02-0915-0006 | + height timing | 225 M | 99.1 → 63.8 (drift) | 71,149 → 45,837 |
+| F5 v02-0915-0031 | + exact negative cache | 225 M | 98.1 → 61.0 (drift) | 70,465 → 43,784 |
+| **F6 v02-0915-0044** | **+ scan-free serving (b627da2)** | 225 M | **119.1 → 116.2 flat** | **82,779–85,516** |
+| **F7 v02-0915-0057** | same | **300 M** | **111.6–115.2 flat** | **106,914–110,437** |
+| F8 v02-0915-0111 | + 1 MiB proposal chunks | 300 M | 113.3–117.1 | 108,611–112,262 (stream 127 → 123 ms: no effect) |
+| **F9 v02-0915-0124** | same as F7 | **350 M** | **107.6–109.7 flat** | **120,354–122,667** |
+| **F10 v02-0915-0137** | same, **30-min soak** | 300 M | 103.1–115.2 (mean ~112 first 20 min, ~107 last 8) | **98,828–110,437; 26/28 samples ≥ 100k** |
+| F11 v02-0915-0211 | same | 400 M | 94.7–105.0 (under the 1.8 floor) | 121,042–134,225 |
+| F12 v02-0915-0225 | same | 450 M | 90.9–94.7 | 130,798–136,192 (block bytes saturate ~3.9 MB/s) |
+| F13 v02-0915-0238 | same, N=200 | 350 M | 106.7–111.4 (= N=100) | 121,600–127,029 |
+| **F14 v02-0915-0253** | same, **30-min soak** | 350 M | 97.5–113.3, mean 104.9 | **109,038–126,744; 27/27 samples > 100k** |
+| F15 v02-0915-0326 | + self-stage (cc09ca0) | 400 M | 97.5–103.8 | 124,638–132,703 |
+| F16 v02-0915-0340 | + no re-pull (2982dbf) | 400 M | 96.2–109.7 (first 3 min 137.6–140.2k) | 122,963–140,217 |
+| F17 v02-0915-0353 | same | 450 M | INVALID (ssh expired after minute 2; that one window: 100.95 blk/min, 145,203) | — |
+
+- Standalone lean node at full 225 M blocks: FLAT (49.6 → 47.3 ms service/block over 1024 blocks,
+  n=2; accounts grow ~55/block because the spammer derives recipients from the sender nonce).
+- F7 height decomposition (mean ms, 300 M, 1.65 MB): pacer/previous-anchor gap ~290, first part
+  115–150, stream 116–129 (13 parts, ~13 MB/s), votes 60–120, decided→anchor 76–98, FCU 3–5;
+  period 527–532 ⇒ pacer-bound with ~170 ms slack. 300 → 450 M: stream 127 → 208, decided→anchor
+  90 → 203, everything else flat.
+- Anchor path mix at 400–450 M (lean `lean_anchor` lines): staged 8–11 ms; `peer` on 25–56 % of
+  heights at 150–300 ms (p90 480, max 1.3 s); `index` ~0.5 extra calls/height with p90 226–443 ms.
+  Three causes, all in the lean node: the proposer never staged its own block (cc09ca0), the
+  announce backfill re-pulled 2.5 MB blocks already held and committed them under the state lock
+  ahead of the anchor (2982dbf), and the anchor did not wait for a stage still executing because
+  the in-flight claim was published after decode (66c1b43). F16 shows the first two on the fleet
+  (index 663 → 185, proposer peer-pulls 0); the third is only loopback-verified (10/10 staged at a
+  15 ms gap) — its fleet A/B (F18/F19) did not run.
+
+**Broke / retracted**
+- RETRACTED (memo-store-growth suspect 1): "the full FlatState clone grows with txs×N accounts" —
+  accounts grow ~55/block; a lone node is flat. Not the drift. Also its "CL redb materialises 62 MB
+  per StartedRound" — never did (guarded); the /status and decide-path clean fixes are real but not
+  the drift (68 ms only when the pending table fills).
+- Cadence-drift root cause, replacing the "open" item of the previous entry: the lean node's SERVING
+  path `arc_getBlockBytes{commitment}` (the CL calls it about once per height, plus peer pulls) fell
+  back to `locate_by_commitment`'s backward log scan on an index miss — read + hash of every block
+  from head, O(height × block bytes), on the node's runtime, delaying the anchor. rc2's negative
+  cache was cleared on every append. The same code was in the v0.1 series; the campaign's
+  single-window rows never exposed it. `log_scans = 0` throughout F6–F16.
+- Runs discarded: v02-0915-0026 (runner put `LEAN_STATS=1` after nohup; fixed fa5af41); F17 (ssh).
+- Fleet ops: the tailscale ssh session expired at ~04:00; run v02-0915-0353's containers
+  (`validatorN_cl/el`) and lean nodes are still UP on all four machines. After re-auth:
+  `cd ~/arc-lean-v0.1 && RUN_ID=v02-0915-0353 ./scripts/fleet-lean.sh down`. Nothing else was touched.
+- `pkill -f fleet-lean.sh` killed the controller's own shell (known landmine, §6) — harmless here.
+
+**Decided**
+- 100k payments/s is met at the 2 blk/s product target: **300 M / N=100 = 107–110k at 1.86–1.92
+  blk/s, held 30 min**; 350 M = 120–123k at 1.79–1.83 (30-min mean 1.75, the edge of the envelope).
+  Above that the fleet is bound by ~3.9 MB/s of block bytes through consensus (stream ~13 MB/s ×
+  the fixed per-height costs), not by signatures (N=200 = N=100), not by chunk size (F8), not by
+  the lean node (8–11 ms staged anchor).
+- Not erasure coding, not delayed execution: with the scan gone the 300 M point is pacer-bound
+  with ~170 ms slack; the byte lever above 350 M is the anchor race (fixed, unmeasured on the
+  fleet) and then dissemination.
+- Two-tier spammer/fund rule: runs at N=100 with 800 accounts must stay ≤ 30 min (drain ~2.5–2.7k
+  txs/account; bankruptcy ~4.4k).
+
+**Open**
+- F18/F19: 400/450 M with 66c1b43 (expected: `peer` path → 0, cadence back toward the pacer at
+  400 M ⇒ ~150k). Then a 30-min soak at the new best point.
+- Mild ~4 % late decline over 30-min soaks (F10, F14) at constant fullness; `log_scans` stays 0;
+  candidates lean RSS (receipt ring → ~2 GB), page-cache pressure on validator3 (sda).
+- Parked lean bugs: stage-vs-direct state digest divergence for no-op'd txs; `--snapshot-every 0`
+  panics; `stage_block` reads head and clones state in two critical sections; the announce grace
+  (250 ms) delays a parked-CL node's backfill by that much.
+- The two must-fix-before-merge findings from the v0.2 final review still stand; `lean-lane-perf`
+  and `perf` are measurement branches on top of them, not merge candidates yet.
+- BRAINSTORM: deferring decided→anchor off the critical path; an index-encoded recipient
+  (28 → ~12 B/payment) as the byte-law lever past the ~3.9 MB/s wall.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
