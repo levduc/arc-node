@@ -241,7 +241,18 @@ Track A on the fleet, both passing:
   all four equal at 1085.
 
 Caveats: n=1, one ten-minute window per arm, four heterogeneous machines (one on wifi,
-one with 15 GB RAM also running 22 unrelated containers). The 0.73 blk/s at N=50 sits well
+one with 15 GB RAM also running 22 unrelated containers). **The measuring script was edited
+while the first (100 %-full) arm was running it**: `scripts/fleet-lean.sh` was running that
+arm's `load` from 19:57:44 to 20:07:49, and a two-line comment-header edit was in place for
+at most ~37 s inside it (bounded by wall-clock checks at 19:58:58 and 19:59:35, around the
+t≈75–110 s marks), then reverted. bash reads a script incrementally, so this can in
+principle make a running shell resume mid-line. The revert was done by removing the two
+inserted lines, **not verified against a pre-edit hash — there is no hash evidence that the
+file was restored byte-for-byte**; the behavioural evidence is that the run continued to
+completion and the sample series shows no discontinuity across that window (heights
+1153 → 1200 → 1246 at 47.00 / 45.25 blk/min, every block 553/553). Treat this row as n=1
+pending the N-sweep re-run, which will also be the first exercise of the corrected
+per-validator sampler. The 0.73 blk/s at N=50 sits well
 under the campaign's 1.93 blk/s at N=100/150 M for a block of almost the same wire size
 (814 KB vs 824 KB) but twice the signatures (553 vs 287) — a cross-run comparison on a
 different base, not a controlled experiment, and the cause is open.
