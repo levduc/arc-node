@@ -150,7 +150,7 @@ peers_for(){ local n=$1 p="" j; for j in $(seq 1 $N); do
     [ "$j" = "$n" ] || p="${p}http://$(ip_of "$j"):$LEAN_PORT,"; done; echo "${p%,}"; }
 lean_launch_cmd(){ local n=$1 envprefix=""
   # LEAN_STATS passthrough: only set if the controller's env asked for it.
-  [ -n "${LEAN_STATS:-}" ] && envprefix="LEAN_STATS=1 "
+  [ -n "${LEAN_STATS:-}" ] && envprefix="env LEAN_STATS=1 "
   echo "(setsid nohup ${envprefix}$ROOT/lean-lane-node run --datadir $ROOT/lean --port $LEAN_PORT --bind 0.0.0.0 --chain-id $CHAIN --shim --peers '$(peers_for "$n")' --fund-file $ROOT/fund.txt --fund-balance 10000000000000000000 >> $ROOT/logs/lean.log 2>&1 < /dev/null &)"; }
 # the lean pid on machine n, matched by the BINARY PATH in argv[1] (never `pkill -f`,
 # which matches the shell carrying the pattern — CLAUDE.md §6)
