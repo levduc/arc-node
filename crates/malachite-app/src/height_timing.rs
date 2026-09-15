@@ -167,7 +167,14 @@ pub fn start_height(height: u64, role: &'static str, proposer: &Address) {
         return;
     }
     let proposer = short_address(proposer);
-    if let Some(line) = timer().restart(height, role, proposer) {
+    // Bind the line out of the `if let` scrutinee. Rust 2024's if-let
+    // rescoping drops scrutinee temporaries before the `else` block only; in
+    // the `then` block a `timer()` guard would live to the end of it, holding
+    // the process-global mutex across the synchronous `info!`. Every other
+    // tokio worker in `mark_at`/`record_part`/`record` would then block on a
+    // stalled log sink — the instrumentation perturbing the path it measures.
+    let line = timer().restart(height, role, proposer);
+    if let Some(line) = line {
         info!("{line}");
     }
 }
@@ -562,6 +569,32 @@ mod tests {
         line.split_whitespace()
             .find_map(|kv| kv.strip_prefix(&format!("{key}=")))
             .unwrap_or_else(|| panic!("line has no field {key}: {line}"))
+    }
+
+    /// `start_height` must not hold the global timer mutex while it logs.
+    ///
+    /// This mirrors its body: the guard is a temporary of a `let`, so it is
+    /// dropped at the end of that statement — before the point where `info!`
+    /// runs. With the guard as an `if let` scrutinee instead it would still be
+    /// alive here (edition 2024 rescopes scrutinee temporaries out of the
+    /// `else` block only, not the `then` block). The line must come out
+    /// byte-identical either way.
+    #[test]
+    fn start_height_releases_the_timer_before_logging_the_line() {
+        // Prime the global timer: the first restart has nothing to emit.
+        assert!(timer()
+            .restart(900, "validator", "0x12345678".to_owned())
+            .is_none());
+        // What the in-flight height must format to, taken under its own lock.
+        let expected = timer().format_line();
+
+        let line = timer().restart(901, "proposer", "0xaabbccdd".to_owned());
+        // The `info!` in `start_height` executes at exactly this point.
+        assert!(
+            TIMER.try_lock().is_ok(),
+            "the global timer is still locked where the line is logged"
+        );
+        assert_eq!(line.as_deref(), Some(expected.as_str()));
     }
 
     #[test]
