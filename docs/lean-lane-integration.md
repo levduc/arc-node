@@ -245,6 +245,33 @@ steady at 1.5–2.5 k and no restarts; not the anchor scan (fixed in rc2, anchor
 15–25 ms) and not starvation. Candidates: the growing lean log/EL persistence, host load on
 the wifi machine. No comparable 10-minute v0.1 trace exists to say whether v0.1 drifts too.
 
+### fleet, overnight 2026-09-15 — the drift was a lean-node log scan; 100k payments/s at 2 blk/s
+
+Same fleet and runner, lean-lane branch `perf` @ 66c1b43 on top of `v0.2`, CL `lean-lane-perf`.
+The 10-minute drift above (114 → 85 at 150 M; 100 → 57 at 225 M) was the lean node's serving path
+`arc_getBlockBytes{commitment}` scanning the whole log backward on an index miss (the CL asks about
+once per height): O(height × block bytes) per call, fixed by capping the scan at the index floor
+(b627da2; `log_scans = 0` for every run below). With it, every 10-min point is flat:
+
+| config (N=100, 500 ms pacer) | blk/s | tx/s | payments/s | fullness |
+|---|---|---|---|---|
+| 225 M (F6 v02-0915-0044) | 1.92–1.98 | 828–855 | 82,779–85,516 | 431/431 = 100 % |
+| **300 M (F7 v02-0915-0057)** | **1.86–1.92** | 1,069–1,104 | **106,914–110,437** | 575/575 = 100 % |
+| 300 M, 30-min soak (F10 v02-0915-0137) | 1.72–1.92 (mean ~1.85) | — | 98,828–110,437; 26/28 samples ≥ 100k | 100 % on all 28 |
+| **350 M (F9 v02-0915-0124)** | **1.79–1.83** | 1,204–1,227 | **120,354–122,667** | 671/671 = 100 % |
+| 350 M, 30-min soak (F14 v02-0915-0253) | 1.63–1.89 (mean 1.75) | — | 109,038–126,744; 27/27 > 100k | 100 % on all 27 |
+| 350 M, N=200 (F13) | 1.78–1.86 | 608–635 | 121,600–127,029 | 342/342 = 100 % |
+| 400 M (F11 / F16 with two anchor fixes) | 1.58–1.75 / 1.60–1.83 | — | 121,042–134,225 / 122,963–140,217 | 100 % |
+| 450 M (F12) | 1.52–1.58 | 1,308–1,362 | 130,798–136,192 | 863/863 = 100 % |
+
+All runs: 0 CL restarts, 4/4 lean nodes byte-identical at the end, one spammer per machine. Chunk
+size (128 KiB → 1 MiB) does not move the stream (127 → 123 ms for 1.65 MB): not the bound. Above
+350 M the fleet saturates near ~3.9 MB/s of block bytes through consensus; at 300 M it is pacer-bound
+(period 527–532 ms, ~170 ms slack). The remaining byte-proportional cost at 400–450 M was the anchor
+racing the lean node's own stage/backfill (three lean-side fixes on `perf`: cc09ca0, 2982dbf,
+66c1b43); the last one is loopback-verified only — its fleet A/B is the first open item. Full
+per-run record: `docs/worklog.md` 2026-09-15 entry.
+
 **Superseded rows** (lean-lane `v0.2.0-rc1`, run `v02-0914-1945`). The 0.73 blk/s was a
 lean-node bug, not the design: rc1's `arc_newBlock{commitment}` scanned the whole log on
 every decide (+1.1 ms per block of history), so the anchor grew with chain length. Fixed
