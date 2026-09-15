@@ -1452,11 +1452,17 @@ impl Db {
         let tx = self.db.begin_read()?;
         let table = tx.open_table(table_def)?;
 
-        Ok(table
-            .range(..=range_end)?
-            .flatten()
-            .map(|(key, _value)| key.value())
-            .collect())
+        // Propagate a mid-iteration `StorageError` rather than `.flatten()`ing
+        // it away: a partial key set would leave stale rows behind while
+        // `clean_stale_consensus_data` still returned `Ok(())`, and the caller
+        // on the decide path only logs on `Err` — the corruption would be
+        // invisible and the tables would grow unboundedly.
+        let mut keys = Vec::new();
+        for entry in table.range(..=range_end)? {
+            let (key, _value) = entry?;
+            keys.push(key.value());
+        }
+        Ok(keys)
     }
 
     /// Prune up to `PRUNE_BATCH_LIMIT` entries below `retain_height` from a height-keyed table.
@@ -4138,6 +4144,43 @@ mod tests {
             vec![(Height::new(3), 2), (Height::new(4), 2)]
         );
         assert_eq!(store.get_pending_proposal_parts_count().await.unwrap(), 4);
+    }
+
+    /// `Round::Nil` is the smallest round key, so it sits at the very start of
+    /// a height's range — exactly where a wrong lower bound or a swallowed
+    /// iteration error would leave a row behind. Pin that a Nil-round undecided
+    /// block is collected and deleted like any other round. (Pending proposal
+    /// parts always carry a real round, so only the undecided table applies.)
+    #[tokio::test]
+    async fn test_clean_stale_consensus_data_removes_nil_round_rows() {
+        let store = create_store().await;
+
+        for h in 1u64..=3 {
+            #[allow(clippy::cast_possible_truncation)]
+            let tag = 0xa0 | h as u8;
+            store_test_undecided(&store, Height::new(h), Round::Nil, tag).await;
+            store_test_undecided(&store, Height::new(h), Round::new(0), tag ^ 0x0f).await;
+        }
+
+        store
+            .clean_stale_consensus_data(Height::new(2))
+            .await
+            .unwrap();
+
+        for h in 1u64..=3 {
+            let kept = h > 2;
+            for round in [Round::Nil, Round::new(0)] {
+                assert_eq!(
+                    store
+                        .get_undecided_blocks(Height::new(h), round)
+                        .await
+                        .unwrap()
+                        .len(),
+                    usize::from(kept),
+                    "undecided h{h} {round:?}"
+                );
+            }
+        }
     }
 
     /// Steady state: every stashed row is for a future height, so the clean is
