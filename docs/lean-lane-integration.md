@@ -208,6 +208,44 @@ lean node beyond its own head.
 | lean, N=100, 225 M | 1.93 | 833 | 83,286 |
 | lean, mixed N (avg 3.8), 225 M, parallel recovery | 1.86 | 10,504 | 39,484 |
 
+### fleet, v0.2 on main 97f8da0
+
+First fleet run of the header-binding series (2026-09-14, run `v02-0914-1945`,
+`scripts/fleet-lean.sh`; 4 machines, lean budget 150 M, N=50, so a **100 %-full block
+is 553 txs**: `21000 + 5000 × 50 = 271,000` gas each).
+
+| config | blk/s | tx/s | payments/s | fullness |
+|---|---|---|---|---|
+| v0.2, N=50, 150 M, one spammer per machine | 0.73 | 404 | **20,227** | 553/553 = **100 %** on every sample |
+| v0.2, N=50, 150 M, one spammer here driving all four | 1.54 | 491 | 24,539 | 202–474 of 553 = 38 % → 81 %, **delivery-bound** |
+
+The second row is not a chain result: a single sender in backpressure mode offers about
+`generators / RTT`, and it fed four pools that the lane never cross-propagates, so each
+proposer saw a quarter of it (472 tx/s offered against a chain eating 460–590). It is kept
+only to show what the cadence does when blocks are not full. The first row is the measured
+point: every sampled head block exactly 553 txs for ten minutes.
+
+Both arms: **0 CL restarts**, **0 `Manual intervention`** on all four CLs, **100 % of rounds
+decided at round 0**, lean blocks byte-identical at every `status`. Nothing was saturated at
+the full-block cadence — CLs 1–3 % CPU, ELs 4–17 %, lean nodes 60–100 % of one core — so the
+0.73 blk/s is transport and shim round trips, not execution and not a failing round.
+
+Track A on the fleet, both passing:
+
+- `kill-lean 3 60` — validator3's lean node killed at lean height 1031; the other three
+  advanced to 1062 (+31) during the outage; validator3's CL neither restarted
+  (`RestartCount` 0 → 0) nor parked; on relaunch the lean node reached the tip in **2 s**
+  and its EL followed, agreement byte-identical at 1065.
+- `restart-cl 3` — `docker restart validator3_cl`; `State.StartedAt` moved (02:44:43 →
+  02:57:27) while `RestartCount` stayed 0, rejoin within 3 of the tip in **2 s**, 0 parks,
+  all four equal at 1085.
+
+Caveats: n=1, one ten-minute window per arm, four heterogeneous machines (one on wifi,
+one with 15 GB RAM also running 22 unrelated containers). The 0.73 blk/s at N=50 sits well
+under the campaign's 1.93 blk/s at N=100/150 M for a block of almost the same wire size
+(814 KB vs 824 KB) but twice the signatures (553 vs 287) — a cross-run comparison on a
+different base, not a controlled experiment, and the cause is open.
+
 Execution is 7–15 % of a height on both lanes; consensus transport (proposal
 stream 57 %, votes 13 %, anchor 10 %) is the bound. ±15 % run-to-run, n=1 for
 most points, longest soak 6 h.
