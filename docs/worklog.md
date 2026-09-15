@@ -1233,3 +1233,69 @@ commit gate is still open).
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-15 (afternoon) — parked bugs fixed, CL integration surface cleaned, light-client design drafted; final v0.2 on the fleet: 142–151k payments/s pacer-bound at 400 M, 30-min soak > 120k
+
+**Changed** (nothing pushed; both `v0.2` branches are the deliverable)
+- lean-lane `v0.2` → 039b990 (worktree `~/lean-lane`, dev `~/lean-lane-cow`): ecc26a4 promote no longer creates
+  accounts the direct path never wrote (stage-vs-direct digest divergence closed; mutation-checked 6 vs 4
+  accounts); f89112f `--snapshot-every 0` = never; f99361a head + state snapshot taken in one critical
+  section when staging (lock order documented); e701e77 `--receipt-ring <n>` (default 200k kept);
+  91c9a53 `rustfmt.toml`, `cargo fmt --all`, clippy-clean workspace (~1,900 lines mechanical, last);
+  **039b990 the anchor waits up to `LEAN_ANCHOR_GRACE_MS` (60) for a stage that has not ARRIVED yet**
+  (`stage_notify`, skipped when a backfill is armed), `t_in=` arrival stamps on the per-call lines,
+  `anchor_grace_hits/misses` in `lean_stats`. `lean-smoke.sh` PASS (40 heights, 9,856 txs, 98,560
+  payments, 3/3 at one commitment). Release tests 67 green.
+- arc `lean-lane-v0.2` → 811d661 (worktree `~/arc-lean-v0.1`, dev `~/arc-lean-perf`): cleanliness pass
+  ed53286 (one parsing of each shim response field), d621ba4 / 5ac4c5a / e873b36 (anchor, catch-up +
+  no-verdict vocabulary, and binding validation moved into `crates/malachite-app/src/lean_lane/` — the
+  handler arms are one call behind the flag), 47cd7f1 (the four `ARC_PAYMENT_LEAN_*` vars read in one
+  `EnvConfig` place; dead `frame_lanes_lean` and campaign residue removed), 697dda6 (flag-off contract
+  pinned with a strict double), fccf34f + 91a2024 (guide §1b: the CL delta as a file inventory and a
+  porting order), b85c775 **light-client design draft**
+  `docs/superpowers/specs/2026-09-15-lean-lane-light-client-design.md` (BRAINSTORM), 811d661 guide §5.
+  Independent review of the refactor: CLEAN (moved code logic-identical, call sites unchanged, no lint
+  suppressions); tests 467 lib + 20, clippy/fmt clean workspace-wide.
+
+**Measured** (final tree: CL 91a2024 image, lean 039b990; 4 machines, N=100, one spammer per machine, every
+sampled block 100 % of budget, 0 restarts, 4/4 byte-identical at the end)
+| run | budget | blk/min | payments/s | anchor paths (validator1) |
+|---|---|---|---|---|
+| F25 v02-0915-1353 (merged tree BEFORE the grace fix) | 450 M | 91.9–96.6 | 132,147–138,889 | staged 514 / **peer 515** / index 286 |
+| **F26 v02-0915-1435** | **400 M** | **111.4–118.1 (1.86–1.97 blk/s, pacer-bound)** | **142,443–150,965** | staged 1244 / peer 16 / index 23; grace hits 730, misses 0 |
+| F27 v02-0915-1450 | 450 M | 114.4 → 98.4 (sliding) | 141,586–164,509 | staged 1201 / peer 31 / index 49 |
+| **F28 v02-0915-1504, 30-min soak** | 400 M | 94.3–119.1, mean ~107 (first 10 min ~113.6, last 10 ~104.5) | **120,529–152,183; 28/28 samples > 120k**; 4/4 at 3350 | staged 3353 / peer 28 / index 45; grace hits 1878, misses 0 |
+- F24 (400 M, merged tree) never ran: the runner's preflight refused validator4's momentarily relayed
+  (DERP) tailscale path — the gate working as designed; ten minutes later the path was direct again.
+- Byte wall moved from ~3.9 to ~4.4 MB/s of block bytes through consensus; 400 M is the new sustained
+  ≥ 1.8 blk/s point (was 300 M this morning).
+
+**Broke / retracted**
+- RETRACTED (overnight entry): "the anchor waits for the stage it races (66c1b43) closes the peer-pull
+  path" — on the fleet it engaged on 2 of ~1,000 heights (F25: `stage_race_waits=2`, peer 515). The CL's
+  fire-and-forget stage must base64+JSON-encode a 2.5 MB body in a spawned task while the awaited anchor
+  is tiny, so on a LAN the anchor ARRIVES before the stage: nothing staged, nothing in flight. Loopback
+  could not show it. The arrival-grace (039b990) is what closed it (F26: hits 730, misses 0).
+- Both v0.2 tips were re-measured on the fleet after the merges; the local e2e alone would have missed
+  the point above.
+
+**Decided**
+- Keep the CL thin: the late-stage race is handled in the node (a bounded 60 ms grace) rather than by
+  making the CL await its own stage before anchoring.
+- Lean node is self-contained (own rustfmt/clippy gates, smoke, no fork deps); the CL delta is inventoried
+  with a porting order in guide §1b for the internal repo.
+- Light-client plan (draft, for review): Phase 1 attested indexer over certified bytes (no protocol
+  change; tx-inclusion proofs need the whole block today); Phase 2 make `txs_hash` a Merkle root over the
+  framed txs + a one-bit no-op bitmap (a complete receipt under total-STF is one bit); Phase 3 delayed
+  state root every K blocks, validator-checked. Validators' critical path untouched in every phase.
+
+**Open**
+- The ~8 % late decline over 30-min soaks (F10, F14, F28) at constant fullness; `log_scans` stays 0,
+  anchors stay staged; next: `t_in` gap distribution and per-process RSS over a 60-min run at 300 M
+  with 1,600 funded accounts (drain limit).
+- 450 M slides within 10 min (F27); the knee at 2 blk/s is now between 400 and 450 M.
+- Retune `LEAN_ANCHOR_GRACE_MS` from the measured `t_in` gaps (60 ms is a byte-law estimate).
+- EVM-lane N=1 re-measure; the light-client spec review; a tag on both repos once pushed.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
