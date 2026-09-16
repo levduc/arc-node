@@ -136,8 +136,12 @@ no restarts.
    node imports at 0.97 µs/output while consensus delivers ~40 µs/output.
 2. **Consensus transport is.** Height decomposition at drain size: proposal stream+assemble
    57 %, votes 13 %, anchor 10 %, validate 2 %. Signatures are irrelevant at high N.
-3. **At one payment per signature the lanes are equals** (~6 k tx/s). A leaner execution engine
-   does not make single payments faster; both meet the same ecrecover/coordination wall.
+3. **At one payment per signature the lanes are NOT equals** (retracted 2026-09-15). With the
+   spammer offering 4–12 k tx/s per machine and a deep pool target, the EVM lane saturates at
+   ~6.5 k tx/s ≈ 0.14 Ggas/s whatever the gas limit (blocks 50–78 % full at 150 M and 300 M:
+   execution/builder-bound), while the lean lane at N=1 is pacer-bound at 11.3 k (150 M) and
+   22.7 k tx/s (300 M) at 100 % full, and reaches 31.9 k at the 2 blk/s knee (450 M, 0.82 Ggas/s).
+   The old "~6 k on both" number measured a delivery-starved spammer, not either chain.
 4. **Fan-out buys everything else**: 9× the payments on 1/11th the signatures, because it
    amortises the per-*transaction* costs (signature, mempool entry, envelope) — not the
    per-payment ones. Per 100 payments: 100→1 signatures, 3.3 ms→33 µs ecrecover, 100→1 pool

@@ -1299,3 +1299,49 @@ sampled block 100 % of budget, 0 restarts, 4/4 byte-identical at the end)
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-15 (evening) — EVM lane at N=1 on the fleet, same offered-load discipline: the lanes are not equals
+
+**Changed**
+- arc `lean-lane-v0.2` → c428a96 + (see below): `LANE=evm` in `scripts/fleet-lean.sh` (47339eb up: stock CL
+  manifest with the lean env stripped, gas limit at genesis via `quake setup --block-gas-limit`, verified off
+  a produced block; 7a981a9 load: one spammer per machine at its EL websocket, `--mix transfer=100`;
+  978014e sampler: EL head `gasUsed/gasLimit`, tx/s, Mgas/s on both arms, hash agreement; 316a2b0 down/logs;
+  c428a96 self-test + guide note).
+- CLAUDE.md §5 finding 3 rewritten (below). Guide §5 gains the EVM N=1 rows.
+
+**Measured** (4 machines, stock CL + customized reth, N=1 native transfers, one spammer per machine, gas
+limit set at genesis and verified on a produced block, 0 restarts, 4/4 EL hash agreement at the end)
+| lane | gas limit | blk/s | tx/s | Ggas/s | fullness |
+|---|---|---|---|---|---|
+| EVM (E150 v02-0915-1903, rate 4k/machine, pool 8k) | 150 M | 0.8–1.57 | 4,377–8,419 (mean ~6,550) | 0.09–0.18 (mean ~0.14) | 51–78 %, never full |
+| EVM (E300 v02-0915-1918, rate 7k, pool 16k) | 300 M | 0.68–0.81 | 4,875–8,013 (mean ~6,400) | 0.10–0.17 | 50–69 %, never full |
+| lean (F20) | 150 M | 1.90–1.95 | 10,989–11,263 | 0.29 | 100 % |
+| lean (F21) | 300 M | 1.92–1.97 | 22,175–22,715 | 0.59 | 100 % |
+| lean (F22) | 450 M | 1.81–1.84 | 31,317–31,910 | 0.82 | 100 % |
+| lean (F23) | 600 M | 1.43–1.48 | 33,016–34,253 | 0.88 | 100 % |
+- EVM pools held 5–29 k while blocks stayed under 78 % full and doubling the gas limit halved the cadence
+  at the same tx/s: the EVM lane is bound by per-block execution + state root, not by delivery or consensus.
+- At N=1 the lean lane does ~5× the transactions and ~6× the gas per second (26 k vs 21 k gas per single
+  payment); at N=100 fan-out it does ~20× the payments (142–151 k vs ~6.5 k).
+
+**Broke / retracted**
+- RETRACTED CLAUDE.md §5 finding 3 ("at one payment per signature the lanes are equals, ~6 k tx/s"): both
+  numbers were the old spammer's delivery ceiling. The EVM lane really is ~6.5 k; the lean lane is not.
+- Three EVM attempts discarded: v02-0915-1835 (my launch line used `set -- $var`, which zsh does not
+  word-split — §6 landmine — so the spammer got `-r "4000 8000 600"`), v02-0915-1842 and 1855 (after I
+  killed the first chain its orphaned subshell started a run in the same minute as my relaunch, they
+  shared a run id, and the orphan's `down` killed the live run). Lesson for the runner: derive RUN_ID with
+  seconds, and refuse `up` when a run dir already exists.
+
+**Decided**
+- The EVM-vs-lean comparison at N=1 is settled with fullness on both sides; the 2026-08 "lanes are equals"
+  conclusion is withdrawn from CLAUDE.md.
+
+**Open**
+- Runner: RUN_ID with seconds + refuse-if-exists; `txpool` limits in the EVM manifest are unmeasured
+  guesses (pools never emptied, so they did not bind).
+- Everything from the afternoon entry (30-min decline, 450 M slide, grace retune, light-client review).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
