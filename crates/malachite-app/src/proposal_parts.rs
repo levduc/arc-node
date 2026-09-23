@@ -281,6 +281,7 @@ pub fn assemble_block_from_parts(parts: &ProposalParts) -> eyre::Result<Consensu
         validity: Validity::Valid,
         execution_payload,
         signature: Some(parts.fin().signature),
+        lean_payload: None,
     };
 
     Ok(consensus_block)
@@ -497,6 +498,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: payload,
             signature: None,
+            lean_payload: None,
         };
 
         // Original stream signs the block
@@ -537,6 +539,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: payload,
             signature: None,
+            lean_payload: None,
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());
@@ -573,6 +576,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: payload,
             signature: None,
+            lean_payload: None,
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());

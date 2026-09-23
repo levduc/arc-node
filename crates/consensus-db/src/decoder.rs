@@ -131,6 +131,8 @@ pub fn decode_block(bytes: &[u8]) -> Result<ConsensusBlock, DecodeError> {
                 validity: Validity::from_bool(is_valid),
                 execution_payload,
                 signature: signature.map(|s| s.0),
+                // Only the EVM payload is stored; the lean node keeps lane data.
+                lean_payload: None,
             })
         }
         Err(version) => Err(DecodeError::UnsupportedVersion(version)),
@@ -406,6 +408,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: create_test_execution_payload(),
             signature: Some(signature),
+            lean_payload: None,
         }
     }
 

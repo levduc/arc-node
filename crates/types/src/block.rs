@@ -25,6 +25,7 @@ use ssz::Encode;
 use malachitebft_app_channel::app::types::core::{CommitCertificate, Round, Validity};
 use malachitebft_app_channel::app::types::{LocallyProposedValue, ProposedValue};
 
+use crate::lean::LeanLanePayload;
 use crate::ssz::{SszBlock, SszSignature};
 use crate::{signing::Signature, Address, ArcContext, BlockHash, Height, Value};
 
@@ -44,6 +45,11 @@ pub struct ConsensusBlock {
     pub validity: Validity,
     pub execution_payload: ExecutionPayloadV3,
     pub signature: Option<Signature>,
+    /// Lean payment lane block carried with this proposal, if any. Not part of
+    /// the stored SSZ form: the lean node keeps the lane's data. The EVM header
+    /// binds it through `prev_randao` ([`Self::header_lean_commitment`]); the
+    /// voted value id stays the plain EVM block hash.
+    pub lean_payload: Option<LeanLanePayload>,
 }
 
 impl ConsensusBlock {
@@ -56,6 +62,17 @@ impl ConsensusBlock {
             .payload_inner
             .payload_inner
             .block_hash
+    }
+
+    /// The lean block commitment the EVM header carries in `prev_randao`, if
+    /// any. Zero, the value Arc sets without the lean lane, means none.
+    pub fn header_lean_commitment(&self) -> Option<BlockHash> {
+        let prev_randao = self
+            .execution_payload
+            .payload_inner
+            .payload_inner
+            .prev_randao;
+        (prev_randao != BlockHash::ZERO).then_some(prev_randao)
     }
 
     /// Recomputes the canonical block hash from the execution payload contents.
@@ -211,7 +228,22 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: payload,
             signature: None,
+            lean_payload: None,
         }
+    }
+
+    #[test]
+    fn header_lean_commitment_reads_prev_randao_and_zero_means_none() {
+        let mut block = block_with_self_reported_hash(B256::ZERO);
+        assert_eq!(block.header_lean_commitment(), None);
+
+        let commitment = B256::repeat_byte(0x5c);
+        block
+            .execution_payload
+            .payload_inner
+            .payload_inner
+            .prev_randao = commitment;
+        assert_eq!(block.header_lean_commitment(), Some(commitment));
     }
 
     #[test]

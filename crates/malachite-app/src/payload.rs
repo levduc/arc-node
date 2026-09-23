@@ -741,6 +741,7 @@ mod tests {
             execution_payload: test_payload(0),
             validity: Validity::Valid,
             signature: None,
+            lean_payload: None,
         }
     }
 
@@ -770,6 +771,7 @@ mod tests {
             execution_payload: payload,
             validity: Validity::Valid,
             signature: None,
+            lean_payload: None,
         }
     }
 

@@ -340,6 +340,7 @@ pub async fn build_block(
         validity: Validity::Valid,
         execution_payload,
         signature: None,
+        lean_payload: None,
     })
 }
 
@@ -494,6 +495,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: test_execution_payload(block_hash_byte),
             signature: Some(Signature::test()),
+            lean_payload: None,
         }
     }
 

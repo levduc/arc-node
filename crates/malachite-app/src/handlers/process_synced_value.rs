@@ -167,6 +167,7 @@ async fn on_process_synced_value(
         execution_payload: payload,
         validity: Validity::Valid,
         signature: None,
+        lean_payload: None,
     };
 
     let verdict = establish_block_validity(
@@ -1084,6 +1085,7 @@ mod tests {
             execution_payload: payload,
             validity: Validity::Valid,
             signature: None,
+            lean_payload: None,
         };
 
         // Engine validation still runs once (defense in depth on the synced

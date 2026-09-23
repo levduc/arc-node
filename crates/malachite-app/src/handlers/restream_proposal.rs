@@ -148,6 +148,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: ExecutionPayloadV3::arbitrary(&mut u).unwrap(),
             signature: None,
+            lean_payload: None,
         }
     }
 
@@ -293,6 +294,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: payload,
             signature: None,
+            lean_payload: None,
         };
 
         let (raw_first, first_sig) = make_proposal_parts(&provider, &block).await.unwrap();

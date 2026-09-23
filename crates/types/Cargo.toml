@@ -12,6 +12,7 @@ default = ["signer-local"]
 arbitrary = ["dep:arbitrary"]
 byzantine = ["dep:malachitebft-engine-byzantine"]
 signer-local = ["dep:malachitebft-signing-ed25519"]
+test-utils = []
 
 [dependencies]
 

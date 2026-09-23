@@ -979,6 +979,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload: dummy_payload(height),
             signature: None,
+            lean_payload: None,
         }
     }
 

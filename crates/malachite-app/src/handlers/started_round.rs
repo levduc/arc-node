@@ -534,6 +534,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload,
             signature: None,
+            lean_payload: None,
         }
     }
 
@@ -947,6 +948,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload,
             signature: None,
+            lean_payload: None,
         };
         let block_hash = block.self_reported_block_hash();
 
@@ -1111,6 +1113,7 @@ mod tests {
             validity: Validity::Valid,
             execution_payload,
             signature: None,
+            lean_payload: None,
         };
         let provider = ArcSigningProvider::Local(LocalSigningProvider::new(signing_key.clone()));
         let (raw_parts, _sig) = make_proposal_parts(&provider, &block).await.unwrap();

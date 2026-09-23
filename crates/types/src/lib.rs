@@ -37,6 +37,7 @@ mod vote;
 pub mod block;
 pub mod codec;
 pub mod evidence;
+pub mod lean;
 pub mod proposer;
 pub mod proto;
 pub mod rpc_sync;
