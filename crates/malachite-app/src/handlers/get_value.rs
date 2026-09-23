@@ -846,4 +846,61 @@ mod tests {
             .to_string()
             .contains("db connection lost"));
     }
+
+    /// Re-proposing a stored block with the lean lane on: it is streamed again
+    /// only with its lean bytes back; otherwise a signed block declines the
+    /// round (a different block would be equivocation) and an unsigned one is
+    /// rebuilt. Without the lane, or for an EVM-only block, the stored block is
+    /// reused without asking the lean node anything.
+    #[tokio::test]
+    async fn a_stored_block_is_reused_rebuilt_or_declined() {
+        use crate::lean_lane::test_lane::{
+            block, lean_head, strict_lane, test_lane, Answer, TestLane,
+        };
+        use arc_consensus_types::lean::{test_lean_block_bytes, LeanLanePayload};
+
+        let bytes = test_lean_block_bytes(B256::repeat_byte(0xab), 5, 7_000, &[]);
+        let other = test_lean_block_bytes(B256::repeat_byte(0xcd), 5, 7_000, &[]);
+        let commitment = LeanLanePayload::new(bytes.clone()).unwrap().commitment();
+        let stored = |signed: bool| ConsensusBlock {
+            signature: signed.then(Signature::test),
+            ..block(7, commitment, None)
+        };
+        let lane = |answer: Answer| TestLane {
+            by_commitment: Some(answer),
+            ..test_lane(lean_head(0), 0, vec![])
+        };
+        let (height, round) = (Height::new(1), Round::new(0));
+
+        // (signed, lean node answer) -> expected; `Restream` carries the lean bytes back.
+        let cases = [
+            (true, Answer::Bytes(bytes.clone()), "restream"),
+            (true, Answer::Missing, "decline"),
+            (true, Answer::Bytes(other), "decline"),
+            (true, Answer::Unreachable, "decline"),
+            (false, Answer::Missing, "build"),
+            (false, Answer::Unreachable, "build"),
+        ];
+        for (signed, answer, expected) in cases {
+            let node = lane(answer.clone());
+            let got = decide_reuse(stored(signed), Some(&node), height, round).await;
+            match (&got, expected) {
+                (Reuse::Restream(b), "restream") => {
+                    assert_eq!(b.lean_payload.as_ref().map(|l| &l.bytes), Some(&bytes));
+                    assert_eq!(b.signature, stored(signed).signature);
+                }
+                (Reuse::Decline, "decline") | (Reuse::BuildFresh, "build") => {}
+                _ => panic!("signed={signed} {answer:?}: expected {expected}, got {got:?}"),
+            }
+        }
+
+        let strict = strict_lane();
+        for (block, lean) in [
+            (stored(true), None),
+            (block(7, B256::ZERO, None), Some(&strict as &dyn LeanNode)),
+        ] {
+            let got = decide_reuse(block.clone(), lean, height, round).await;
+            assert!(matches!(got, Reuse::Restream(b) if *b == block));
+        }
+    }
 }

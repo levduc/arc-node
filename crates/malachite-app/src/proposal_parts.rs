@@ -621,4 +621,82 @@ mod tests {
         let assembled = assemble_block_from_parts(&parts, false).unwrap();
         assert_eq!(assembled.valid_round, Round::Nil);
     }
+
+    fn data_bytes(parts: &ProposalParts) -> Vec<u8> {
+        parts.data().iter().flat_map(|d| d.bytes.to_vec()).collect()
+    }
+
+    /// Flag off, the proposal data is the payload's SSZ bytes, as upstream.
+    #[tokio::test]
+    async fn flag_off_proposal_data_is_the_stock_ssz_payload() {
+        use ssz::Encode;
+
+        let (keys, _) = make_validator_set(1);
+        let provider = LocalSigningProvider::new(keys[0].clone());
+        let block = crate::lean_lane::test_lane::block(7, alloy_primitives::B256::ZERO, None);
+
+        let (raw_parts, _) = make_proposal_parts(&provider, &block, false).await.unwrap();
+        let parts = ProposalParts::new(raw_parts).unwrap();
+
+        assert_eq!(data_bytes(&parts), block.execution_payload.as_ssz_bytes());
+        assert_eq!(
+            assemble_block_from_parts(&parts, false)
+                .unwrap()
+                .lean_payload,
+            None
+        );
+    }
+
+    /// A lean block streams and assembles back byte-identical, under the same
+    /// voted EVM hash. The undecided store drops the lean bytes, so a stored
+    /// row re-framed under its original signature does not verify until it is
+    /// rehydrated from the lean node, after which it is byte-identical again.
+    #[tokio::test]
+    async fn a_lean_block_round_trips_and_a_stored_row_needs_rehydrating() {
+        use crate::lean_lane::test_lane::{block, lean_head, test_lane};
+        use arc_consensus_types::lean::LeanLanePayload;
+
+        let lane = test_lane(lean_head(0), 1, vec![]);
+        let bytes = lane.chain[&1].clone();
+        let commitment = LeanLanePayload::new(bytes.clone()).unwrap().commitment();
+        let (keys, validator_set) = make_validator_set(1);
+        let provider = LocalSigningProvider::new(keys[0].clone());
+        let proposer = Address::from_public_key(&keys[0].public_key());
+        let mut built = ConsensusBlock {
+            proposer,
+            ..block(1, commitment, Some(bytes))
+        };
+
+        let (raw, signature) = make_proposal_parts(&provider, &built, true).await.unwrap();
+        let original = ProposalParts::new(raw).unwrap();
+        let assembled = assemble_block_from_parts(&original, true).unwrap();
+        assert_eq!(assembled.lean_payload, built.lean_payload);
+        assert_eq!(
+            assembled.self_reported_block_hash(),
+            built.self_reported_block_hash()
+        );
+
+        built.signature = Some(signature);
+        let mut stored = ConsensusBlock {
+            lean_payload: None,
+            ..built.clone()
+        };
+        let verifies = |parts: &ProposalParts| {
+            let expected = resolve_expected_proposer(&RoundRobin, &validator_set, parts).clone();
+            let parts = parts.clone();
+            let provider = provider.clone();
+            async move { validate_proposal_parts(&parts, &expected, &provider).await }
+        };
+
+        let (raw, _) = make_proposal_parts(&provider, &stored, true).await.unwrap();
+        let bare = ProposalParts::new(raw).unwrap();
+        assert_ne!(bare.hash(), original.hash());
+        assert!(!verifies(&bare).await);
+
+        assert!(rehydrate_lean_payload(&mut stored, &lane).await.unwrap());
+        let (raw, _) = make_proposal_parts(&provider, &stored, true).await.unwrap();
+        let rehydrated = ProposalParts::new(raw).unwrap();
+        assert_eq!(rehydrated.hash(), original.hash());
+        assert!(verifies(&rehydrated).await);
+    }
 }

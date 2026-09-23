@@ -1105,6 +1105,20 @@ mod tests {
         assert_eq!(metrics.get_consensus_round_missed_count(proposer), 3);
     }
 
+    /// Every lean abstain is counted; only the first at a height reports
+    /// itself as first, so it is logged once per height.
+    #[test]
+    fn lean_no_verdict_counts_every_abstain_and_flags_the_first_per_height() {
+        let metrics = AppMetrics::default();
+        let reason = LeanNoVerdictReason::PeersTimedOut;
+        let firsts: Vec<bool> = [7, 7, 8, 8]
+            .into_iter()
+            .map(|h| metrics.record_lean_no_verdict(reason, Height::new(h)))
+            .collect();
+        assert_eq!(firsts, [true, false, true, false]);
+        assert_eq!(metrics.get_lean_no_verdict(reason), 4);
+    }
+
     #[test]
     fn transient_validation_errors_count_registers_and_increments_per_source() {
         let registry = SharedRegistry::global().with_moniker("transient_validation_errors_test");

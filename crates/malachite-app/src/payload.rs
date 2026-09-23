@@ -1429,4 +1429,51 @@ mod tests {
             "should only attempt once"
         );
     }
+
+    /// The lean block is built first on the lean head, timestamp-locked to the
+    /// payload, and its commitment becomes `prev_randao`; without a lean node
+    /// `prev_randao` stays zero. The parent's timestamp is ahead of the clock,
+    /// so it fixes the payload timestamp.
+    #[tokio::test]
+    async fn the_lean_commitment_becomes_prev_randao_and_is_zero_without_the_lane() {
+        use crate::lean_lane::test_lane::{lean_head, test_lane};
+        use arc_consensus_types::lean::test_lean_block_bytes;
+
+        const TS: u64 = 4_000_000_000;
+        let lane = test_lane(lean_head(4), 4, vec![]);
+        let bytes = test_lean_block_bytes(lean_head(4).commitment, 5, TS * 1000, &[]);
+        let commitment = LeanLanePayload::new(bytes).unwrap().commitment();
+        let with_lane = Some(LeanBuild {
+            node: &lane,
+            budget_gas: 7,
+        });
+
+        for (lean, prev_randao) in [(with_lane, commitment), (None, B256::ZERO)] {
+            let mut generator = MockPayloadGenerator::new();
+            generator
+                .expect_generate_block()
+                .withf(move |_, ts, _, randao| *ts == TS && *randao == prev_randao)
+                .times(1)
+                .returning(|_, ts, _, _| Ok(test_payload(ts)));
+
+            let (_, lean_payload) = generate_payload_with_retry(
+                &parent_block(TS),
+                &fee_recipient(),
+                &generator,
+                &metrics(),
+                lean,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                lean_payload.map(|l| l.commitment()),
+                lean.map(|_| commitment)
+            );
+        }
+        assert_eq!(
+            *lane.builds.lock().unwrap(),
+            vec![(lean_head(4).commitment, 5, TS * 1000, 7)]
+        );
+    }
 }
