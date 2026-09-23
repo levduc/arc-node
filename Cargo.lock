@@ -1197,6 +1197,7 @@ dependencies = [
  "arc-shared",
  "async-trait",
  "backon",
+ "base64 0.22.1",
  "ethereum_serde_utils",
  "eyre",
  "hex",

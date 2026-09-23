@@ -28,6 +28,7 @@ arc-shared = { workspace = true }
 
 async-trait = { workspace = true }
 backon = { workspace = true }
+base64 = { workspace = true }
 ethereum_serde_utils = "0.8.0"
 eyre = { workspace = true }
 hex = { workspace = true }
