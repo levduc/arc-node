@@ -17,13 +17,13 @@
 use std::collections::HashSet;
 use std::fmt::Write;
 use std::ops::Deref;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use arc_consensus_types::ConsensusParams;
-use arc_consensus_types::{Address, ValidatorSet};
+use arc_consensus_types::{Address, Height, ValidatorSet};
 use malachitebft_app_channel::app::metrics::prometheus::encoding::{
     EncodeLabelSet, EncodeLabelValue, LabelValueEncoder,
 };
@@ -123,6 +123,13 @@ pub struct Inner {
     /// error), labelled by source.
     transient_validation_errors_count: Family<TransientValidationSourceLabel, Counter>,
 
+    /// Number of validations the lean payment lane abstained on, labelled by
+    /// reason. Registered only with the lane enabled.
+    lean_no_verdict: Family<LeanNoVerdictReasonLabel, Counter>,
+
+    /// Height of the last lean abstain recorded, so it is logged once per height.
+    last_lean_no_verdict_height: AtomicU64,
+
     /// Number of times the node stopped because a payload was not bound to its
     /// place in the chain, labelled by the path that found it. Any non-zero value
     /// is an alert, and the label says where to start reading.
@@ -183,6 +190,8 @@ impl Inner {
             invalid_payloads_count: Family::default(),
             clock_skew_nil_vote_count: Family::default(),
             transient_validation_errors_count: Family::default(),
+            lean_no_verdict: Family::default(),
+            last_lean_no_verdict_height: AtomicU64::new(u64::MAX),
             binding_halt_count: Family::default(),
             pending_proposal_parts_count: Gauge::default(),
             consensus_params: Family::default(),
@@ -626,6 +635,28 @@ impl AppMetrics {
             .get()
     }
 
+    /// Counts a validation the lean lane abstained on. Returns whether it is the
+    /// first abstain recorded at `height`, so callers log once per height.
+    pub fn record_lean_no_verdict(&self, reason: LeanNoVerdictReason, height: Height) -> bool {
+        self.lean_no_verdict
+            .get_or_create(&LeanNoVerdictReasonLabel {
+                reason: reason.as_str(),
+            })
+            .inc();
+        self.last_lean_no_verdict_height
+            .swap(height.as_u64(), Ordering::Relaxed)
+            != height.as_u64()
+    }
+
+    #[cfg(test)]
+    pub fn get_lean_no_verdict(&self, reason: LeanNoVerdictReason) -> u64 {
+        self.lean_no_verdict
+            .get_or_create(&LeanNoVerdictReasonLabel {
+                reason: reason.as_str(),
+            })
+            .get()
+    }
+
     /// Increment the binding-halt counter for the path that found the break.
     pub fn inc_binding_halt_count(&self, site: BindingHaltSite) {
         self.binding_halt_count
@@ -782,16 +813,19 @@ pub enum InvalidPayloadSource {
     /// This one compares the payload against local state, so it also rises when
     /// this node's view of that height is the one that is wrong.
     PayloadParent,
+    /// The lean payment lane observed a violation in the block's lean section.
+    LeanReject,
 }
 
 impl InvalidPayloadSource {
     #[cfg(test)]
-    pub(super) const ALL: [InvalidPayloadSource; 5] = [
+    pub(super) const ALL: [InvalidPayloadSource; 6] = [
         Self::EngineReject,
         Self::AssemblyFailure,
         Self::SyncDecode,
         Self::PayloadHeight,
         Self::PayloadParent,
+        Self::LeanReject,
     ];
 
     fn as_str(&self) -> &'static str {
@@ -801,6 +835,7 @@ impl InvalidPayloadSource {
             Self::SyncDecode => "sync_decode",
             Self::PayloadHeight => "payload_height",
             Self::PayloadParent => "payload_parent",
+            Self::LeanReject => "lean_reject",
         }
     }
 }
@@ -926,6 +961,48 @@ impl TransientValidationSourceLabel {
             source: source.as_str(),
         }
     }
+}
+
+/// Why the lean payment lane gave no verdict on a block. Every reason is a
+/// property of this node, never of the proposal.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum LeanNoVerdictReason {
+    /// The proposal is further ahead than any catch-up could close.
+    GapTooLarge,
+    /// The catch-up budget ran out.
+    BudgetExhausted,
+    /// Every peer lean node timed out, failed, or lacked the next block.
+    PeersTimedOut,
+    /// No peer lean nodes are configured.
+    NoPeers,
+    /// The local lean node did not answer.
+    LocalUnreachable,
+    /// The local head moved past the proposal during the catch-up.
+    HeadRanPast,
+}
+
+impl LeanNoVerdictReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::GapTooLarge => "gap_too_large",
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::PeersTimedOut => "peers_timed_out",
+            Self::NoPeers => "no_peers",
+            Self::LocalUnreachable => "local_unreachable",
+            Self::HeadRanPast => "head_ran_past",
+        }
+    }
+}
+
+impl std::fmt::Display for LeanNoVerdictReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct LeanNoVerdictReasonLabel {
+    reason: &'static str,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]

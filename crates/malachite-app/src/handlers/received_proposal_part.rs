@@ -380,16 +380,17 @@ async fn validate_block(
     from: PeerId,
 ) -> eyre::Result<()> {
     let validator = EnginePayloadValidator::new(engine, metrics);
-    let validity = establish_block_validity(&validator, block, previous_block, store, metrics)
-        .await
-        .map(|verdict| verdict.validity())
-        .wrap_err_with(|| {
-            format!(
-                "Payload validation failed on block built after \
+    let validity =
+        establish_block_validity(&validator, None, block, previous_block, store, metrics)
+            .await
+            .map(|verdict| verdict.validity())
+            .wrap_err_with(|| {
+                format!(
+                    "Payload validation failed on block built after \
                  receiving proposal part at height={}, round={} from {}",
-                block.height, block.round, from,
-            )
-        })?;
+                    block.height, block.round, from,
+                )
+            })?;
 
     match validity {
         Validity::Invalid => {

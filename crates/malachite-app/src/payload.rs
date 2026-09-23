@@ -27,9 +27,12 @@ use arc_consensus_types::{Address, BlockHash, Height, Round, B256};
 use arc_eth_engine::deadline::EngineDeadline;
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
+use arc_eth_engine::lean_shim::LeanNode;
 use arc_eth_engine::rpc::EngineApiRpcError;
 
 use crate::block::ConsensusBlock;
+use crate::lean_lane::binding::validate_lean_section;
+use crate::lean_lane::LeanVerdict;
 use crate::metrics::app::{AppMetrics, InvalidPayloadSource};
 use crate::store::repositories::InvalidPayloadsRepository;
 use arc_consensus_db::invalid_payloads::InvalidPayload;
@@ -327,8 +330,15 @@ async fn validate_payload(
 ///   is marked `Invalid` rather than left with a placeholder `Valid`.
 /// - `Err(_)`: no verdict was obtained (engine transport error,
 ///   `SYNCING`/`ACCEPTED` status, etc.).
+///
+/// With the lean payment lane on, a block the engine accepts also goes through
+/// [`validate_lean_section`]; `lean` is the local lean node for a block that
+/// arrived from the network, `None` otherwise (see there). A lean violation is
+/// `Invalid` and recorded like an engine reject, under its own source; a block
+/// the lean lane cannot judge is counted once and returned as `Err`.
 pub async fn validate_consensus_block(
     payload_validator: &impl PayloadValidator,
+    lean: Option<&dyn LeanNode>,
     block: &ConsensusBlock,
     store: &impl InvalidPayloadsRepository,
     metrics: &AppMetrics,
@@ -337,30 +347,74 @@ pub async fn validate_consensus_block(
         .validate_payload(&block.execution_payload)
         .await?;
 
-    match result {
-        PayloadValidationResult::Valid => Ok(Validity::Valid),
-        PayloadValidationResult::Invalid { reason } => {
-            warn!(
-                height = %block.height,
-                round = %block.round,
-                block_hash = %block.self_reported_block_hash(),
-                proposer = %block.proposer,
-                reason = %reason,
-                "Engine rejected payload, storing for forensics",
-            );
-            metrics.inc_invalid_payloads_count(InvalidPayloadSource::EngineReject);
-            let invalid = InvalidPayload::new_from_block(block, &reason);
-            if let Err(e) = store.append(invalid).await {
-                error!(
-                    height = %block.height,
-                    round = %block.round,
-                    block_hash = %block.self_reported_block_hash(),
-                    proposer = %block.proposer,
-                    "Failed to persist invalid-payload forensic record: {e}",
-                );
-            }
+    if let PayloadValidationResult::Invalid { reason } = result {
+        record_invalid_block(
+            block,
+            &reason,
+            InvalidPayloadSource::EngineReject,
+            store,
+            metrics,
+        )
+        .await;
+        return Ok(Validity::Invalid);
+    }
+
+    match validate_lean_section(block, lean).await {
+        LeanVerdict::Valid => Ok(Validity::Valid),
+        LeanVerdict::Invalid(reason) => {
+            record_invalid_block(
+                block,
+                &reason,
+                InvalidPayloadSource::LeanReject,
+                store,
+                metrics,
+            )
+            .await;
             Ok(Validity::Invalid)
         }
+        LeanVerdict::Abstain(reason, detail) => {
+            if metrics.record_lean_no_verdict(reason, block.height) {
+                warn!(
+                    height = %block.height,
+                    %reason,
+                    "🪶 Lean lane: no verdict, this node abstains at this height: {detail}",
+                );
+            }
+            Err(eyre::eyre!(detail))
+        }
+    }
+}
+
+/// Logs, counts and persists (best effort) a block judged invalid.
+async fn record_invalid_block(
+    block: &ConsensusBlock,
+    reason: &str,
+    source: InvalidPayloadSource,
+    store: &impl InvalidPayloadsRepository,
+    metrics: &AppMetrics,
+) {
+    let message = match source {
+        InvalidPayloadSource::LeanReject => "Lean lane rejected payload, storing for forensics",
+        _ => "Engine rejected payload, storing for forensics",
+    };
+    warn!(
+        height = %block.height,
+        round = %block.round,
+        block_hash = %block.self_reported_block_hash(),
+        proposer = %block.proposer,
+        reason = %reason,
+        "{message}",
+    );
+    metrics.inc_invalid_payloads_count(source);
+    let invalid = InvalidPayload::new_from_block(block, reason);
+    if let Err(e) = store.append(invalid).await {
+        error!(
+            height = %block.height,
+            round = %block.round,
+            block_hash = %block.self_reported_block_hash(),
+            proposer = %block.proposer,
+            "Failed to persist invalid-payload forensic record: {e}",
+        );
     }
 }
 
@@ -464,6 +518,7 @@ impl BlockVerdict {
 /// A payload that keeps the rules gets its verdict from [`validate_consensus_block`].
 pub async fn establish_block_validity(
     payload_validator: &impl PayloadValidator,
+    lean: Option<&dyn LeanNode>,
     block: &ConsensusBlock,
     previous_block: Option<&ExecutionBlock>,
     store: &impl InvalidPayloadsRepository,
@@ -495,7 +550,7 @@ pub async fn establish_block_validity(
         return Ok(BlockVerdict::Unbound(error));
     }
 
-    validate_consensus_block(payload_validator, block, store, metrics)
+    validate_consensus_block(payload_validator, lean, block, store, metrics)
         .await
         .map(BlockVerdict::Engine)
 }
@@ -543,6 +598,14 @@ mod tests {
     use crate::metrics::app::AppMetrics;
     use crate::store::repositories::mocks::MockInvalidPayloadsRepository;
     use arc_consensus_db::invalid_payloads::InvalidPayload;
+
+    fn valid_validator() -> MockPayloadValidator {
+        let mut validator = MockPayloadValidator::new();
+        validator
+            .expect_validate_payload()
+            .returning(|_| Ok(PayloadValidationResult::Valid));
+        validator
+    }
 
     fn test_payload(timestamp: u64) -> ExecutionPayloadV3 {
         ExecutionPayloadV3 {
@@ -889,7 +952,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let block = block_at(11, bound_payload(5, B256::ZERO));
 
-        let verdict = establish_block_validity(&validator, &block, None, &store, &metrics)
+        let verdict = establish_block_validity(&validator, None, &block, None, &store, &metrics)
             .await
             .expect("a binding error is a verdict, not a failure");
 
@@ -924,6 +987,7 @@ mod tests {
 
         let verdict = establish_block_validity(
             &validator,
+            None,
             &block,
             Some(&prev_block(10, expected)),
             &store,
@@ -960,6 +1024,7 @@ mod tests {
 
         let verdict = establish_block_validity(
             &validator,
+            None,
             &block,
             Some(&prev_block(10, parent)),
             &store,
@@ -984,7 +1049,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let result = validate_consensus_block(&validator, &block, &store, &metrics)
+        let result = validate_consensus_block(&validator, None, &block, &store, &metrics)
             .await
             .expect("should succeed");
 
@@ -1016,7 +1081,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let result = validate_consensus_block(&validator, &block, &store, &metrics)
+        let result = validate_consensus_block(&validator, None, &block, &store, &metrics)
             .await
             .expect("should succeed");
 
@@ -1036,7 +1101,7 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let err = validate_consensus_block(&validator, &block, &store, &metrics)
+        let err = validate_consensus_block(&validator, None, &block, &store, &metrics)
             .await
             .expect_err("should propagate error");
 
@@ -1071,12 +1136,67 @@ mod tests {
 
         let metrics = AppMetrics::default();
         let block = test_block();
-        let validity = validate_consensus_block(&validator, &block, &store, &metrics)
+        let validity = validate_consensus_block(&validator, None, &block, &store, &metrics)
             .await
             .expect("verdict should be returned even when forensics persist fails");
 
         assert_eq!(validity, Validity::Invalid);
         assert_eq!(metrics.get_invalid_payloads_count(), 1);
+    }
+
+    /// The lean verdict reaches consensus through `validate_consensus_block`:
+    /// a linked block is valid, a violation is `Invalid` and recorded under
+    /// `LeanReject`, and a lag is `Err` (no vote), counted by reason and never
+    /// recorded against the block.
+    #[tokio::test(start_paused = true)]
+    async fn lean_verdicts_become_validity_forensics_or_no_verdict() {
+        use crate::lean_lane::test_lane::{block, lean_head, test_lane};
+        use crate::metrics::app::LeanNoVerdictReason;
+        use arc_consensus_types::lean::LeanLanePayload;
+
+        let head = lean_head(10);
+        let chain = test_lane(head, 13, vec![]).chain;
+        let wrong_parent = arc_consensus_types::lean::test_lean_block_bytes(
+            B256::repeat_byte(0xbb),
+            11,
+            11_000,
+            &[],
+        );
+        let framed = |bytes: Vec<u8>, ts: u64| {
+            let c = LeanLanePayload::new(bytes.clone()).unwrap().commitment();
+            block(ts, c, Some(bytes))
+        };
+
+        // (block, validity or None for no verdict, forensic records)
+        let cases = [
+            (framed(chain[&11].clone(), 11), Some(Validity::Valid), 0),
+            (framed(wrong_parent, 11), Some(Validity::Invalid), 1),
+            (framed(chain[&13].clone(), 13), None, 0),
+        ];
+        for (block, expected, records) in cases {
+            let lane = test_lane(head, 13, vec![]);
+            let mut store = MockInvalidPayloadsRepository::new();
+            store
+                .expect_append()
+                .times(records)
+                .withf(|ip: &InvalidPayload| ip.reason.contains("parent/number"))
+                .returning(|_| Ok(()));
+            let metrics = AppMetrics::default();
+
+            let result =
+                validate_consensus_block(&valid_validator(), Some(&lane), &block, &store, &metrics)
+                    .await;
+
+            assert_eq!(result.as_ref().ok().copied(), expected, "{result:?}");
+            assert_eq!(
+                metrics.get_invalid_payloads_count_by_source(InvalidPayloadSource::LeanReject),
+                records as u64
+            );
+            assert_eq!(
+                metrics.get_lean_no_verdict(LeanNoVerdictReason::NoPeers),
+                u64::from(expected.is_none())
+            );
+        }
     }
 
     #[tokio::test]

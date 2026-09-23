@@ -25,6 +25,7 @@ mod config;
 mod env_config;
 mod finalize;
 mod handlers;
+mod lean_lane;
 mod metrics;
 mod payload;
 mod proposal_parts;

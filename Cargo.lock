@@ -1861,6 +1861,7 @@ dependencies = [
  "arc-signer",
  "arc-version",
  "assert_cmd",
+ "async-trait",
  "atomic-time",
  "axum 0.8.8",
  "backon",

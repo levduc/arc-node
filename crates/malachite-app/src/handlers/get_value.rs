@@ -281,7 +281,7 @@ async fn build_and_validate_block(
     )?;
 
     let validator = EnginePayloadValidator::new_with_deadline(engine, metrics, deadline);
-    let validity = validate_consensus_block(&validator, &block, store, metrics)
+    let validity = validate_consensus_block(&validator, None, &block, store, metrics)
         .await
         .wrap_err_with(|| {
             format!(

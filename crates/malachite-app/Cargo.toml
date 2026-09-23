@@ -91,8 +91,9 @@ alloy-primitives = { workspace = true }
 alloy-rpc-types-engine = { workspace = true, features = ["arbitrary"] }
 arbitrary = { workspace = true }
 arc-consensus-db = { workspace = true, features = ["mock"] }
-arc-consensus-types = { workspace = true, features = ["arbitrary"] }
+arc-consensus-types = { workspace = true, features = ["arbitrary", "test-utils"] }
 arc-eth-engine = { workspace = true, features = ["mocks"] }
+async-trait = { workspace = true }
 assert_cmd = "2.0"
 brotli = "8"
 flate2 = "1"

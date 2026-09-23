@@ -312,6 +312,7 @@ async fn process_pending_proposal_parts(
         // recorded as a permanent `Invalid` verdict against this block.
         let validity = match establish_block_validity(
             payload_validator,
+            None,
             &block,
             previous_block,
             invalid_payloads,
@@ -427,7 +428,9 @@ async fn validate_undecided_blocks(
             continue;
         }
 
-        match validate_consensus_block(payload_validator, &block, invalid_payloads, metrics).await {
+        match validate_consensus_block(payload_validator, None, &block, invalid_payloads, metrics)
+            .await
+        {
             Ok(new_validity) => {
                 if new_validity != existing_validity {
                     warn!(

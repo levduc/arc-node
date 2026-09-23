@@ -172,6 +172,7 @@ async fn on_process_synced_value(
 
     let verdict = establish_block_validity(
         &engine,
+        None,
         &block,
         previous_block.as_ref(),
         &invalid_payloads_repo,
