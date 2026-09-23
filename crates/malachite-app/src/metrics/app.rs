@@ -635,6 +635,18 @@ impl AppMetrics {
             .get()
     }
 
+    /// Registers the lean payment lane metrics; called only with the lane on,
+    /// so a node without it exposes exactly the metrics it did before.
+    pub fn register_lean_lane(&self, registry: &SharedRegistry) {
+        registry.with_prefix("arc_malachite_app", |registry| {
+            registry.register(
+                "lean_no_verdict",
+                "Number of validations the lean lane abstained on, labelled by reason",
+                self.lean_no_verdict.clone(),
+            );
+        });
+    }
+
     /// Counts a validation the lean lane abstained on. Returns whether it is the
     /// first abstain recorded at `height`, so callers log once per height.
     pub fn record_lean_no_verdict(&self, reason: LeanNoVerdictReason, height: Height) -> bool {

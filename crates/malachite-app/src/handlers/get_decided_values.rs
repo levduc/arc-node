@@ -15,13 +15,14 @@
 // limitations under the License.
 
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 
 use alloy_rpc_types_engine::ExecutionPayloadV3;
 use alloy_rpc_types_eth::BlockNumberOrTag;
 use arc_eth_engine::engine::Engine;
+use arc_eth_engine::lean_shim::LeanNode;
 use bytesize::ByteSize;
 use eyre::{eyre, WrapErr};
-use ssz::Encode;
 use tracing::{debug, error, info, warn};
 
 use malachitebft_app_channel::app::types::codec::HasEncodedLen;
@@ -31,10 +32,12 @@ use malachitebft_core_types::utils::height::{DisplayRange, HeightRangeExt};
 use malachitebft_core_types::{ExtendedCommitCertificate, Height as _, VoteExtensions};
 
 use arc_consensus_types::codec::proto::ProtobufCodec;
+use arc_consensus_types::lean::{encode_value, LeanLanePayload};
 use arc_consensus_types::sync::{Response, ValueResponse};
 use arc_consensus_types::{ArcContext, Height};
 
 use crate::block::DecidedBlock;
+use crate::lean_lane::fetch_lean_payload;
 use crate::metrics::AppMetrics;
 use crate::state::State;
 use crate::store::Store;
@@ -70,6 +73,7 @@ pub async fn handle(
     let store = state.store().clone();
     let metrics = state.metrics().clone();
     let engine = engine.clone();
+    let lean = state.lean_node_shared();
 
     // Spawn retrieval of decided values in a separate task to avoid blocking the main application loop.
     tokio::spawn(async move {
@@ -80,6 +84,7 @@ pub async fn handle(
             config.max_response_size,
             store,
             engine,
+            lean,
             metrics,
         )
         .await
@@ -96,6 +101,7 @@ pub async fn handle(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn get_decided_values(
     requested_range: RangeInclusive<Height>,
     available_range: RangeInclusive<Height>,
@@ -103,6 +109,7 @@ async fn get_decided_values(
     max_response_size: ByteSize,
     store: Store,
     engine: Engine,
+    lean: Option<Arc<dyn LeanNode>>,
     metrics: AppMetrics,
 ) -> Result<Vec<RawDecidedValue<ArcContext>>, eyre::Error> {
     let _guard = metrics.start_msg_process_timer("GetDecidedValues");
@@ -134,14 +141,44 @@ async fn get_decided_values(
             continue;
         };
 
-        let (raw_value, raw_bytes_len) =
-            match get_raw_decided_value(&store, execution_payload, height).await {
-                Ok(result) => result,
-                Err(e) => {
-                    warn!(%height, "Failed to get decided value at height: {e}");
-                    continue;
+        // Lean payment lane: serve the lean block the header commits to. A
+        // height whose block the local lean node lacks is left to other peers.
+        let prev_randao = execution_payload.payload_inner.payload_inner.prev_randao;
+        let lean_payload = match lean.as_deref() {
+            Some(node) if !prev_randao.is_zero() => {
+                match fetch_lean_payload(node, prev_randao).await {
+                    Ok(Some(lane)) => Some(lane),
+                    Ok(None) => {
+                        warn!(
+                            %height, commitment = %prev_randao,
+                            "GetDecidedValues: no lean block for the header commitment, skipping"
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!(%height, "GetDecidedValues: lean node unreachable, skipping: {e:#}");
+                        continue;
+                    }
                 }
-            };
+            }
+            _ => None,
+        };
+
+        let (raw_value, raw_bytes_len) = match get_raw_decided_value(
+            &store,
+            execution_payload,
+            lean_payload.as_ref(),
+            lean.is_some(),
+            height,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                warn!(%height, "Failed to get decided value at height: {e}");
+                continue;
+            }
+        };
 
         // NOTE: This size estimate slightly over-approximates the true wire size.
         // These estimates assume each value is sent in its own SyncResponse message,
@@ -193,6 +230,8 @@ async fn get_decided_values(
 async fn get_raw_decided_value(
     store: &Store,
     execution_payload: ExecutionPayloadV3,
+    lean_payload: Option<&LeanLanePayload>,
+    lean_lane: bool,
     height: Height,
 ) -> eyre::Result<(RawDecidedValue<ArcContext>, ByteSize)> {
     let stored = store
@@ -208,7 +247,7 @@ async fn get_raw_decided_value(
 
     let raw_value = RawDecidedValue {
         certificate,
-        value_bytes: decided_block.execution_payload.as_ssz_bytes().into(),
+        value_bytes: encode_value(&decided_block.execution_payload, lean_payload, lean_lane).into(),
     };
 
     let response = Response::ValueResponse(ValueResponse::new(height, vec![raw_value.clone()]));

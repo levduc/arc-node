@@ -15,10 +15,10 @@
 // limitations under the License.
 
 //! The one lean node test double: a local node whose head the feed advances,
-//! peers with configurable latency, and a strict mode
+//! peers with configurable latency, scripted anchor answers, and a strict mode
 //! in which any call panics.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -42,6 +42,16 @@ pub(crate) enum Answer {
     Unreachable,
 }
 
+/// One scripted answer to `new_block_by_commitment`; the last one repeats.
+#[derive(Clone, Debug)]
+pub(crate) enum Step {
+    Valid(B256),
+    Syncing,
+    Unreachable,
+    Fail,
+    Hang,
+}
+
 pub(crate) struct TestLane {
     /// Any call panics: pins that a path never contacts the lean node.
     pub(crate) strict: bool,
@@ -52,12 +62,14 @@ pub(crate) struct TestLane {
     pub(crate) head: Mutex<LeanHead>,
     /// Answer to `get_block_bytes_by_commitment`; `None` looks up `chain`.
     pub(crate) by_commitment: Option<Answer>,
+    pub(crate) anchor: Mutex<VecDeque<Step>>,
     /// Peers asked, in order.
     pub(crate) asked: Mutex<Vec<usize>>,
     /// `(parent, number, timestamp_ms, budget_gas)` of every build.
     pub(crate) builds: Mutex<Vec<(B256, u64, u64, u64)>>,
     pub(crate) staged: AtomicUsize,
     pub(crate) resolved: AtomicUsize,
+    pub(crate) anchored: AtomicUsize,
 }
 
 impl TestLane {
@@ -110,7 +122,23 @@ impl LeanNode for TestLane {
     }
 
     async fn new_block_by_commitment(&self, _commitment: B256) -> eyre::Result<NewBlockStatus> {
-        unimplemented!("the decide anchor is not exercised here")
+        self.touch("new_block_by_commitment");
+        self.anchored.fetch_add(1, Ordering::SeqCst);
+        let step = {
+            let mut steps = self.anchor.lock().unwrap();
+            let step = steps.front().cloned().expect("no anchor answer scripted");
+            if steps.len() > 1 {
+                steps.pop_front();
+            }
+            step
+        };
+        match step {
+            Step::Valid(c) => Ok(NewBlockStatus::Valid(c)),
+            Step::Syncing => Ok(NewBlockStatus::Syncing),
+            Step::Unreachable => Err(unreachable("arc_newBlock")),
+            Step::Fail => Err(eyre::eyre!("lean shim: arc_newBlock error: bad request")),
+            Step::Hang => std::future::pending().await,
+        }
     }
 
     fn stage_block(&self, _bytes: Vec<u8>) {
@@ -189,10 +217,12 @@ pub(crate) fn test_lane(head: LeanHead, last: u64, peers: Vec<(Duration, bool)>)
         chain,
         head: Mutex::new(head),
         by_commitment: None,
+        anchor: Mutex::new(VecDeque::new()),
         asked: Mutex::new(Vec::new()),
         builds: Mutex::new(Vec::new()),
         staged: AtomicUsize::new(0),
         resolved: AtomicUsize::new(0),
+        anchored: AtomicUsize::new(0),
     }
 }
 

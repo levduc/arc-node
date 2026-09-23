@@ -31,15 +31,16 @@ use arc_consensus_types::{Address, ArcContext, Height};
 use arc_eth_engine::deadline::EngineDeadline;
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
+use arc_eth_engine::lean_shim::LeanNode;
 use arc_signer::ArcSigningProvider;
 
 use crate::block::ConsensusBlock;
 use crate::metrics::{AppMetrics, BindingHaltSite};
 use crate::payload::{
     check_payload_binding, generate_payload_with_retry, validate_consensus_block,
-    EnginePayloadGenerator, EnginePayloadValidator,
+    EnginePayloadGenerator, EnginePayloadValidator, LeanBuild,
 };
-use crate::proposal_parts::{prepare_stream, stream_proposal};
+use crate::proposal_parts::{prepare_stream, rehydrate_lean_payload, stream_proposal};
 use crate::state::State;
 use crate::store::repositories::UndecidedBlocksRepository;
 use crate::store::Store;
@@ -78,10 +79,18 @@ pub async fn handle(
     let stream_id = state.next_stream_id(height, round);
     let previous_block = state.previous_block.as_ref();
     let signing_provider = state.signing_provider();
+    let lean = state
+        .lean_node()
+        .zip(state.env_config().lean_lane.as_ref())
+        .map(|(node, config)| LeanBuild {
+            node,
+            budget_gas: config.budget_gas,
+        });
 
     let proposed_value = on_get_value(
         network,
         engine,
+        lean,
         metrics,
         store,
         height,
@@ -93,7 +102,18 @@ pub async fn handle(
         stream_id,
         timeout,
     )
-    .await?;
+    .await;
+
+    // With the lean lane on, a failed build (the lean node briefly away, say)
+    // skips the round instead of stopping the node. Chain anomalies still stop it.
+    let proposed_value = match proposed_value {
+        Ok(value) => value,
+        Err(e) if lean.is_some() && e.downcast_ref::<HaltAndWait>().is_none() => {
+            error!(%height, %round, "GetValue: failed to build proposal, skipping round: {e:#}");
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
 
     if let Some(proposed_value) = proposed_value {
         if round.as_i64() == 0 {
@@ -127,6 +147,7 @@ pub async fn handle(
 async fn on_get_value(
     network: NetworkHandle,
     engine: &Engine,
+    lean: Option<LeanBuild<'_>>,
     metrics: AppMetrics,
     store: Store,
     height: Height,
@@ -147,14 +168,24 @@ async fn on_get_value(
             )
         })?;
 
-    let mut block = match block {
+    let block = match block {
         Some(block) => {
             info!(block_hash = %block.self_reported_block_hash(), "✅ Using previously built block");
 
             check_reused_block_binding(&block, height, round, previous_block, &metrics)?;
 
-            block
+            match decide_reuse(block, lean.map(|l| l.node), height, round).await {
+                Reuse::Restream(block) => Some(*block),
+                Reuse::BuildFresh => None,
+                // No proposal this round: it times out, as after a build timeout.
+                Reuse::Decline => return Ok(None),
+            }
         }
+        None => None,
+    };
+
+    let mut block = match block {
+        Some(block) => block,
         None => {
             info!(%height, %round, "🌈 Building new block");
 
@@ -171,6 +202,7 @@ async fn on_get_value(
 
             let task = build_and_validate_block(
                 engine,
+                lean,
                 &metrics,
                 &store,
                 height,
@@ -206,14 +238,15 @@ async fn on_get_value(
 
     let block_hash = block.self_reported_block_hash();
 
-    let (stream_messages, signature) = prepare_stream(stream_id, signing_provider, &block)
-        .await
-        .wrap_err_with(|| {
-            format!(
-                "Proposer failed to prepare stream for block {block_hash} \
+    let (stream_messages, signature) =
+        prepare_stream(stream_id, signing_provider, &block, lean.is_some())
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "Proposer failed to prepare stream for block {block_hash} \
                 it wants to propose at height={height}, round={round}",
-            )
-        })?;
+                )
+            })?;
 
     // Store the block with its signature
     block.signature = Some(signature);
@@ -241,6 +274,7 @@ async fn on_get_value(
 #[allow(clippy::too_many_arguments)]
 async fn build_and_validate_block(
     engine: &Engine,
+    lean: Option<LeanBuild<'_>>,
     metrics: &AppMetrics,
     store: &Store,
     height: Height,
@@ -254,6 +288,7 @@ async fn build_and_validate_block(
 
     let block = build_block(
         engine,
+        lean,
         metrics,
         height,
         round,
@@ -311,6 +346,7 @@ async fn build_and_validate_block(
 #[allow(clippy::too_many_arguments)]
 pub async fn build_block(
     engine: &Engine,
+    lean: Option<LeanBuild<'_>>,
     metrics: &AppMetrics,
     height: Height,
     round: Round,
@@ -324,13 +360,25 @@ pub async fn build_block(
         deadline: Some(deadline),
     }; // TODO: make this configurable
 
-    let execution_payload =
-        generate_payload_with_retry(previous_block, fee_recipient, &generator, metrics).await?;
+    let (execution_payload, lean_payload) =
+        generate_payload_with_retry(previous_block, fee_recipient, &generator, metrics, lean)
+            .await?;
 
     debug!(
         "🌈 Got execution payload: {:?}",
         PrettyPayload(&execution_payload)
     );
+
+    // Stage our own lean block so the decide anchor only promotes it.
+    if let (Some(lean), Some(lane)) = (lean, &lean_payload) {
+        debug!(
+            number = lane.decoded.number,
+            txs = lane.decoded.tx_count,
+            commitment = %lane.commitment(),
+            "🪶 Built lean block"
+        );
+        lean.node.stage_block(lane.bytes.clone());
+    }
 
     Ok(ConsensusBlock {
         height,
@@ -340,8 +388,58 @@ pub async fn build_block(
         validity: Validity::Valid,
         execution_payload,
         signature: None,
-        lean_payload: None,
+        lean_payload,
     })
+}
+
+/// What a block this node already stored for this (height, round) is good for.
+#[derive(Debug)]
+enum Reuse {
+    /// Stream it again, exactly as it was framed and signed.
+    Restream(Box<ConsensusBlock>),
+    /// Build a fresh block instead.
+    BuildFresh,
+    /// Propose nothing this round.
+    Decline,
+}
+
+/// Decides whether a stored block can be re-proposed.
+///
+/// With the lean lane on, a stored block has lost its lean bytes and can only
+/// be streamed again once they are fetched back by its header commitment. If
+/// that fails, the signature decides: a signed block may already be on the
+/// network, and building a different block for the same round would be
+/// equivocation, so the round is declined. An unsigned block was never
+/// streamed, so a fresh build replaces it.
+async fn decide_reuse(
+    mut block: ConsensusBlock,
+    lean: Option<&dyn LeanNode>,
+    height: Height,
+    round: Round,
+) -> Reuse {
+    let Some(lean) = lean else {
+        return Reuse::Restream(Box::new(block));
+    };
+    let failure = match rehydrate_lean_payload(&mut block, lean).await {
+        Ok(true) => return Reuse::Restream(Box::new(block)),
+        Ok(false) => "the lean node does not have the block the header commits to".to_owned(),
+        Err(e) => format!("lean node unreachable while rehydrating: {e:#}"),
+    };
+    let block_hash = block.self_reported_block_hash();
+    if block.signature.is_some() {
+        warn!(
+            %height, %round, %block_hash,
+            "🙅 Declining to propose: the signed block stored for this round cannot be \
+             streamed again ({failure}), and a different block would be equivocation",
+        );
+        return Reuse::Decline;
+    }
+    warn!(
+        %height, %round, %block_hash,
+        "Stored block cannot be streamed again ({failure}); it was never signed, building a \
+         fresh one",
+    );
+    Reuse::BuildFresh
 }
 
 /// Makes sure that the node's own previous block sits one height below the height

@@ -57,11 +57,12 @@ use arc_consensus_types::signing::PublicKey;
 use arc_consensus_types::{Address, ArcContext, ChainId, Config, ConsensusSpec, SigningConfig};
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
+use arc_eth_engine::lean_shim::{LeanNode, LeanShim};
 use arc_node_consensus_cli::metrics;
 use arc_signer::local::{LocalSigningProvider, PrivateKey};
 use arc_signer::ArcSigningProvider;
 
-use crate::env_config::EnvConfig;
+use crate::env_config::{EnvConfig, LeanLaneConfig};
 use crate::hardcoded_config::{GossipLoad, GossipMeshParams};
 use crate::metrics::{AppMetrics, DbMetrics, ProcessMetrics, ValidatorSetMetrics};
 use crate::request::AppRequest;
@@ -780,6 +781,9 @@ impl App {
 
         // Setup metrics
         let (app_metrics, db_metrics, process_metrics) = self.setup_metrics();
+        if env_config.lean_lane.is_some() {
+            app_metrics.register_lean_lane(&self.registry);
+        }
 
         // Open the store
         let (store, store_monitor) = self
@@ -796,6 +800,11 @@ impl App {
         )
         .await
         .wrap_err("Failed to resolve chain identity from execution engine")?;
+
+        let lean_node = match &env_config.lean_lane {
+            Some(config) => Some(connect_lean_node(config).await),
+            None => None,
+        };
 
         self.apply_chain_specific_config(chain_id);
 
@@ -863,6 +872,7 @@ impl App {
             .spec(consensus_spec)
             .genesis_block(genesis_block)
             .metrics(app_metrics)
+            .maybe_lean_node(lean_node)
             .build();
 
         // Apply any state overrides from the start configuration (e.g. suggested fee recipient)
@@ -1109,6 +1119,28 @@ where
         Ok(result) => result,
         Err(_) => Err(eyre::Report::new(ExecutionEngineUnreachable)
             .wrap_err(format!("execution engine unreachable after {deadline:?}"))),
+    }
+}
+
+/// Connects to the lean payment lane node, retrying without bound like the
+/// execution engine connect: a node that boots before its lean node waits for
+/// it instead of stopping.
+async fn connect_lean_node(config: &LeanLaneConfig) -> std::sync::Arc<dyn LeanNode> {
+    let shim = LeanShim::new(config.rpc.clone()).with_peers(config.peer_rpcs.clone());
+    loop {
+        match shim.get_head().await {
+            Ok(head) => {
+                info!(
+                    url = %shim.url(), number = head.number, commitment = %head.commitment,
+                    "🪶 Connected to lean payment lane node"
+                );
+                return std::sync::Arc::new(shim);
+            }
+            Err(e) => {
+                warn!("Lean payment lane node unreachable at startup, retrying: {e:#}");
+                tokio::time::sleep(arc_eth_engine::INITIAL_RETRY_DELAY).await;
+            }
+        }
     }
 }
 

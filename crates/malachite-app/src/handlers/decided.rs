@@ -23,9 +23,11 @@ use malachitebft_core_types::CommitCertificate;
 use arc_consensus_types::{ArcContext, Height};
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
+use arc_eth_engine::lean_shim::LeanNode;
 
 use crate::block::ConsensusBlock;
 use crate::finalize::{BlockFinalizer, EngineBlockFinalizer};
+use crate::lean_lane::anchor::{anchor_lean_lane, ANCHOR_DEADLINE};
 use crate::metrics::{AppMetrics, BindingHaltSite};
 use crate::payload::check_payload_binding;
 use crate::state::{Decision, NextHeightInfo, State};
@@ -82,6 +84,7 @@ pub async fn handle(
         metrics,
         commit_ack,
         previous_block.as_ref(),
+        state.lean_node(),
     )
     .await;
 
@@ -160,6 +163,7 @@ async fn decide(
     metrics: &AppMetrics,
     commit_ack: Reply<()>,
     previous_block: Option<&ExecutionBlock>,
+    lean: Option<&dyn LeanNode>,
 ) -> eyre::Result<ExecutionBlock> {
     let height = certificate.height;
     let round = certificate.round;
@@ -215,6 +219,17 @@ async fn decide(
         block.size_bytes(),
         block.payload_size()
     );
+
+    // Lean payment lane: append the lean block the decided header commits to.
+    // The lean node holds its bytes; the height fails if it cannot be anchored.
+    if let Some(lean) = lean {
+        let commitment = block.header_lean_commitment().ok_or_else(|| {
+            eyre!("lean lane: decided header at height={height} carries no lean commitment")
+        })?;
+        anchor_lean_lane(lean, commitment, height, ANCHOR_DEADLINE)
+            .await
+            .wrap_err_with(|| format!("lean lane: decide anchor failed at height={height}"))?;
+    }
 
     // Commit the decision to the store before finalizing the block.
     // This way we ensure that latest decided height >= latest finalized block.
@@ -535,6 +550,7 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             None,
+            None,
         )
         .await;
 
@@ -594,6 +610,7 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             Some(&test_execution_block(height - 1, 900)),
+            None,
         )
         .await
         .expect_err("an unbound payload must not be finalized");
@@ -643,6 +660,7 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             Some(&test_execution_block(height - 1, 900)),
+            None,
         )
         .await
         .expect_err("a payload that extends another block must not be finalized");
@@ -695,6 +713,7 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             Some(&test_execution_block(height - 1, 900)),
+            None,
         )
         .await
         .expect_err("an unbound payload must not be finalized");
@@ -736,6 +755,7 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             Some(&test_execution_block(height - 1, 900)),
+            None,
         )
         .await
         .expect_err("a block marked invalid must not be finalized");
@@ -802,6 +822,7 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             Some(&test_execution_block(height - 1, 900)),
+            None,
         )
         .await
         .expect("a bound payload is finalized");
@@ -838,6 +859,7 @@ mod tests {
             &stats,
             &metrics,
             dummy_commit_ack(),
+            None,
             None,
         )
         .await;
@@ -883,6 +905,7 @@ mod tests {
             &metrics,
             dummy_commit_ack(),
             None,
+            None,
         )
         .await;
 
@@ -919,6 +942,7 @@ mod tests {
             &stats,
             &metrics,
             dummy_commit_ack(),
+            None,
             None,
         )
         .await;
@@ -962,6 +986,7 @@ mod tests {
             &stats,
             &metrics,
             dummy_commit_ack(),
+            None,
             None,
         )
         .await;

@@ -17,12 +17,14 @@
 use std::time::Duration;
 
 use backon::{BackoffBuilder, ConstantBuilder, Retryable};
+use eyre::Context as _;
 use tracing::{error, warn};
 
 use malachitebft_app_channel::app::types::core::Validity;
 
 use alloy_rpc_types_engine::{ExecutionPayloadV3, PayloadStatusEnum};
 
+use arc_consensus_types::lean::LeanLanePayload;
 use arc_consensus_types::{Address, BlockHash, Height, Round, B256};
 use arc_eth_engine::deadline::EngineDeadline;
 use arc_eth_engine::engine::Engine;
@@ -37,16 +39,39 @@ use crate::metrics::app::{AppMetrics, InvalidPayloadSource};
 use crate::store::repositories::InvalidPayloadsRepository;
 use arc_consensus_db::invalid_payloads::InvalidPayload;
 
+/// The lean node a proposer builds its lean block with, and the block's budget.
+#[derive(Clone, Copy)]
+pub struct LeanBuild<'a> {
+    pub node: &'a dyn LeanNode,
+    pub budget_gas: u64,
+}
+
+/// Generates the next execution payload. With `lean`, the lean block is built
+/// first, on the lean node's head and timestamp-locked to the payload
+/// (`timestamp_ms = timestamp * 1000`), and its recomputed commitment becomes
+/// the payload's `prev_randao`. Each retry rebuilds both, since the timestamp
+/// is taken again.
 pub async fn generate_payload_with_retry(
     previous_block: &ExecutionBlock,
     fee_recipient: &Address,
     generator: &impl PayloadGenerator,
     metrics: &AppMetrics,
-) -> eyre::Result<ExecutionPayloadV3> {
+    lean: Option<LeanBuild<'_>>,
+) -> eyre::Result<(ExecutionPayloadV3, Option<LeanLanePayload>)> {
     const MAX_RETRIES: usize = 5;
     const RETRY_POLICY: ConstantBuilder = ConstantBuilder::new()
         .with_delay(Duration::from_millis(100))
         .with_max_times(MAX_RETRIES);
+
+    let lean_head = match lean {
+        Some(lean) => Some(
+            lean.node
+                .get_head()
+                .await
+                .wrap_err("lean lane: failed to fetch head for build")?,
+        ),
+        None => None,
+    };
 
     let call_once = || async {
         // Ensure timestamp is non-decreasing by setting it to max(previous_block.timestamp, now())
@@ -66,11 +91,40 @@ pub async fn generate_payload_with_retry(
             );
         }
 
+        let lean_payload = match (lean, lean_head) {
+            (Some(lean), Some(head)) => {
+                let (claimed, bytes) = lean
+                    .node
+                    .build_block(
+                        head.commitment,
+                        head.number.saturating_add(1),
+                        timestamp.saturating_mul(1000),
+                        lean.budget_gas,
+                    )
+                    .await
+                    .wrap_err("lean lane: buildBlock failed")?;
+                let lane = LeanLanePayload::new(bytes)
+                    .wrap_err("lean lane: built block failed strict decode")?;
+                if lane.commitment() != claimed {
+                    return Err(eyre::eyre!(
+                        "lean lane: recomputed commitment {} != node's claimed {claimed}",
+                        lane.commitment()
+                    ));
+                }
+                Some(lane)
+            }
+            _ => None,
+        };
+        let prev_randao = lean_payload
+            .as_ref()
+            .map_or(B256::ZERO, LeanLanePayload::commitment);
+
         let _guard = metrics.start_engine_api_timer("generate_block");
 
-        generator
-            .generate_block(previous_block, timestamp, fee_recipient, B256::ZERO)
-            .await
+        let payload = generator
+            .generate_block(previous_block, timestamp, fee_recipient, prev_randao)
+            .await?;
+        Ok((payload, lean_payload))
     };
 
     let mut attempt_num = 0usize;
@@ -1283,10 +1337,15 @@ mod tests {
     #[tokio::test]
     async fn retry_success_first_attempt() {
         let generator = TestPayloadGenerator::new(Scenario::Success);
-        let payload =
-            generate_payload_with_retry(&parent_block(0), &fee_recipient(), &generator, &metrics())
-                .await
-                .expect("payload generation should succeed on first try");
+        let (payload, _) = generate_payload_with_retry(
+            &parent_block(0),
+            &fee_recipient(),
+            &generator,
+            &metrics(),
+            None,
+        )
+        .await
+        .expect("payload generation should succeed on first try");
 
         assert_eq!(
             generator.attempts.load(Ordering::SeqCst),
@@ -1300,11 +1359,12 @@ mod tests {
     async fn retry_unknown_until_success() {
         let succeed_on = 6; // 5 failures + 1 success; limit of max retries
         let generator = TestPayloadGenerator::new(Scenario::UnknownPayloadUntil { succeed_on });
-        let payload = generate_payload_with_retry(
+        let (payload, _) = generate_payload_with_retry(
             &parent_block(10),
             &fee_recipient(),
             &generator,
             &metrics(),
+            None,
         )
         .await
         .expect("payload should eventually succeed");
@@ -1326,6 +1386,7 @@ mod tests {
             &fee_recipient(),
             &generator,
             &metrics(),
+            None,
         )
         .await
         .expect_err("should fail after exhausting retries");
@@ -1351,6 +1412,7 @@ mod tests {
             &fee_recipient(),
             &generator,
             &metrics(),
+            None,
         )
         .await
         .expect_err("should fail immediately without retry");

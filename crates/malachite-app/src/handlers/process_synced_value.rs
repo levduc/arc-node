@@ -27,9 +27,11 @@ use malachitebft_app_channel::app::types::ProposedValue;
 use malachitebft_app_channel::Reply;
 
 use alloy_rpc_types_engine::ExecutionPayloadV3;
+use arc_consensus_types::lean::decode_value;
 use arc_consensus_types::{Address, ArcContext, Height};
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
+use arc_eth_engine::lean_shim::LeanNode;
 use arc_eth_engine::persistence_meter::PersistenceMeter;
 
 use malachitebft_app_channel::app::types::core::Validity;
@@ -70,6 +72,7 @@ pub async fn handle(
 ) -> Result<(), eyre::Error> {
     let outcome = match on_process_synced_value(
         EnginePayloadValidator::new(engine, state.metrics()),
+        state.lean_node(),
         state.store(),
         state.store(),
         state.persistence_meter(),
@@ -121,6 +124,7 @@ pub async fn handle(
 #[allow(clippy::too_many_arguments)]
 async fn on_process_synced_value(
     engine: impl PayloadValidator,
+    lean: Option<&dyn LeanNode>,
     undecided_blocks_repo: impl UndecidedBlocksRepository,
     invalid_payloads_repo: impl InvalidPayloadsRepository,
     persistence_meter: impl PersistenceMeter,
@@ -131,17 +135,22 @@ async fn on_process_synced_value(
     value_bytes: Bytes,
     previous_block: Option<ExecutionBlock>,
 ) -> eyre::Result<Option<ProposedValue<ArcContext>>> {
-    let payload = match ExecutionPayloadV3::from_ssz_bytes(&value_bytes) {
-        Ok(payload) => payload,
+    let decoded = match lean {
+        Some(_) => decode_value(&value_bytes, true).map_err(|e| format!("{e:#}")),
+        None => ExecutionPayloadV3::from_ssz_bytes(&value_bytes)
+            .map(|payload| (payload, None))
+            .map_err(|e| format!("{e:?}")),
+    };
+    let (payload, lean_payload) = match decoded {
+        Ok(decoded) => decoded,
         Err(e) => {
             warn!(
                 %height, %round, %proposer,
-                "Failed to decode synced value into an execution payload: {e:?}",
+                "Failed to decode synced value into an execution payload: {e}",
             );
             metrics.inc_invalid_payloads_count(InvalidPayloadSource::SyncDecode);
 
-            let invalid =
-                InvalidPayload::new_without_payload(height, round, proposer, &format!("{e:?}"));
+            let invalid = InvalidPayload::new_without_payload(height, round, proposer, &e);
 
             persist_invalid_payload_best_effort(
                 &invalid_payloads_repo,
@@ -167,12 +176,12 @@ async fn on_process_synced_value(
         execution_payload: payload,
         validity: Validity::Valid,
         signature: None,
-        lean_payload: None,
+        lean_payload,
     };
 
     let verdict = establish_block_validity(
         &engine,
-        None,
+        lean,
         &block,
         previous_block.as_ref(),
         &invalid_payloads_repo,
@@ -343,6 +352,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let outcome = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -407,6 +417,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let outcome = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -463,6 +474,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let outcome = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -522,6 +534,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -578,6 +591,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let Some(proposal) = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -661,6 +675,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -715,6 +730,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let result = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -751,6 +767,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -796,6 +813,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let result = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -834,6 +852,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let result = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -882,6 +901,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let result = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             NoopPersistenceMeter,
@@ -934,6 +954,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             persistence_meter,
@@ -985,6 +1006,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             persistence_meter,
@@ -1038,6 +1060,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             persistence_meter,
@@ -1116,6 +1139,7 @@ mod tests {
         let metrics = AppMetrics::default();
         let proposal = on_process_synced_value(
             engine,
+            None,
             undecided,
             invalid,
             persistence_meter,

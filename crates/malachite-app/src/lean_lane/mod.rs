@@ -26,6 +26,7 @@
 //! sticks forever, because the valid-round rule re-proposes certified values
 //! without re-validating them.
 
+pub(crate) mod anchor;
 pub(crate) mod binding;
 pub(crate) mod catchup;
 #[cfg(test)]

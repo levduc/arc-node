@@ -15,9 +15,8 @@
 // limitations under the License.
 
 use bytes::Bytes;
-use eyre::{eyre, Context as _};
+use eyre::Context as _;
 use sha3::Digest;
-use ssz::{Decode, Encode};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -27,7 +26,7 @@ use malachitebft_app_channel::app::streaming::{StreamContent, StreamId, StreamMe
 use malachitebft_app_channel::app::types::core::{Round, Validity};
 use malachitebft_app_channel::NetworkMsg;
 
-use alloy_rpc_types_engine::ExecutionPayloadV3;
+use arc_consensus_types::lean::{decode_value, encode_value};
 use arc_consensus_types::proposer::ProposerSelector;
 use arc_consensus_types::signing::{Signature, SigningError, SigningProvider, VerificationResult};
 use arc_consensus_types::{
@@ -35,7 +34,10 @@ use arc_consensus_types::{
     Validator, ValidatorSet,
 };
 
+use arc_eth_engine::lean_shim::LeanNode;
+
 use crate::block::ConsensusBlock;
+use crate::lean_lane::fetch_lean_payload;
 
 #[cfg_attr(test, mockall::automock(type Error = std::io::Error;))]
 pub trait PublishProposalPart {
@@ -100,8 +102,9 @@ pub async fn prepare_stream(
     stream_id: StreamId,
     signing_provider: &impl SigningProvider<ArcContext>,
     consensus_block: &ConsensusBlock,
+    lean_lane: bool,
 ) -> eyre::Result<(Vec<StreamMessage<ProposalPart>>, Signature)> {
-    let (parts, signature) = make_proposal_parts(signing_provider, consensus_block)
+    let (parts, signature) = make_proposal_parts(signing_provider, consensus_block, lean_lane)
         .await
         .wrap_err("Failed to construct proposal parts")?;
 
@@ -126,15 +129,21 @@ pub async fn prepare_stream(
 }
 
 /// Splits the given consensus block into proposal parts and computes the signature
-/// for the entire proposal.
+/// for the entire proposal. `lean_lane` selects the value encoding (see
+/// [`encode_value`]); with it off the data is the payload's SSZ bytes.
 pub async fn make_proposal_parts(
     signing_provider: &impl SigningProvider<ArcContext>,
     block: &ConsensusBlock,
+    lean_lane: bool,
 ) -> Result<(Vec<ProposalPart>, Signature), SigningError> {
     let mut hasher = sha3::Keccak256::new();
     let mut parts = Vec::new();
 
-    let data = block.execution_payload.as_ssz_bytes();
+    let data = encode_value(
+        &block.execution_payload,
+        block.lean_payload.as_ref(),
+        lean_lane,
+    );
 
     // Init
     {
@@ -258,8 +267,12 @@ pub fn resolve_expected_proposer<'a>(
     proposer_selector.select_proposer(validator_set, parts.height(), parts.round())
 }
 
-/// Re-assemble a [`ConsensusBlock`] from its [`ProposalParts`].
-pub fn assemble_block_from_parts(parts: &ProposalParts) -> eyre::Result<ConsensusBlock> {
+/// Re-assemble a [`ConsensusBlock`] from its [`ProposalParts`], decoding the
+/// data with the value encoding `lean_lane` selects.
+pub fn assemble_block_from_parts(
+    parts: &ProposalParts,
+    lean_lane: bool,
+) -> eyre::Result<ConsensusBlock> {
     // Calculate total size and allocate buffer
     let total_size = parts.data_size();
     let mut block_bytes = Vec::with_capacity(total_size);
@@ -270,8 +283,7 @@ pub fn assemble_block_from_parts(parts: &ProposalParts) -> eyre::Result<Consensu
     }
 
     // Convert the concatenated data vector into an execution payload
-    let execution_payload = ExecutionPayloadV3::from_ssz_bytes(&block_bytes)
-        .map_err(|e| eyre!("Failed to decode execution payload: {e:?}"))?;
+    let (execution_payload, lean_payload) = decode_value(&block_bytes, lean_lane)?;
 
     let consensus_block = ConsensusBlock {
         height: parts.height(),
@@ -281,10 +293,31 @@ pub fn assemble_block_from_parts(parts: &ProposalParts) -> eyre::Result<Consensu
         validity: Validity::Valid,
         execution_payload,
         signature: Some(parts.fin().signature),
-        lean_payload: None,
+        lean_payload,
     };
 
     Ok(consensus_block)
+}
+
+/// Puts the lean bytes back on a block read from the undecided store, which
+/// keeps only the EVM payload.
+///
+/// A restreamed proposal reuses the stored signature, which covers the value
+/// as first framed, lean bytes included; re-framing without them produces
+/// parts no receiver can verify. Returns `false` when the lean node cannot
+/// produce the block the header commits to.
+pub async fn rehydrate_lean_payload(
+    block: &mut ConsensusBlock,
+    lean: &dyn LeanNode,
+) -> eyre::Result<bool> {
+    if block.lean_payload.is_some() {
+        return Ok(true);
+    }
+    let Some(commitment) = block.header_lean_commitment() else {
+        return Ok(true);
+    };
+    block.lean_payload = fetch_lean_payload(lean, commitment).await?;
+    Ok(block.lean_payload.is_some())
 }
 
 #[cfg(test)]
@@ -502,11 +535,11 @@ mod tests {
         };
 
         // Original stream signs the block
-        let (_, signature) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (_, signature) = make_proposal_parts(&provider, &block, false).await.unwrap();
         block.signature = Some(signature);
 
         // Restream reuses the stored signature, round and proposer
-        let (raw_parts, _) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (raw_parts, _) = make_proposal_parts(&provider, &block, false).await.unwrap();
         let parts = ProposalParts::new(raw_parts).unwrap();
 
         assert_eq!(parts.init().pol_round, valid_round);
@@ -543,13 +576,13 @@ mod tests {
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());
-        let (raw_parts, _sig) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (raw_parts, _sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
         let parts = ProposalParts::new(raw_parts).unwrap();
 
         // Sanity: Init carries the pol_round we set
         assert_eq!(parts.init().pol_round, pol_round);
 
-        let assembled = assemble_block_from_parts(&parts).unwrap();
+        let assembled = assemble_block_from_parts(&parts, false).unwrap();
         assert_eq!(
             assembled.valid_round, pol_round,
             "assemble_block_from_parts must propagate pol_round as valid_round"
@@ -580,12 +613,12 @@ mod tests {
         };
 
         let provider = LocalSigningProvider::new(signing_key.clone());
-        let (raw_parts, _sig) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (raw_parts, _sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
         let parts = ProposalParts::new(raw_parts).unwrap();
 
         assert_eq!(parts.init().pol_round, Round::Nil);
 
-        let assembled = assemble_block_from_parts(&parts).unwrap();
+        let assembled = assemble_block_from_parts(&parts, false).unwrap();
         assert_eq!(assembled.valid_round, Round::Nil);
     }
 }

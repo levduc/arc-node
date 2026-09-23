@@ -18,6 +18,7 @@
 //! A regular application would have mempool implemented, a proper database and input methods like RPC.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use eyre::Context as _;
@@ -34,6 +35,7 @@ use arc_consensus_types::{
     ConsensusParams, ConsensusSpec, Height, NetworkId, ValidatorSet, ValueId,
 };
 use arc_eth_engine::json_structures::ExecutionBlock;
+use arc_eth_engine::lean_shim::LeanNode;
 use arc_eth_engine::persistence_meter::{NoopPersistenceMeter, PersistenceMeter};
 use arc_signer::ArcSigningProvider;
 use malachitebft_core_types::HeightParams;
@@ -347,6 +349,9 @@ pub struct State {
 
     /// Metrics for the application.
     pub metrics: AppMetrics,
+
+    /// The lean payment lane node; `Some` only when the lane is enabled.
+    lean_node: Option<Arc<dyn LeanNode>>,
 }
 
 #[bon::bon]
@@ -375,6 +380,7 @@ impl State {
         spec: ConsensusSpec,
         genesis_block: ExecutionBlock,
         metrics: AppMetrics,
+        lean_node: Option<Arc<dyn LeanNode>>,
     ) -> Self {
         let initial_height = Height::new(0);
         let network_id = NetworkId::new(
@@ -408,6 +414,7 @@ impl State {
             persistence_meter: Box::new(NoopPersistenceMeter),
             spec,
             metrics,
+            lean_node,
         }
     }
 
@@ -417,6 +424,16 @@ impl State {
 
     pub fn env_config(&self) -> &EnvConfig {
         &self.env_config
+    }
+
+    /// The lean payment lane node, when the lane is enabled.
+    pub fn lean_node(&self) -> Option<&dyn LeanNode> {
+        self.lean_node.as_deref()
+    }
+
+    /// A shared handle to the lean node, for work spawned off the handler.
+    pub fn lean_node_shared(&self) -> Option<Arc<dyn LeanNode>> {
+        self.lean_node.clone()
     }
 
     pub fn store(&self) -> &Store {

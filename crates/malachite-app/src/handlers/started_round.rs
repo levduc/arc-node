@@ -26,6 +26,7 @@ use arc_consensus_types::proposer::ProposerSelector;
 use arc_consensus_types::{Address, ArcContext, Height, ProposalParts, Round, ValidatorSet};
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
+use arc_eth_engine::lean_shim::LeanNode;
 use arc_signer::ArcSigningProvider;
 
 use super::skew_gate;
@@ -123,6 +124,7 @@ async fn on_started_round(
         &state.ctx.proposer_selector,
         state.store(),
         engine,
+        state.lean_node(),
         state.signing_provider(),
         state.metrics(),
         state.previous_block.as_ref(),
@@ -182,6 +184,7 @@ async fn fetch_and_process_pending_proposals(
     proposer_selector: &dyn ProposerSelector,
     store: &Store,
     engine: &Engine,
+    lean: Option<&dyn LeanNode>,
     signing_provider: &ArcSigningProvider,
     metrics: &AppMetrics,
     previous_block: Option<&ExecutionBlock>,
@@ -211,6 +214,7 @@ async fn fetch_and_process_pending_proposals(
         signing_provider,
         metrics,
         previous_block,
+        lean,
     )
     .await
     .wrap_err("Failed to validate pending proposal parts")?;
@@ -277,6 +281,7 @@ async fn process_pending_proposal_parts(
     signing_provider: &ArcSigningProvider,
     metrics: &AppMetrics,
     previous_block: Option<&ExecutionBlock>,
+    lean: Option<&dyn LeanNode>,
 ) -> eyre::Result<()> {
     for parts in pending_parts {
         let (height, round, proposer) = (parts.height(), parts.round(), parts.proposer());
@@ -290,7 +295,7 @@ async fn process_pending_proposal_parts(
             continue;
         }
 
-        let mut block = match assemble_block_from_parts(&parts) {
+        let mut block = match assemble_block_from_parts(&parts, lean.is_some()) {
             Ok(block) => block,
             Err(e) => {
                 warn!(%height, %round, %proposer, "Failed to assemble block from pending parts: {e}");
@@ -312,7 +317,7 @@ async fn process_pending_proposal_parts(
         // recorded as a permanent `Invalid` verdict against this block.
         let validity = match establish_block_validity(
             payload_validator,
-            None,
+            lean,
             &block,
             previous_block,
             invalid_payloads,
@@ -908,6 +913,7 @@ mod tests {
             &provider,
             &metrics,
             None,
+            None,
         )
         .await
         .expect("should handle assembly failure gracefully");
@@ -956,7 +962,7 @@ mod tests {
         let block_hash = block.self_reported_block_hash();
 
         let provider = LocalSigningProvider::new(signing_key.clone());
-        let (raw_parts, _sig) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (raw_parts, _sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
         (ProposalParts::new(raw_parts).unwrap(), block_hash)
     }
 
@@ -1001,6 +1007,7 @@ mod tests {
             &invalid_payloads,
             &provider,
             &metrics,
+            None,
             None,
         )
         .await
@@ -1064,6 +1071,7 @@ mod tests {
             &selector,
             &store,
             &engine,
+            None,
             &provider,
             &metrics,
             None,
@@ -1119,7 +1127,7 @@ mod tests {
             lean_payload: None,
         };
         let provider = ArcSigningProvider::Local(LocalSigningProvider::new(signing_key.clone()));
-        let (raw_parts, _sig) = make_proposal_parts(&provider, &block).await.unwrap();
+        let (raw_parts, _sig) = make_proposal_parts(&provider, &block, false).await.unwrap();
         let parts = ProposalParts::new(raw_parts).unwrap();
 
         store
@@ -1146,6 +1154,7 @@ mod tests {
             &selector,
             &store,
             &engine,
+            None,
             &provider,
             &metrics,
             None,
@@ -1260,6 +1269,7 @@ mod tests {
             &selector,
             &store,
             &engine,
+            None,
             &provider,
             &metrics,
             Some(&previous_block),
@@ -1326,6 +1336,7 @@ mod tests {
             &provider,
             &metrics,
             None,
+            None,
         )
         .await
         .expect("a binding error is a verdict, not a failure");
@@ -1388,6 +1399,7 @@ mod tests {
             &provider,
             &metrics,
             None,
+            None,
         )
         .await
         .expect("validate-and-insert should succeed with Invalid verdict");
@@ -1448,6 +1460,7 @@ mod tests {
             &invalid_payloads,
             &provider,
             &metrics,
+            None,
             None,
         )
         .await

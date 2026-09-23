@@ -28,6 +28,7 @@ use arc_consensus_types::proposer::ProposerSelector;
 use arc_consensus_types::{ArcContext, Height, ProposalPart, ProposalParts, Round, ValidatorSet};
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
+use arc_eth_engine::lean_shim::LeanNode;
 use arc_signer::ArcSigningProvider;
 
 use super::skew_gate;
@@ -66,9 +67,11 @@ pub async fn handle(
     let current_validator_set = state.validator_set().clone();
     let proposer_selector = state.ctx.proposer_selector;
     let previous_block = state.previous_block;
+    let lean = state.lean_node_shared();
 
     let context = HandlerContext {
         engine,
+        lean: lean.as_deref(),
         store: state.store().clone(),
         metrics: state.metrics().clone(),
         signing_provider: state.signing_provider().clone(),
@@ -195,6 +198,7 @@ fn record_proposal_in_monitor(
 
 struct HandlerContext<'a, 'b> {
     engine: &'a Engine,
+    lean: Option<&'a dyn LeanNode>,
     store: Store,
     metrics: AppMetrics,
     signing_provider: ArcSigningProvider,
@@ -310,6 +314,7 @@ async fn handle_complete_parts(
     // Validate the block
     validate_block(
         context.engine,
+        context.lean,
         &context.metrics,
         &context.store,
         &mut block,
@@ -373,6 +378,7 @@ async fn handle_complete_parts(
 /// so that consensus can proceed with the correct validity information.
 async fn validate_block(
     engine: &Engine,
+    lean: Option<&dyn LeanNode>,
     metrics: &AppMetrics,
     store: &Store,
     block: &mut ConsensusBlock,
@@ -381,7 +387,7 @@ async fn validate_block(
 ) -> eyre::Result<()> {
     let validator = EnginePayloadValidator::new(engine, metrics);
     let validity =
-        establish_block_validity(&validator, None, block, previous_block, store, metrics)
+        establish_block_validity(&validator, lean, block, previous_block, store, metrics)
             .await
             .map(|verdict| verdict.validity())
             .wrap_err_with(|| {
@@ -422,6 +428,7 @@ struct ProcessingContext<'a> {
     current_validator_set: &'a ValidatorSet,
     proposer_selector: &'a dyn ProposerSelector,
     max_pending_proposals: usize,
+    lean_lane: bool,
 }
 
 impl<'a> From<&'a HandlerContext<'_, '_>> for ProcessingContext<'a> {
@@ -435,6 +442,7 @@ impl<'a> From<&'a HandlerContext<'_, '_>> for ProcessingContext<'a> {
             current_validator_set: &handler_ctx.current_validator_set,
             proposer_selector: handler_ctx.proposer_selector,
             max_pending_proposals: handler_ctx.max_pending_proposals,
+            lean_lane: handler_ctx.lean.is_some(),
         }
     }
 }
@@ -535,7 +543,7 @@ async fn process_proposal_parts(
     }
 
     // Assemble the block
-    let block = match assemble_block_from_parts(&parts) {
+    let block = match assemble_block_from_parts(&parts, ctx.lean_lane) {
         Ok(block) => block,
         Err(e) => {
             warn!(
@@ -782,6 +790,7 @@ mod tests {
             current_validator_set: &validator_set,
             proposer_selector: &selector,
             max_pending_proposals: 10,
+            lean_lane: false,
         };
 
         let outcome = process_proposal_parts(ctx, parts).await.unwrap();
@@ -843,6 +852,7 @@ mod tests {
             current_validator_set: &f.validator_set,
             proposer_selector: &selector,
             max_pending_proposals: 10,
+            lean_lane: false,
         };
 
         let parts = signed_parts_without_data(Height::new(3), Round::new(0), &f.signing_key).await;
@@ -866,6 +876,7 @@ mod tests {
             current_validator_set: &f.validator_set,
             proposer_selector: &selector,
             max_pending_proposals: 10,
+            lean_lane: false,
         };
 
         let parts = signed_parts_without_data(Height::new(6), Round::new(0), &f.signing_key).await;
@@ -890,6 +901,7 @@ mod tests {
             current_validator_set: &f.validator_set,
             proposer_selector: &selector,
             max_pending_proposals: 2,
+            lean_lane: false,
         };
 
         let parts = signed_parts_without_data(Height::new(10), Round::new(0), &f.signing_key).await;
@@ -932,6 +944,7 @@ mod tests {
             current_validator_set: &f.validator_set,
             proposer_selector: &selector,
             max_pending_proposals: 2,
+            lean_lane: false,
         };
 
         // Another in-range future proposal: valid, but the table is full.
@@ -995,6 +1008,7 @@ mod tests {
     ) -> HandlerContext<'a, 'b> {
         HandlerContext {
             engine,
+            lean: None,
             store: f.store.clone(),
             metrics: f.metrics.clone(),
             signing_provider: f.provider.clone(),
@@ -1096,7 +1110,7 @@ mod tests {
                 .expect("recompute canonical hash");
 
         let stream_id = new_stream_id(height, round, 0);
-        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block)
+        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block, false)
             .await
             .unwrap();
 
@@ -1164,7 +1178,7 @@ mod tests {
                 .expect("recompute canonical hash");
 
         let stream_id = new_stream_id(height, round, 0);
-        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block)
+        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block, false)
             .await
             .unwrap();
 
@@ -1214,7 +1228,7 @@ mod tests {
 
         let block = block_from(&f, height, round);
         let stream_id = new_stream_id(height, round, 0);
-        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block)
+        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block, false)
             .await
             .unwrap();
 
@@ -1281,7 +1295,7 @@ mod tests {
         let block = block_from(&f, height, round);
         assert!(!block.self_reported_hash_is_canonical());
         let stream_id = new_stream_id(height, round, 0);
-        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block)
+        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block, false)
             .await
             .unwrap();
 
@@ -1334,7 +1348,7 @@ mod tests {
 
         let block = block_from(&f, future_height, Round::new(0));
         let stream_id = new_stream_id(future_height, Round::new(0), 0);
-        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block)
+        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block, false)
             .await
             .unwrap();
 
@@ -1379,7 +1393,7 @@ mod tests {
 
         let block = block_from(&f, too_far_height, Round::new(0));
         let stream_id = new_stream_id(too_far_height, Round::new(0), 0);
-        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block)
+        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block, false)
             .await
             .unwrap();
 
@@ -1484,7 +1498,7 @@ mod tests {
 
         let block = block_from(&f, height, round);
         let stream_id = new_stream_id(height, round, 0);
-        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block)
+        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block, false)
             .await
             .unwrap();
 
@@ -1545,7 +1559,7 @@ mod tests {
             .timestamp = now + 3600;
 
         let stream_id = new_stream_id(height, round, 0);
-        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block)
+        let (messages, _sig) = prepare_stream(stream_id.clone(), &f.provider, &block, false)
             .await
             .unwrap();
 
