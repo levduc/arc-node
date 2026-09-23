@@ -114,6 +114,8 @@ services:
       - NET_ADMIN
     restart: unless-stopped
     init: true
+    extra_hosts:
+      - host.docker.internal:host-gateway
     {{#if ../cl_cpu_limit}}
     cpus: "{{../cl_cpu_limit}}"
     {{/if}}
@@ -279,6 +281,8 @@ services:
       - NET_ADMIN
     restart: unless-stopped
     init: true
+    extra_hosts:
+      - host.docker.internal:host-gateway
     {{#if ../cl_cpu_limit}}
     cpus: "{{../cl_cpu_limit}}"
     {{/if}}
