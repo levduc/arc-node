@@ -23,7 +23,7 @@ use malachitebft_app_channel::app::types::core::Validity;
 
 use alloy_rpc_types_engine::{ExecutionPayloadV3, PayloadStatusEnum};
 
-use arc_consensus_types::{Address, BlockHash, Height, Round};
+use arc_consensus_types::{Address, BlockHash, Height, Round, B256};
 use arc_eth_engine::deadline::EngineDeadline;
 use arc_eth_engine::engine::Engine;
 use arc_eth_engine::json_structures::ExecutionBlock;
@@ -66,7 +66,7 @@ pub async fn generate_payload_with_retry(
         let _guard = metrics.start_engine_api_timer("generate_block");
 
         generator
-            .generate_block(previous_block, timestamp, fee_recipient)
+            .generate_block(previous_block, timestamp, fee_recipient, B256::ZERO)
             .await
     };
 
@@ -105,6 +105,7 @@ pub trait PayloadGenerator: Send + Sync {
         parent: &ExecutionBlock,
         timestamp: u64,
         fee_recipient: &Address,
+        prev_randao: B256,
     ) -> eyre::Result<ExecutionPayloadV3>;
 }
 
@@ -121,9 +122,10 @@ impl<'a> PayloadGenerator for EnginePayloadGenerator<'a> {
         parent: &ExecutionBlock,
         timestamp: u64,
         fee_recipient: &Address,
+        prev_randao: B256,
     ) -> eyre::Result<ExecutionPayloadV3> {
         self.engine
-            .generate_block(parent, timestamp, fee_recipient, self.deadline)
+            .generate_block(parent, timestamp, fee_recipient, prev_randao, self.deadline)
             .await
     }
 }
@@ -1122,6 +1124,7 @@ mod tests {
             _parent: &ExecutionBlock,
             timestamp: u64,
             _fee_recipient: &Address,
+            _prev_randao: B256,
         ) -> eyre::Result<ExecutionPayloadV3> {
             let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
             match self.scenario {

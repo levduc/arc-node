@@ -34,7 +34,7 @@ use reth_tasks::TaskExecutor;
 
 use alloy_rpc_types::BlockNumberOrTag;
 use arc_consensus_types::block::canonical_block_hash;
-use arc_consensus_types::Address;
+use arc_consensus_types::{Address, B256};
 use arc_eth_engine::ipc::engine_ipc::EngineIPC;
 use arc_eth_engine::retry::NoRetry;
 use arc_eth_engine::rpc::EngineApiRpcError;
@@ -114,6 +114,7 @@ async fn test_engine_common(engine: &Engine, initial_block_number: BlockNumberOr
             &block.unwrap(),
             Engine::timestamp_now() + 1,
             &fee_recipient,
+            B256::ZERO,
             None,
         )
         .await
