@@ -151,7 +151,7 @@ Flag-off pins:
 | value encoding is the stock SSZ bytes | `types::lean::tests::encode_value_flag_off_is_stock_ssz`, `proposal_parts::tests::flag_off_proposal_data_is_the_stock_ssz_payload` |
 | mixed flags fail closed | `types::lean::tests::decode_value_fails_closed` |
 | `prev_randao` stays zero | `payload::tests::the_lean_commitment_becomes_prev_randao_and_is_zero_without_the_lane` |
-| no lean node contacted for an EVM-only block | `lean_lane::binding::tests::an_evm_only_block_never_touches_the_lean_node` (`None` and a double that panics on any call) |
+| an EVM-only block is valid only with the lane off; lane-on it is Invalid without contacting the node | `lean_lane::binding::tests::an_evm_only_block_is_valid_only_with_the_lane_off` (`None`, and a double that panics on any call) |
 | stored blocks re-proposed as before | `handlers::get_value::tests::a_stored_block_is_reused_rebuilt_or_declined` |
 | lane off unless `1`/`true` | `env_config::tests::lean_lane_is_off_unless_set_to_1_or_true` |
 

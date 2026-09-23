@@ -62,6 +62,16 @@ pub(crate) async fn validate_lean_section(
             }
             Err(e) => return unreachable_abstain("resolving the header commitment", e),
         },
+        // A lane-enabled node never proposes without a lean block (a failed
+        // lean build skips the round), so a network block with neither lean
+        // bytes nor a header commitment can only come from a faulty proposer.
+        // Voting it Valid would certify a height whose decide anchor refuses
+        // it on every node, halting the chain.
+        (None, None, Some(_)) => {
+            return LeanVerdict::Invalid(
+                "lean lane: lane-enabled block carries no lean commitment".to_string(),
+            );
+        }
         _ => return LeanVerdict::Valid,
     };
 
@@ -154,19 +164,22 @@ mod tests {
         }
     }
 
-    /// With no lean payload and a zero header, the lean section is a no-op
-    /// that never contacts a lean node: the flag-off shape (`None`) and an
-    /// EVM-only height on a lane-enabled node (a strict double).
+    /// With no lean payload and a zero header: the flag-off shape (`None`) is a
+    /// no-op that never contacts a lean node, while a lane-enabled node votes
+    /// such a network block Invalid without contacting its node (a strict
+    /// double) — certifying it would make every decide anchor refuse it.
     #[tokio::test]
-    async fn an_evm_only_block_never_touches_the_lean_node() {
+    async fn an_evm_only_block_is_valid_only_with_the_lane_off() {
         let block = block(1, B256::ZERO, None);
+        assert_eq!(
+            validate_lean_section(&block, None).await,
+            LeanVerdict::Valid
+        );
         let strict = strict_lane();
-        for lean in [None, Some(&strict as &dyn LeanNode)] {
-            assert_eq!(
-                validate_lean_section(&block, lean).await,
-                LeanVerdict::Valid
-            );
-        }
+        assert!(check(
+            &validate_lean_section(&block, Some(&strict as &dyn LeanNode)).await,
+            &Expect::Invalid("carries no lean commitment")
+        ));
     }
 
     /// Structural failures are judged before any call to the lean node, and a
