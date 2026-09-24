@@ -1414,3 +1414,32 @@ Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-24 (later) — Phase 3b docs: CLAUDE.md rewritten against today's code; campaign repo marked as the archive
+
+**Changed**
+- 9fbab42 CLAUDE.md rewrite (267 → 262 lines): code locations (arc `lean-lane`, lean-lane `v0.3-dev`,
+  `bench/`, archives + `-lastgood` tags); §3 v0.2 design (plain EVM hash voted, lean commitment in
+  `prev_randao`, 5 verbs + `arc_announceBlock`, commitment-addressed); §4 lean-testnet.sh + bench runner;
+  §5 table = measured v0.2/clean-stack points with fullness; findings renumbered (knee 400–450 M);
+  new landmines (tailscale expiry + re-auth, root-owned run data, record before purge, submodules,
+  shared run id); single §8; Next = Phase 2 rest, Phase 4, light-client Phase 1.
+- f8661a1 `docs/{lean-lane-integration,lean-lane-setup,roadmap,overnight-2026-08-22}.md` →
+  `docs/history/` with "superseded by" headers; `lane-bench.sh`, `deploy-lean.sh`, `fleet.env.example`
+  → `experiments/dual-el/history/` (HISTORICAL header, paths adjusted, no current caller);
+  `crates/lean-*/README.md` mark the v0.1 snapshot (crates kept).
+
+**Measured** — nothing (docs only).
+
+**Broke / retracted**
+- CLAUDE.md claims withdrawn: composite `value_id`, "4-verb shim", "lean lane self-contained in this
+  repo", `lane-bench.sh` as the one trigger, §5 225 M top row / drain ceiling as current, the N=1 6,401
+  row, "four durable findings" (five listed), knee ~225 M.
+
+**Open**
+- The arc-branch plan/spec/run record (`docs/superpowers/**`, `docs/fleet-runs-2026-09-15.md` on
+  `lean-lane-v0.2`) were not copied into `docs/history/`: they carry infrastructure details; they stay on
+  the frozen archive branch.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
