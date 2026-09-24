@@ -1466,3 +1466,32 @@ fan-out for 21 nodes; spammer → small lean load tool; light-client Phase 1.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-24 (evening) — lean node as a quake container: local 5-validator run with a lean restart passes
+
+**Changed** — arc branch `lean-lane-quake` (worktree `~/arc-lean-quake`, 5 commits on `lean-lane` @ ede2651):
+4ba0046 golden snapshots of rendered compose (flag-off baseline, local + remote) · b8d7582 `[lean]` manifest
+section + lean image (remote must be ghcr.io) · 402cf7c lean node as a third container per node (IP slot,
+port 8560+100·i, CL depends_on lean healthy, CL lean env + peer lists injected, fund file generated at setup
+without `cast`) · 4e6c3be lean containers in perturb/clean/exec/info · d4dd71e scenario
+`localdev-lean-docker.toml` + guide recipe. quake tests 400/400, flag-off compose byte-identical.
+Tag `gate-4b-local-2026-09-24`.
+
+**Measured** — `quake -f localdev-lean-docker.toml start` (arc image ede2651, `lean-lane:local` = v0.3-dev
+39804fe, 5 validators, 100 M, N=100, host spammer 3,000 tx/s over the 5 lean ports for 240 s):
+idle ~36 min to height 4143, all 15 containers up (EL + lean healthy), 5/5 lean identical. Under load:
+minute 1 109 heights/min with 191/191 = 100 % full; `quake perturb restart validator3_lean` after minute 1;
+next minute 119 heights/min (4366 → 4485), 191/191 full; then 119 as load ended. After: 5/5 lean identical
+at 4634, 0 CL restarts, 0 parks/panics/equivocations, 0 LeanReject / "no verdict" lines on any validator
+(the CL's ~15 s transport retries covered the lean restart), `quake clean` → 0 containers left.
+
+**Broke / retracted** — my first two attempts measured nothing: zsh did not word-split a command held in a
+variable (exit 127), and `quake info heights` watches forever unless `-n 1`. `scripts/lean-testnet.sh down`
+stops but does not remove containers; the stopped `arc_testnet` containers then block the next run with
+stale networks (removed by hand twice) — small fix owed on `lean-lane`.
+
+**Open** — CL catch-up peer fan-out for 21 nodes; lean load tool / quake load mode for fan-out (today a host
+spammer); image to ghcr + a remote rung; lean-testnet.sh `down` → `docker rm`.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
