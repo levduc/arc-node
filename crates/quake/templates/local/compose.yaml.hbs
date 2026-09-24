@@ -135,6 +135,10 @@ services:
       {{name}}-signer-proxy:
         condition: service_healthy
       {{/if}}
+      {{#if lean}}
+      {{lean.inner.name}}:
+        condition: service_healthy
+      {{/if}}
     volumes:
       - ./{{name}}/malachite:/app/.malachite/
       - ./assets:/app/assets
@@ -178,6 +182,36 @@ services:
       - "--eth-socket=/sockets/reth.ipc"
       - "--execution-socket=/sockets/auth.ipc"
       {{/if}}
+  {{#if lean}}
+
+  {{lean.inner.name}}:
+    container_name: {{lean.inner.name}}
+    image: {{lean.image}}
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test: ["CMD", "lean-healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 30
+      start_period: 60s
+    networks:
+      {{#each lean.inner.subnet_ips}}
+      {{@key}}:
+        ipv4_address: {{this}}
+      {{/each}}
+      host-access:
+    volumes:
+      # Writable by the image's non-root user (quake setup creates it 0777)
+      - ./{{name}}/lean:/data
+      - ./assets/lean-fund.txt:/fund/lean-fund.txt:ro
+    ports:
+      - "{{lean.rpc_port}}:8560" # RPC + WS
+    command:
+      {{#each lean.args}}
+      - "{{{yaml_dq_escape this}}}"
+      {{/each}}
+  {{/if}}
 
   {{#if ../images.el_upgrade}}
 
@@ -300,6 +334,10 @@ services:
         condition: service_healthy
       {{#if remote_signer}}
       {{name}}-signer-proxy:
+        condition: service_healthy
+      {{/if}}
+      {{#if lean}}
+      {{lean.inner.name}}:
         condition: service_healthy
       {{/if}}
     volumes:

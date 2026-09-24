@@ -30,6 +30,7 @@ use crate::infra::terraform::Terraform;
 use crate::infra::{self, local, remote, BuildProfile, InfraData, InfraProvider, InfraType};
 use crate::infra::{local::LocalInfra, remote::RemoteInfra};
 use crate::infra::{COMPOSE_PROJECT_NAME, PPROF_PROXY_SSM_PORT, RPC_PROXY_SSM_PORT};
+use crate::lean;
 use crate::manifest::Manifest;
 use crate::node::{NodeMetadata, NodeName, EXECUTION_SUFFIX, RETH_HTTP_BASE_PORT};
 use crate::nodes::{NodeOrContainerName, NodesMetadata};
@@ -305,6 +306,11 @@ impl Testnet {
             block_gas_limit: effective_gas_limit,
         })?;
 
+        // Lean lane genesis fund file, shared by every lean node.
+        if let Some(lean) = self.manifest.lean() {
+            lean::generate_fund_file(assets_dir, lean.fund_accounts, force)?;
+        }
+
         // We want access to files outside of the testnet directory.
         let deployments_dir = self.repo_root_dir.join("deployments");
         let relative_deployments_dir = &shell::relative_path(&deployments_dir, &self.dir)?;
@@ -465,10 +471,21 @@ impl Testnet {
                         &follow_endpoint_urls,
                     )?;
 
+                    // CL env as resolved in the node metadata: the manifest's,
+                    // plus the lean lane wiring when the lane is enabled.
+                    let node_meta = self.nodes_metadata.get(node_name).ok_or_else(|| {
+                        eyre!("Node '{node_name}' is missing from the nodes metadata")
+                    })?;
+                    let lean = node_meta.lean.clone();
+
                     let compose_data = setup::ComposeTemplateDataRemote {
                         compose_project_name: COMPOSE_PROJECT_NAME.to_string(),
                         cl_container_name: remote::CONTAINER_NAME_CONSENSUS.to_string(),
                         el_container_name: remote::CONTAINER_NAME_EXECUTION.to_string(),
+                        lean_container_name: lean
+                            .as_ref()
+                            .map(|_| remote::CONTAINER_NAME_LEAN.to_string()),
+                        lean,
                         node_name: node_name.to_string(),
                         latency_emulation: self.manifest.latency_emulation,
                         rpc,
@@ -482,7 +499,7 @@ impl Testnet {
                         cl_cpu_limit: self.manifest.cl_cpu_limit,
                         cl_memory_limit_gb: self.manifest.cl_memory_limit_gb,
                         el_env: node.el_env.clone(),
-                        cl_env: node.cl_env.clone(),
+                        cl_env: node_meta.cl_env.clone(),
                     };
                     // Create node directory for compose file
                     let node_dir = self.dir.join(node_name);
@@ -534,7 +551,11 @@ impl Testnet {
         // For local testnets, create EL reth dirs and set permissions so containers (user arc) can write
         if self.infra_data.infra_type == InfraType::Local {
             let node_names: Vec<String> = self.manifest.nodes.keys().cloned().collect();
-            setup::set_local_testnet_directory_permissions(&self.dir, &node_names)?;
+            setup::set_local_testnet_directory_permissions(
+                &self.dir,
+                &node_names,
+                self.manifest.lean().is_some(),
+            )?;
         }
 
         // In remote mode, provision the Control Center server

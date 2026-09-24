@@ -37,6 +37,7 @@ pub(crate) const CC_INSTANCE: &str = "cc";
 
 pub(crate) const CONTAINER_NAME_CONSENSUS: &str = "cl";
 pub(crate) const CONTAINER_NAME_EXECUTION: &str = "el";
+pub(crate) const CONTAINER_NAME_LEAN: &str = "lean";
 
 /// SSH options for CC to nodes.
 pub(crate) const CC_SSH_OPTS: &str =

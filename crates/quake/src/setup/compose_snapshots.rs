@@ -137,6 +137,8 @@ pub(super) fn render_remote(
         cl_memory_limit_gb: None,
         el_env: meta.el_env.clone(),
         cl_env: meta.cl_env.clone(),
+        lean_container_name: meta.lean.as_ref().map(|_| "lean".to_string()),
+        lean: meta.lean.clone(),
     };
     render_compose(REMOTE_TEMPLATE, &data).unwrap()
 }
@@ -190,4 +192,144 @@ fn compose_snapshot_remote() {
         "compose-remote-validator1.yaml",
         &render_remote(&manifest, &test_images(), "validator1"),
     );
+}
+
+const LEAN_SECTION: &str = r#"
+[lean]
+enabled = true
+budget_gas = 100_000_000
+fund_accounts = 30
+fanout_outputs = 100
+"#;
+
+fn lean_manifest() -> Manifest {
+    Manifest::from_string(&format!("{LEAN_SECTION}\n{BASE_MANIFEST}")).unwrap()
+}
+
+fn lean_images() -> testnet::DockerImages {
+    testnet::DockerImages {
+        lean: Some("ghcr.io/test/lean-lane:snap".to_string()),
+        ..test_images()
+    }
+}
+
+/// The lines of the `service` block in a rendered compose file.
+fn service_block<'a>(rendered: &'a str, service: &str) -> Vec<&'a str> {
+    let header = format!("  {service}:");
+    rendered
+        .lines()
+        .skip_while(|l| *l != header)
+        .skip(1)
+        .take_while(|l| l.is_empty() || l.starts_with("    "))
+        .collect()
+}
+
+#[test]
+fn compose_snapshot_local_lean() {
+    let rendered = render_local(&lean_manifest(), &lean_images());
+    assert_snapshot("compose-local-lean.yaml", &rendered);
+
+    // validator2's lean node peers with the other two, never itself.
+    let lean = service_block(&rendered, "validator2_lean").join("\n");
+    assert!(
+        lean.contains("image: ghcr.io/test/lean-lane:snap"),
+        "{lean}"
+    );
+    assert!(
+        lean.contains(r#"test: ["CMD", "lean-healthcheck"]"#),
+        "{lean}"
+    );
+    assert!(lean.contains("ipv4_address: 172.21.3.1"), "{lean}");
+    assert!(lean.contains(r#""8660:8560""#), "{lean}");
+    assert!(lean.contains("./validator2/lean:/data"), "{lean}");
+    assert!(
+        lean.contains("./assets/lean-fund.txt:/fund/lean-fund.txt:ro"),
+        "{lean}"
+    );
+    assert!(
+        lean.contains(r#"- "--peers=http://validator1_lean:8560,http://validator3_lean:8560""#),
+        "{lean}"
+    );
+    assert!(
+        lean.contains(r#"- "--fund-balance=10000000000000000000""#),
+        "{lean}"
+    );
+
+    // Its CL waits for the lean node and carries the lane env.
+    let cl = service_block(&rendered, "validator2_cl").join("\n");
+    assert!(
+        cl.contains("      validator2_lean:\n        condition: service_healthy"),
+        "{cl}"
+    );
+    for line in [
+        r#"ARC_PAYMENT_LEAN_LANE: "1""#,
+        r#"ARC_PAYMENT_LEAN_BUDGET_GAS: "100000000""#,
+        r#"ARC_PAYMENT_LEAN_RPC: "http://validator2_lean:8560""#,
+        r#"ARC_PAYMENT_LEAN_PEER_RPCS: "http://validator1_lean:8560,http://validator3_lean:8560""#,
+        r#"CL_GLOBAL: "1""#,
+    ] {
+        assert!(cl.contains(line), "missing {line} in\n{cl}");
+    }
+}
+
+#[test]
+fn compose_snapshot_remote_lean() {
+    let rendered = render_remote(&lean_manifest(), &lean_images(), "validator1");
+    assert_snapshot("compose-remote-lean-validator1.yaml", &rendered);
+
+    let lean = service_block(&rendered, "lean").join("\n");
+    assert!(
+        lean.contains("image: ghcr.io/test/lean-lane:snap"),
+        "{lean}"
+    );
+    assert!(lean.contains("8560:8560"), "{lean}");
+    assert!(lean.contains("/home/ssm-user/data/lean:/data"), "{lean}");
+    assert!(
+        lean.contains(r#"- "--peers=http://10.0.1.11:8560,http://10.0.1.12:8560""#),
+        "{lean}"
+    );
+
+    let cl = service_block(&rendered, "cl").join("\n");
+    assert!(
+        cl.contains("      lean:\n        condition: service_healthy"),
+        "{cl}"
+    );
+    assert!(
+        cl.contains(r#"ARC_PAYMENT_LEAN_RPC: "http://lean:8560""#),
+        "{cl}"
+    );
+    assert!(
+        cl.contains(r#"ARC_PAYMENT_LEAN_PEER_RPCS: "http://10.0.1.11:8560,http://10.0.1.12:8560""#),
+        "{cl}"
+    );
+}
+
+/// With the lane off, nodes.json carries no lean key and the CL env is the
+/// manifest's own.
+#[test]
+fn lean_off_leaves_node_metadata_untouched() {
+    let manifest = Manifest::from_string(BASE_MANIFEST).unwrap();
+    let md = metadata(&manifest, &test_images(), InfraType::Local);
+    let json = serde_json::to_string(&md.values()).unwrap();
+    assert!(!json.contains("lean"), "{json}");
+    assert_eq!(
+        md.nodes["validator1"].cl_env,
+        manifest.nodes["validator1"].cl_env
+    );
+    assert_eq!(md.nodes["validator1"].running_container_names().len(), 2);
+}
+
+#[test]
+fn lean_on_adds_a_third_container_per_node() {
+    let md = metadata(&lean_manifest(), &lean_images(), InfraType::Local);
+    assert_eq!(
+        md.nodes["validator3"].running_container_names(),
+        ["validator3_cl", "validator3_el", "validator3_lean"]
+    );
+    assert_eq!(
+        md.expand_to_containers(&"*_lean".to_string()).unwrap(),
+        ["validator1_lean", "validator2_lean", "validator3_lean"]
+    );
+    let lean = md.nodes["validator3"].lean.as_ref().unwrap();
+    assert_eq!(lean.rpc_url.as_str(), "http://127.0.0.1:8760/");
 }

@@ -1,0 +1,554 @@
+name: quake
+
+x-health-retry:
+  &health-retry
+  interval: 1s
+  timeout: 10s
+  retries: 30
+
+x-aws-base:
+  &aws-base
+  AWS_PROFILE: ${AWS_PROFILE:-}
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+  AWS_ACCESS_KEY_ID:
+  AWS_SECRET_ACCESS_KEY:
+  AWS_SESSION_TOKEN:
+
+services:
+
+  validator1_el:
+    container_name: validator1_el
+    image: ghcr.io/test/arc-execution:snap
+    entrypoint: ["/app/assets/entrypoint_el.sh"]
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+    init: true
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/8545' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      default:
+        ipv4_address: 172.21.2.0
+      host-access:
+    volumes:
+      - ./validator1/reth:/data/reth/execution-data
+      - ./assets:/app/assets
+      - ./logs:/var/log/arc
+      - ./validator1/latency_setup.sh:/usr/local/bin/latency_setup.sh
+      - ./validator1/sockets:/sockets/
+    ports:
+      - "8545:8545" # HTTP
+      - "8546:8546" # WS
+      - "8551:8551" # AuthRPC
+      - "9001:9001" # Metrics
+      - "6161:6061" # Pprof
+    environment:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      ARC_LOG_FILE: /var/log/arc/validator1_el.log
+      RUST_LOG: debug,net::peers=trace,net::discovery=trace,net::discv5=trace
+    command:
+      - "node"
+      - "--datadir=/data/reth/execution-data"
+      - "--chain=/app/assets/genesis.json"
+      - "--http.port=8545"
+      - "--http.addr=0.0.0.0"
+      - "--http.corsdomain=*"
+      - "--ws.port=8546"
+      - "--ws.addr=0.0.0.0"
+      - "--ws.origins=*"
+      - "--metrics=0.0.0.0:9001"
+      - "--log.file.directory=/var/log/arc"
+      - "--log.file.max-files=0"
+      - "--txpool.nolocals"
+      - "--builder.deadline=1"
+      - "--engine.persistence-threshold=0"
+      - "--engine.memory-block-buffer-target=0"
+      - "--enable-arc-rpc"
+      - "--gpo.maxprice=5000000000"
+      - "--http"
+      - "--http.api=admin,net,eth,web3,debug,txpool,trace,reth"
+      - "-vvvv"
+      - "--rpc.txfeecap=1000"
+      - "--ws"
+      - "--ws.api=admin,net,eth,web3,debug,txpool,trace,reth"
+      - "--arc.builder.deadline=100"
+      - "--arc-rpc-upstream-url=http://validator1_cl:31000"
+      - "--ipcpath=/sockets/reth.ipc"
+      - "--auth-ipc"
+      - "--auth-ipc.path=/sockets/auth.ipc"
+      - "--p2p-secret-key=/data/reth/execution-data/nodekey" # default is <datadir>/discovery-secret and randomly generated
+
+  validator1_cl:
+    container_name: validator1_cl
+    image: ghcr.io/test/arc-consensus:snap
+    entrypoint: ["/app/assets/entrypoint_cl.sh"]
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+    init: true
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    networks:
+      default:
+        ipv4_address: 172.21.1.0
+      host-access:
+    depends_on:
+      validator1_el:
+        condition: service_healthy
+      validator1_lean:
+        condition: service_healthy
+    volumes:
+      - ./validator1/malachite:/app/.malachite/
+      - ./assets:/app/assets
+      - ./logs:/var/log/arc
+      - ./validator1/latency_setup.sh:/usr/local/bin/latency_setup.sh
+      - ./validator1/sockets:/sockets/
+    ports:
+      - "27000:27000" # Consensus
+      - "29000:29000" # Metrics
+      - "6060:6060" # Pprof
+      - "31000:31000" # RPC
+    environment:
+      ARC_LOG_FILE: /var/log/arc/validator1_cl.log
+      ARC_HALT_AT_BLOCK_HEIGHT: 0
+      ARC_GENESIS_FILE_PATH: /app/assets/genesis.json
+      ARC_PAYMENT_LEAN_BUDGET_GAS: "100000000"
+      ARC_PAYMENT_LEAN_LANE: "1"
+      ARC_PAYMENT_LEAN_PEER_RPCS: "http://validator2_lean:8560,http://validator3_lean:8560"
+      ARC_PAYMENT_LEAN_RPC: "http://validator1_lean:8560"
+      CL_GLOBAL: "1"
+      CL_NODE: "one"
+    command:
+      - "start"
+      - "--home=/app/.malachite"
+      - "--moniker=validator1"
+      - "--eth-socket=/sockets/reth.ipc"
+      - "--execution-socket=/sockets/auth.ipc"
+
+  validator1_lean:
+    container_name: validator1_lean
+    image: ghcr.io/test/lean-lane:snap
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test: ["CMD", "lean-healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 30
+      start_period: 60s
+    networks:
+      default:
+        ipv4_address: 172.21.3.0
+      host-access:
+    volumes:
+      # Writable by the image's non-root user (quake setup creates it 0777)
+      - ./validator1/lean:/data
+      - ./assets/lean-fund.txt:/fund/lean-fund.txt:ro
+    ports:
+      - "8560:8560" # RPC + WS
+    command:
+      - "run"
+      - "--datadir=/data"
+      - "--bind=0.0.0.0"
+      - "--port=8560"
+      - "--chain-id=1338"
+      - "--fund-file=/fund/lean-fund.txt"
+      - "--fund-balance=10000000000000000000"
+      - "--peers=http://validator2_lean:8560,http://validator3_lean:8560"
+
+
+
+
+  validator2_el:
+    container_name: validator2_el
+    image: ghcr.io/test/arc-execution:snap
+    entrypoint: ["/app/assets/entrypoint_el.sh"]
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+    init: true
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/8545' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      default:
+        ipv4_address: 172.21.2.1
+      host-access:
+    volumes:
+      - ./validator2/reth:/data/reth/execution-data
+      - ./assets:/app/assets
+      - ./logs:/var/log/arc
+      - ./validator2/latency_setup.sh:/usr/local/bin/latency_setup.sh
+      - ./validator2/sockets:/sockets/
+    ports:
+      - "8645:8545" # HTTP
+      - "8646:8546" # WS
+      - "8651:8551" # AuthRPC
+      - "9101:9001" # Metrics
+      - "6261:6061" # Pprof
+    environment:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      ARC_LOG_FILE: /var/log/arc/validator2_el.log
+      RUST_LOG: debug,net::peers=trace,net::discovery=trace,net::discv5=trace
+    command:
+      - "node"
+      - "--datadir=/data/reth/execution-data"
+      - "--chain=/app/assets/genesis.json"
+      - "--http.port=8545"
+      - "--http.addr=0.0.0.0"
+      - "--http.corsdomain=*"
+      - "--ws.port=8546"
+      - "--ws.addr=0.0.0.0"
+      - "--ws.origins=*"
+      - "--metrics=0.0.0.0:9001"
+      - "--log.file.directory=/var/log/arc"
+      - "--log.file.max-files=0"
+      - "--txpool.nolocals"
+      - "--builder.deadline=1"
+      - "--engine.persistence-threshold=0"
+      - "--engine.memory-block-buffer-target=0"
+      - "--enable-arc-rpc"
+      - "--gpo.maxprice=5000000000"
+      - "--http"
+      - "--http.api=admin,net,eth,web3,debug,txpool,trace,reth"
+      - "-vvvv"
+      - "--rpc.txfeecap=1000"
+      - "--ws"
+      - "--ws.api=admin,net,eth,web3,debug,txpool,trace,reth"
+      - "--arc.builder.deadline=100"
+      - "--arc-rpc-upstream-url=http://validator2_cl:31000"
+      - "--ipcpath=/sockets/reth.ipc"
+      - "--auth-ipc"
+      - "--auth-ipc.path=/sockets/auth.ipc"
+      - "--p2p-secret-key=/data/reth/execution-data/nodekey" # default is <datadir>/discovery-secret and randomly generated
+
+  validator2_cl:
+    container_name: validator2_cl
+    image: ghcr.io/test/arc-consensus:snap
+    entrypoint: ["/app/assets/entrypoint_cl.sh"]
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+    init: true
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    networks:
+      default:
+        ipv4_address: 172.21.1.1
+      host-access:
+    depends_on:
+      validator2_el:
+        condition: service_healthy
+      validator2_lean:
+        condition: service_healthy
+    volumes:
+      - ./validator2/malachite:/app/.malachite/
+      - ./assets:/app/assets
+      - ./logs:/var/log/arc
+      - ./validator2/latency_setup.sh:/usr/local/bin/latency_setup.sh
+      - ./validator2/sockets:/sockets/
+    ports:
+      - "27001:27000" # Consensus
+      - "29001:29000" # Metrics
+      - "6061:6060" # Pprof
+      - "31001:31000" # RPC
+    environment:
+      ARC_LOG_FILE: /var/log/arc/validator2_cl.log
+      ARC_HALT_AT_BLOCK_HEIGHT: 0
+      ARC_GENESIS_FILE_PATH: /app/assets/genesis.json
+      ARC_PAYMENT_LEAN_BUDGET_GAS: "100000000"
+      ARC_PAYMENT_LEAN_LANE: "1"
+      ARC_PAYMENT_LEAN_PEER_RPCS: "http://validator1_lean:8560,http://validator3_lean:8560"
+      ARC_PAYMENT_LEAN_RPC: "http://validator2_lean:8560"
+      CL_GLOBAL: "1"
+    command:
+      - "start"
+      - "--home=/app/.malachite"
+      - "--moniker=validator2"
+      - "--eth-socket=/sockets/reth.ipc"
+      - "--execution-socket=/sockets/auth.ipc"
+
+  validator2_lean:
+    container_name: validator2_lean
+    image: ghcr.io/test/lean-lane:snap
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test: ["CMD", "lean-healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 30
+      start_period: 60s
+    networks:
+      default:
+        ipv4_address: 172.21.3.1
+      host-access:
+    volumes:
+      # Writable by the image's non-root user (quake setup creates it 0777)
+      - ./validator2/lean:/data
+      - ./assets/lean-fund.txt:/fund/lean-fund.txt:ro
+    ports:
+      - "8660:8560" # RPC + WS
+    command:
+      - "run"
+      - "--datadir=/data"
+      - "--bind=0.0.0.0"
+      - "--port=8560"
+      - "--chain-id=1338"
+      - "--fund-file=/fund/lean-fund.txt"
+      - "--fund-balance=10000000000000000000"
+      - "--peers=http://validator1_lean:8560,http://validator3_lean:8560"
+
+
+
+
+  validator3_el:
+    container_name: validator3_el
+    image: ghcr.io/test/arc-execution:snap
+    entrypoint: ["/app/assets/entrypoint_el.sh"]
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+    init: true
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/8545' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      default:
+        ipv4_address: 172.21.2.2
+      host-access:
+    volumes:
+      - ./validator3/reth:/data/reth/execution-data
+      - ./assets:/app/assets
+      - ./logs:/var/log/arc
+      - ./validator3/latency_setup.sh:/usr/local/bin/latency_setup.sh
+      - ./validator3/sockets:/sockets/
+    ports:
+      - "8745:8545" # HTTP
+      - "8746:8546" # WS
+      - "8751:8551" # AuthRPC
+      - "9201:9001" # Metrics
+      - "6361:6061" # Pprof
+    environment:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      ARC_LOG_FILE: /var/log/arc/validator3_el.log
+      RUST_LOG: debug,net::peers=trace,net::discovery=trace,net::discv5=trace
+    command:
+      - "node"
+      - "--datadir=/data/reth/execution-data"
+      - "--chain=/app/assets/genesis.json"
+      - "--http.port=8545"
+      - "--http.addr=0.0.0.0"
+      - "--http.corsdomain=*"
+      - "--ws.port=8546"
+      - "--ws.addr=0.0.0.0"
+      - "--ws.origins=*"
+      - "--metrics=0.0.0.0:9001"
+      - "--log.file.directory=/var/log/arc"
+      - "--log.file.max-files=0"
+      - "--txpool.nolocals"
+      - "--builder.deadline=1"
+      - "--engine.persistence-threshold=0"
+      - "--engine.memory-block-buffer-target=0"
+      - "--enable-arc-rpc"
+      - "--gpo.maxprice=5000000000"
+      - "--http"
+      - "--http.api=admin,net,eth,web3,debug,txpool,trace,reth"
+      - "-vvvv"
+      - "--rpc.txfeecap=1000"
+      - "--ws"
+      - "--ws.api=admin,net,eth,web3,debug,txpool,trace,reth"
+      - "--arc.builder.deadline=100"
+      - "--arc-rpc-upstream-url=http://validator3_cl:31000"
+      - "--ipcpath=/sockets/reth.ipc"
+      - "--auth-ipc"
+      - "--auth-ipc.path=/sockets/auth.ipc"
+      - "--p2p-secret-key=/data/reth/execution-data/nodekey" # default is <datadir>/discovery-secret and randomly generated
+
+  validator3_cl:
+    container_name: validator3_cl
+    image: ghcr.io/test/arc-consensus:snap
+    entrypoint: ["/app/assets/entrypoint_cl.sh"]
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+    init: true
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    networks:
+      default:
+        ipv4_address: 172.21.1.2
+      host-access:
+    depends_on:
+      validator3_el:
+        condition: service_healthy
+      validator3_lean:
+        condition: service_healthy
+    volumes:
+      - ./validator3/malachite:/app/.malachite/
+      - ./assets:/app/assets
+      - ./logs:/var/log/arc
+      - ./validator3/latency_setup.sh:/usr/local/bin/latency_setup.sh
+      - ./validator3/sockets:/sockets/
+    ports:
+      - "27002:27000" # Consensus
+      - "29002:29000" # Metrics
+      - "6062:6060" # Pprof
+      - "31002:31000" # RPC
+    environment:
+      ARC_LOG_FILE: /var/log/arc/validator3_cl.log
+      ARC_HALT_AT_BLOCK_HEIGHT: 0
+      ARC_GENESIS_FILE_PATH: /app/assets/genesis.json
+      ARC_PAYMENT_LEAN_BUDGET_GAS: "100000000"
+      ARC_PAYMENT_LEAN_LANE: "1"
+      ARC_PAYMENT_LEAN_PEER_RPCS: "http://validator1_lean:8560,http://validator2_lean:8560"
+      ARC_PAYMENT_LEAN_RPC: "http://validator3_lean:8560"
+      CL_GLOBAL: "1"
+    command:
+      - "start"
+      - "--home=/app/.malachite"
+      - "--moniker=validator3"
+      - "--eth-socket=/sockets/reth.ipc"
+      - "--execution-socket=/sockets/auth.ipc"
+
+  validator3_lean:
+    container_name: validator3_lean
+    image: ghcr.io/test/lean-lane:snap
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test: ["CMD", "lean-healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 30
+      start_period: 60s
+    networks:
+      default:
+        ipv4_address: 172.21.3.2
+      host-access:
+    volumes:
+      # Writable by the image's non-root user (quake setup creates it 0777)
+      - ./validator3/lean:/data
+      - ./assets/lean-fund.txt:/fund/lean-fund.txt:ro
+    ports:
+      - "8760:8560" # RPC + WS
+    command:
+      - "run"
+      - "--datadir=/data"
+      - "--bind=0.0.0.0"
+      - "--port=8560"
+      - "--chain-id=1338"
+      - "--fund-file=/fund/lean-fund.txt"
+      - "--fund-balance=10000000000000000000"
+      - "--peers=http://validator1_lean:8560,http://validator2_lean:8560"
+
+
+
+
+  ### Blockscout ###
+
+  # Blockscout will be available at http://localhost
+  blockscout-db-init:
+    extends:
+      file: ../../deployments/blockscout.yaml
+      service: db-init
+    volumes:
+      - ./blockscout/db:/var/lib/postgresql/data
+    networks:
+      - blockscout
+
+  blockscout-db:
+    depends_on:
+      blockscout-db-init:
+        condition: service_completed_successfully
+    extends:
+      file: ../../deployments/blockscout.yaml
+      service: db
+    volumes:
+      - ./blockscout/db:/var/lib/postgresql/data
+    networks:
+      - blockscout
+
+  blockscout-backend:
+    depends_on:
+      blockscout-db:
+        condition: service_healthy
+      validator1_el:
+        condition: service_healthy
+    extends:
+      file: ../../deployments/blockscout.yaml
+      service: backend
+    environment:
+        ETHEREUM_JSONRPC_HTTP_URL: http://host.docker.internal:8545/
+        ETHEREUM_JSONRPC_TRACE_URL: http://host.docker.internal:8545/
+        ETHEREUM_JSONRPC_WS_URL: ws://host.docker.internal:8546/
+        CHAIN_ID: '1337'
+    volumes:
+      - ./blockscout/logs/:/app/logs/
+      - ./blockscout/dets/:/app/dets/
+      - ../../deployments/monitoring/config-blockscout/proxy:/etc/nginx/templates:ro
+    networks:
+      - blockscout
+
+  blockscout-frontend:
+    depends_on:
+      - blockscout-backend
+    extends:
+      file: ../../deployments/blockscout.yaml
+      service: frontend
+    volumes:
+      - ../../deployments/monitoring/config-blockscout/frontend/.curlrc:/home/nextjs/.curlrc:ro
+    networks:
+      - blockscout
+
+  blockscout-proxy:
+    depends_on:
+      - blockscout-backend
+      - blockscout-frontend
+    extends:
+      file: ../../deployments/blockscout.yaml
+      service: proxy
+    volumes:
+      - ../../deployments/monitoring/config-blockscout/proxy:/etc/nginx/templates:ro
+    networks:
+      - blockscout
+
+# Internal networks cannot route to external networks, enforcing subnet isolation.
+# This is necessary because Docker Desktop does not isolate bridge networks by default.
+# Port publishing still works with internal networks.
+networks:
+  default:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+  # Blockscout uses host.docker.internal to access nodes
+  blockscout:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+  # Non-internal network for port publishing from containers on internal subnet networks
+  host-access:
+    driver: bridge
+
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

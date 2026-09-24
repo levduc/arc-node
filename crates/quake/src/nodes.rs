@@ -14,9 +14,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::infra::remote::CONTAINER_NAME_LEAN;
 use crate::infra::{InfraData, InfraType};
+use crate::lean::{LeanConfig, LEAN_RPC_PORT};
 use crate::manifest::{self, Manifest, Subnets};
-use crate::node::{Container, ContainerName, IpAddress, NodeMetadata, NodeName, EXECUTION_SUFFIX};
+use crate::node::{
+    Container, ContainerName, IpAddress, LeanContainer, NodeMetadata, NodeName, EXECUTION_SUFFIX,
+    LEAN_SUFFIX,
+};
 use crate::testnet;
 use color_eyre::eyre::{bail, eyre, Context, Result};
 use indexmap::{IndexMap, IndexSet};
@@ -81,6 +86,14 @@ impl NodesMetadata {
                 (name.clone(), url)
             })
             .collect();
+
+        // The lean node image, when the manifest enables the lane.
+        let lean_image = match manifest.lean() {
+            Some(_) => Some(base_images.lean.clone().ok_or_else(|| {
+                eyre!("The manifest enables the lean lane but no lean image was resolved")
+            })?),
+            None => None,
+        };
 
         // Iterate in manifest order — infra_data.nodes may be alphabetically
         // sorted (Terraform's jsonencode) which would misassign CL private keys.
@@ -152,6 +165,21 @@ impl NodesMetadata {
             node.consensus.image = image_cl;
             node.execution.image = image_el;
 
+            if let Some(image) = lean_image.as_deref() {
+                node.lean = Some(match infra_data.infra_type {
+                    InfraType::Local => LeanContainer::new_local(
+                        name,
+                        &manifest.subnets.subnet_indexes_for(name),
+                        index,
+                        image,
+                    ),
+                    // Remote containers share the host's IPs.
+                    InfraType::Remote => {
+                        LeanContainer::new_remote(name, &node.consensus.subnet_ips, image)
+                    }
+                });
+            }
+
             // Mark containers that have been upgraded
             if upgraded_containers.contains(&node.consensus.name) {
                 node.consensus.upgrade();
@@ -161,6 +189,15 @@ impl NodesMetadata {
             }
 
             nodes_map.insert(name.clone(), node);
+        }
+
+        if let Some(lean) = manifest.lean() {
+            wire_lean(
+                &mut nodes_map,
+                &manifest.subnets,
+                lean,
+                infra_data.infra_type,
+            );
         }
 
         Ok(Self {
@@ -598,6 +635,52 @@ impl NodesMetadata {
         // Create regex pattern that matches the entire string
         let pattern = format!("^{escaped}$");
         Regex::new(&pattern).wrap_err_with(|| format!("Failed to build regex pattern for '{name}'"))
+    }
+}
+
+/// Connect each node's lean container to its peers and its CL to the lane.
+///
+/// Every lean node peers with all other lean nodes (self excluded), and its CL
+/// gets the `ARC_PAYMENT_LEAN_*` environment: lane on, the budget, its own lean
+/// node and the same peer list as the catch-up source. Locally the containers
+/// reach each other by compose service name; remotely a lean node is published
+/// on its host, so peers are host private IPs on a shared subnet, and the CL
+/// reaches its own lean node by container name.
+fn wire_lean(
+    nodes: &mut IndexMap<NodeName, NodeMetadata>,
+    subnets: &Subnets,
+    lean: &LeanConfig,
+    infra_type: InfraType,
+) {
+    let names: Vec<NodeName> = nodes.keys().cloned().collect();
+    for name in &names {
+        let peers: Vec<String> = names
+            .iter()
+            .filter(|peer| *peer != name)
+            .map(|peer| match infra_type {
+                InfraType::Local => format!("http://{peer}_{LEAN_SUFFIX}:{LEAN_RPC_PORT}"),
+                InfraType::Remote => {
+                    let peer_meta = &nodes[peer];
+                    let ip = subnets
+                        .shared_subnets(name, peer)
+                        .first()
+                        .and_then(|s| peer_meta.consensus.private_ip_address_for(s))
+                        .unwrap_or_else(|| peer_meta.consensus.first_private_ip().clone());
+                    format!("http://{ip}:{LEAN_RPC_PORT}")
+                }
+            })
+            .collect();
+        let own_rpc = match infra_type {
+            InfraType::Local => format!("http://{name}_{LEAN_SUFFIX}:{LEAN_RPC_PORT}"),
+            InfraType::Remote => format!("http://{CONTAINER_NAME_LEAN}:{LEAN_RPC_PORT}"),
+        };
+
+        let node = nodes.get_mut(name).expect("node from the same map");
+        node.cl_env.extend(lean.cl_env(&own_rpc, &peers));
+        if let Some(container) = node.lean.as_mut() {
+            container.args = lean.node_args(&peers);
+            container.peers = peers;
+        }
     }
 }
 

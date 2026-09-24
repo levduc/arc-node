@@ -36,7 +36,9 @@ use url::Url;
 use crate::cli_version::apply_version_compat;
 use crate::infra::InfraType;
 use crate::manifest::{self, Subnets};
-use crate::node::{CidrBlock, NodeMetadata, NodeName, SubnetName, RETH_HTTP_BASE_PORT};
+use crate::node::{
+    CidrBlock, LeanContainer, NodeMetadata, NodeName, SubnetName, RETH_HTTP_BASE_PORT,
+};
 use crate::nodekey::{self, NodekeyData};
 use crate::nodes::NodesMetadata;
 use crate::testnet::QUAKE_DIR;
@@ -351,6 +353,12 @@ pub(crate) struct ComposeTemplateDataRemote {
     pub el_env: IndexMap<String, String>,
     /// Environment variables for the consensus layer (Malachite) container.
     pub cl_env: IndexMap<String, String>,
+    /// Lean lane container name, when the lane is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lean_container_name: Option<String>,
+    /// Lean lane container of this node, when the lane is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lean: Option<LeanContainer>,
 }
 
 /// Generate docker compose content from the given template and data and write to the given path
@@ -411,12 +419,23 @@ pub(crate) fn generate_jwt_secret(testnet_dir: &Path, force: bool) -> Result<()>
 
 /// Create EL data dirs and set directory permissions so containers (running as non-root user arc)
 /// can write to mounted volumes. Required on Linux where bind-mount permissions are strict.
+///
+/// With `lean`, also create each node's lean data directory, writable by the
+/// lean image's non-root user.
 pub(crate) fn set_local_testnet_directory_permissions(
     testnet_dir: &Path,
     node_names: &[String],
+    lean: bool,
 ) -> Result<()> {
     let logs_dir = testnet_dir.join("logs");
+    let mut open_dirs = vec![];
     for name in node_names {
+        if lean {
+            let lean_dir = testnet_dir.join(name).join("lean");
+            fs::create_dir_all(&lean_dir)
+                .with_context(|| format!("Failed to create directory: {}", lean_dir.display()))?;
+            open_dirs.push(lean_dir);
+        }
         let reth_dir = testnet_dir.join(name).join("reth");
         fs::create_dir_all(&reth_dir)
             .with_context(|| format!("Failed to create directory: {}", reth_dir.display()))?;
@@ -443,7 +462,13 @@ pub(crate) fn set_local_testnet_directory_permissions(
                 })?;
             }
         }
+        for dir in &open_dirs {
+            fs::set_permissions(dir, perms.clone())
+                .with_context(|| format!("Failed to set permissions on {}", dir.display()))?;
+        }
     }
+    #[cfg(not(unix))]
+    let _ = open_dirs;
     Ok(())
 }
 

@@ -21,6 +21,7 @@ use std::ops::{Deref, DerefMut};
 use url::Url;
 
 use crate::infra::{NodeInfraData, RPC_PROXY_SSM_PORT};
+use crate::lean::LEAN_RPC_PORT;
 use crate::manifest::RemoteKeyId;
 
 const APP_CONSENSUS_BASE_PORT: usize = 27000;
@@ -34,9 +35,14 @@ const RETH_AUTHRPC_BASE_PORT: usize = 8551;
 const RETH_METRICS_BASE_PORT: usize = 9001;
 const RETH_PPROF_BASE_PORT: usize = 6161;
 
+/// Host port of the first node's lean RPC in local mode; node i gets `+ i * 100`,
+/// like the EL ports.
+const LEAN_RPC_BASE_PORT: usize = 8560;
+
 /// Suffix of container names to identify CL, EL, or upgraded containers
 pub(crate) const CONSENSUS_SUFFIX: &str = "cl";
 pub(crate) const EXECUTION_SUFFIX: &str = "el";
+pub(crate) const LEAN_SUFFIX: &str = "lean";
 pub(crate) const UPGRADED_SUFFIX: &str = "u";
 
 // e.g., "validator1", "validator-green", "full-blue", "full3", ...
@@ -54,6 +60,8 @@ pub(crate) type CidrBlock = String;
 pub(crate) enum ContainerKind {
     Consensus,
     Execution,
+    /// Lean payment lane node, present only when the manifest enables the lane.
+    Lean,
 }
 
 impl ContainerKind {
@@ -61,6 +69,7 @@ impl ContainerKind {
         match self {
             ContainerKind::Consensus => CONSENSUS_SUFFIX,
             ContainerKind::Execution => EXECUTION_SUFFIX,
+            ContainerKind::Lean => LEAN_SUFFIX,
         }
     }
 
@@ -69,6 +78,7 @@ impl ContainerKind {
         match self {
             ContainerKind::Consensus => 1,
             ContainerKind::Execution => 2,
+            ContainerKind::Lean => 3,
         }
     }
 }
@@ -156,11 +166,11 @@ impl Container {
     ///
     /// Format: "172.<subnet>.<container>.<node>" where:
     /// - subnet index starts at 21
-    /// - container index is 1 for CL and 2 for EL
+    /// - container index is 1 for CL, 2 for EL, and 3 for the lean node
     /// - node index starts at 0
     fn build_ip_address(subnet_index: usize, container_index: usize, node_index: usize) -> String {
         assert!((21..=255).contains(&subnet_index));
-        assert!(container_index == 1 || container_index == 2);
+        assert!((1..=3).contains(&container_index));
         assert!(node_index <= 255);
         format!("172.{subnet_index}.{container_index}.{node_index}")
     }
@@ -402,6 +412,84 @@ impl DerefMut for ExecutionContainer {
     }
 }
 
+/// Lean payment lane node container metadata
+#[derive(Serialize, Clone, Debug)]
+pub(crate) struct LeanContainer {
+    pub inner: Container,
+
+    /// Effective lean node image.
+    pub image: String,
+
+    /// Port of the lean RPC (HTTP + WS) as published on the host.
+    pub rpc_port: usize,
+
+    /// URL of the lean RPC, accessible from the host (local) or from the
+    /// Control Center (remote).
+    pub rpc_url: Url,
+
+    /// Peer lean nodes' RPC URLs as this node's containers reach them.
+    pub peers: Vec<String>,
+
+    /// Arguments of the lean node (`lean-lane-node <args>`).
+    pub args: Vec<String>,
+}
+
+impl LeanContainer {
+    /// Create a new LeanContainer with local network IPs (local mode)
+    pub fn new_local(
+        node: &NodeName,
+        subnet_indexes: &[(SubnetName, usize)],
+        node_index: usize,
+        image: &str,
+    ) -> Self {
+        let subnets = SubnetIps::from(ContainerKind::Lean, subnet_indexes, node_index);
+        let rpc_port = LEAN_RPC_BASE_PORT + node_index * 100;
+        Self {
+            inner: Container::new(node, ContainerKind::Lean, &subnets),
+            image: image.to_string(),
+            rpc_port,
+            rpc_url: Url::parse(&format!("http://127.0.0.1:{rpc_port}"))
+                .expect("Failed to parse lean RPC URL"),
+            peers: Vec::new(),
+            args: Vec::new(),
+        }
+    }
+
+    /// Create a new LeanContainer with explicit network IPs (remote mode).
+    /// The lean port is published on the host, so its URL is the node's
+    /// private IP.
+    pub fn new_remote(node: &NodeName, subnets: &SubnetIps, image: &str) -> Self {
+        let inner = Container::new(node, ContainerKind::Lean, subnets);
+        let rpc_url = Url::parse(&format!(
+            "http://{}:{LEAN_RPC_PORT}",
+            inner.first_private_ip()
+        ))
+        .expect("Failed to parse lean RPC URL");
+        Self {
+            inner,
+            image: image.to_string(),
+            rpc_port: LEAN_RPC_PORT,
+            rpc_url,
+            peers: Vec::new(),
+            args: Vec::new(),
+        }
+    }
+}
+
+impl Deref for LeanContainer {
+    type Target = Container;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for LeanContainer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
 /// Data about the node and its containers
 #[derive(Serialize, Clone, Debug)]
 pub(crate) struct NodeMetadata {
@@ -416,6 +504,10 @@ pub(crate) struct NodeMetadata {
 
     /// Execution layer (Reth) container data
     pub execution: ExecutionContainer,
+
+    /// Lean payment lane container data, when the manifest enables the lane
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lean: Option<LeanContainer>,
 
     /// Optional remote signer key ID
     pub remote_signer: Option<RemoteKeyId>,
@@ -465,6 +557,7 @@ impl NodeMetadata {
                 &ws_url,
                 el_cli_flags,
             ),
+            lean: None,
             remote_signer: infra_data.remote_signer,
             follow,
             follow_endpoints,
@@ -505,6 +598,7 @@ impl NodeMetadata {
                 &el_ws_url,
                 el_cli_flags,
             ),
+            lean: None,
             remote_signer: infra_data.remote_signer,
             follow,
             follow_endpoints,
@@ -516,22 +610,31 @@ impl NodeMetadata {
 
     /// The containers of the node
     pub fn containers(&self) -> Vec<&Container> {
-        vec![&self.consensus.inner, &self.execution.inner]
+        let mut containers = vec![&self.consensus.inner, &self.execution.inner];
+        containers.extend(self.lean.as_ref().map(|l| &l.inner));
+        containers
     }
 
-    /// The names of the running CL and EL containers
+    /// The names of the running CL and EL containers, and the lean container
+    /// when the lane is enabled
     pub fn running_container_names(&self) -> Vec<ContainerName> {
-        vec![
+        let mut names = vec![
             self.consensus.name().to_string(),
             self.execution.name().to_string(),
-        ]
+        ];
+        names.extend(self.lean.as_ref().map(|l| l.name().to_string()));
+        names
     }
 
-    /// Resolve the name of this node's running CL or EL container by suffix
+    /// Resolve the name of this node's running CL, EL, or lean container by suffix
     pub fn running_container_name(&self, suffix: &str) -> Result<&ContainerName> {
         match suffix {
             CONSENSUS_SUFFIX => Ok(self.consensus.name()),
             EXECUTION_SUFFIX => Ok(self.execution.name()),
+            LEAN_SUFFIX => match &self.lean {
+                Some(lean) => Ok(lean.name()),
+                None => bail!("node '{}' has no lean container", self.name),
+            },
             _ => bail!("unsupported container suffix '{suffix}'"),
         }
     }

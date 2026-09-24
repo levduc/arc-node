@@ -40,6 +40,8 @@ pub(crate) const LEAN_CHAIN_ID: u64 = 1338;
 pub(crate) const FUND_FILE_NAME: &str = "lean-fund.txt";
 /// Where the lean container sees the fund file.
 pub(crate) const FUND_FILE_CONTAINER_PATH: &str = "/fund/lean-fund.txt";
+/// Data directory (block log, snapshots) inside the lean container.
+pub(crate) const DATA_DIR_CONTAINER_PATH: &str = "/data";
 
 /// Mnemonic the load generators sign with (the standard test mnemonic).
 const TEST_MNEMONIC: &str = "test test test test test test test test test test test junk";
@@ -137,6 +139,25 @@ impl LeanConfig {
                 peer_rpcs.join(","),
             ),
         ])
+    }
+
+    /// Arguments of one lean node container (`lean-lane-node <args>`), given
+    /// the RPC URLs of its peer lean nodes.
+    pub fn node_args(&self, peer_rpcs: &[String]) -> Vec<String> {
+        let mut args = vec![
+            "run".to_string(),
+            format!("--datadir={DATA_DIR_CONTAINER_PATH}"),
+            // The node binds loopback by default; peers and the CL are remote.
+            "--bind=0.0.0.0".to_string(),
+            format!("--port={LEAN_RPC_PORT}"),
+            format!("--chain-id={LEAN_CHAIN_ID}"),
+            format!("--fund-file={FUND_FILE_CONTAINER_PATH}"),
+            format!("--fund-balance={}", self.fund_balance),
+        ];
+        if !peer_rpcs.is_empty() {
+            args.push(format!("--peers={}", peer_rpcs.join(",")));
+        }
+        args
     }
 }
 

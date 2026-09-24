@@ -1,18 +1,15 @@
-name: {{compose_project_name}}
+name: quake
 
 services:
-  {{el_container_name}}:
-    image: {{images.el}}
-    container_name: {{el_container_name}}
+  el:
+    image: ghcr.io/test/arc-execution:snap
+    container_name: el
     entrypoint: ["/assets/entrypoint_el.sh"]
     cap_add:
       - NET_ADMIN # Required by latency_setup.sh to install tc/netem rules
     restart: unless-stopped
     init: true
-    {{#if el_cpu_limit}}
-    cpus: "{{el_cpu_limit}}"
-    {{/if}}
-    mem_limit: {{#if el_memory_limit_gb}}{{el_memory_limit_gb}}G{{else}}2560M{{/if}}
+    mem_limit: 2560M
     healthcheck:
       test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/8545' || exit 1"]
       interval: 10s
@@ -32,26 +29,15 @@ services:
     volumes:
       # Use absolute paths because compose.yaml is a symlink and relative paths
       # would resolve relative to the symlink target, not the symlink location
-      - {{remote_home_dir}}/assets/:/assets
-      - {{remote_home_dir}}/data/reth:/data/reth
-      - {{remote_home_dir}}/logs:/var/log/arc
+      - /home/ssm-user/assets/:/assets
+      - /home/ssm-user/data/reth:/data/reth
+      - /home/ssm-user/logs:/var/log/arc
       - /shared:/shared:ro
-      {{#if latency_emulation}}
-      - /shared/{{node_name}}/latency_setup.sh:/usr/local/bin/latency_setup.sh:ro
-      {{/if}}
-      {{#unless rpc}}
+      - /shared/validator1/latency_setup.sh:/usr/local/bin/latency_setup.sh:ro
       - shared-socket-volume:/sockets/
-      {{/unless}}
     environment:
-      {{#unless (contains_key el_env "PATH")}}
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      {{/unless}}
-      {{#unless (contains_key el_env "ARC_LOG_FILE")}}
-      ARC_LOG_FILE: /var/log/arc/{{el_container_name}}.log
-      {{/unless}}
-      {{#each el_env}}
-      {{@key}}: "{{{yaml_dq_escape this}}}"
-      {{/each}}
+      ARC_LOG_FILE: /var/log/arc/el.log
     command:
       - "node"
       - "--datadir=/data/reth"
@@ -63,45 +49,26 @@ services:
       - "--ws.addr=0.0.0.0"
       - "--ws.origins=*"
       - "--metrics=0.0.0.0:9001"
-      {{#each el_cli_flags}}
-      - "{{{this}}}"
-      {{/each}}
-      - "--arc-rpc-upstream-url=http://{{cl_container_name}}:31000"
-      {{!-- - "--bootnodes=enode://..." --}}
-      {{#if rpc}}
-      - "--authrpc.addr=0.0.0.0"
-      - "--authrpc.port=8551"
-      - "--authrpc.jwtsecret=/assets/jwtsecret"
-      - "--ipcdisable"
-      {{else}}
+      - "--arc-rpc-upstream-url=http://cl:31000"
       - "--ipcpath=/sockets/reth.ipc"
       - "--auth-ipc"
       - "--auth-ipc.path=/sockets/auth.ipc"
-      {{/if}}
       - "--p2p-secret-key=/data/reth/execution-data/nodekey"
-      {{#if trusted_peers}}
-      - "--trusted-peers={{trusted_peers}}"
-      {{/if}}
 
-  {{cl_container_name}}:
-    image: {{images.cl}}
-    container_name: {{cl_container_name}}
+  cl:
+    image: ghcr.io/test/arc-consensus:snap
+    container_name: cl
     entrypoint: ["/assets/entrypoint_cl.sh"]
     cap_add:
       - NET_ADMIN # Required by latency_setup.sh to install tc/netem rules
     depends_on:
-      {{el_container_name}}:
+      el:
         condition: service_healthy
-      {{#if lean}}
-      {{lean_container_name}}:
+      lean:
         condition: service_healthy
-      {{/if}}
     restart: unless-stopped
     init: true
-    {{#if cl_cpu_limit}}
-    cpus: "{{cl_cpu_limit}}"
-    {{/if}}
-    mem_limit: {{#if cl_memory_limit_gb}}{{cl_memory_limit_gb}}G{{else}}1024M{{/if}}
+    mem_limit: 1024M
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:
@@ -113,48 +80,33 @@ services:
     volumes:
       # Use absolute paths because compose.yaml is a symlink and relative paths
       # would resolve relative to the symlink target, not the symlink location
-      - {{remote_home_dir}}/assets/:/assets
-      - {{remote_home_dir}}/data/malachite:/data/malachite
-      - {{remote_home_dir}}/logs:/var/log/arc
+      - /home/ssm-user/assets/:/assets
+      - /home/ssm-user/data/malachite:/data/malachite
+      - /home/ssm-user/logs:/var/log/arc
       # Mount /shared so symlinks to NFS can be resolved inside the container
       - /shared:/shared:ro
-      {{#if latency_emulation}}
-      - /shared/{{node_name}}/latency_setup.sh:/usr/local/bin/latency_setup.sh:ro
-      {{/if}}
-      {{#unless rpc}}
+      - /shared/validator1/latency_setup.sh:/usr/local/bin/latency_setup.sh:ro
       - shared-socket-volume:/sockets/
-      {{/unless}}
     environment:
-      {{#unless (contains_key cl_env "ARC_LOG_FILE")}}
-      ARC_LOG_FILE: /var/log/arc/{{cl_container_name}}.log
-      {{/unless}}
-      {{#unless (contains_key cl_env "ARC_GENESIS_FILE_PATH")}}
+      ARC_LOG_FILE: /var/log/arc/cl.log
       ARC_GENESIS_FILE_PATH: /assets/genesis.json
-      {{/unless}}
-      {{#each cl_env}}
-      {{@key}}: "{{{yaml_dq_escape this}}}"
-      {{/each}}
+      ARC_PAYMENT_LEAN_BUDGET_GAS: "100000000"
+      ARC_PAYMENT_LEAN_LANE: "1"
+      ARC_PAYMENT_LEAN_PEER_RPCS: "http://10.0.1.11:8560,http://10.0.1.12:8560"
+      ARC_PAYMENT_LEAN_RPC: "http://lean:8560"
+      CL_GLOBAL: "1"
+      CL_NODE: "one"
     command:
       # - "--log-format=json"
       - "start"
       - "--home=/data/malachite"
-      {{#each cl_cli_flags}}
-      - "{{{this}}}"
-      {{/each}}
-      {{#if rpc}}
-      - "--eth-rpc-endpoint=http://{{el_container_name}}:8545"
-      - "--execution-endpoint=http://{{el_container_name}}:8551"
-      - "--execution-ws-endpoint=ws://{{el_container_name}}:8546"
-      - "--execution-jwt=/assets/jwtsecret"
-      {{else}}
+      - "--moniker=validator1"
       - "--eth-socket=/sockets/reth.ipc"
       - "--execution-socket=/sockets/auth.ipc"
-      {{/if}}
-{{#if lean}}
 
-  {{lean_container_name}}:
-    image: {{lean.image}}
-    container_name: {{lean_container_name}}
+  lean:
+    image: ghcr.io/test/lean-lane:snap
+    container_name: lean
     restart: unless-stopped
     init: true
     healthcheck:
@@ -169,15 +121,17 @@ services:
     volumes:
       # Use absolute paths because compose.yaml is a symlink and relative paths
       # would resolve relative to the symlink target, not the symlink location
-      - {{remote_home_dir}}/data/lean:/data
-      - {{remote_home_dir}}/assets/lean-fund.txt:/fund/lean-fund.txt:ro
+      - /home/ssm-user/data/lean:/data
+      - /home/ssm-user/assets/lean-fund.txt:/fund/lean-fund.txt:ro
     command:
-      {{#each lean.args}}
-      - "{{{yaml_dq_escape this}}}"
-      {{/each}}
-{{/if}}
+      - "run"
+      - "--datadir=/data"
+      - "--bind=0.0.0.0"
+      - "--port=8560"
+      - "--chain-id=1338"
+      - "--fund-file=/fund/lean-fund.txt"
+      - "--fund-balance=10000000000000000000"
+      - "--peers=http://10.0.1.11:8560,http://10.0.1.12:8560"
 
-{{#unless rpc}}
 volumes:
   shared-socket-volume:
-{{/unless}}
