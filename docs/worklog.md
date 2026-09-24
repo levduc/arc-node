@@ -1443,3 +1443,26 @@ Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-24 (15:00) — lean node concurrency collapse: fleet A/B passes; image merged into v0.3-dev
+
+**Changed** — lean-lane `v0.3-dev`: af16bca anchor concurrency collapsed to the commit gate + one arrival
+wait (claims, takeover rounds, stage_pending, stage-race grace removed); 34e2102 tests consolidated
+(src 4,096 → 3,765, tests 3,788 → 2,270; randomized concurrency-invariant test 50/50 debug and release);
+39804fe merge of `v0.3-image` (015b765: distroless image 67.2 MB, build-image.sh, image-smoke.sh).
+Tags: `gate-2c-fleet-2026-09-24` (34e2102), `gate-2c-merged-2026-09-24` (39804fe), `gate-4a-local-2026-09-24`.
+
+**Measured** — fleet run-0924-1500 (clean arc `lean-lane` @ ede2651 image, lean 34e2102, 400 M, N=100,
+10 min, one spammer per machine): 113–115 blocks/min, every sample 767/767 = 100 % full, 1,445–1,470 tx/s,
+**144,452–147,008 payments/s**, 0 restarts, 4/4 identical at 1193. Final lean counters (v1/v2/v3/v4):
+staged anchors 1190/1202/1187/1200 of 1202 (99.0/100/98.8/99.8 %), anchor peer pulls 9/0/0/0, grace misses
+0/0/0/0, blocks = head = 1202 on all (no double append). Baseline run-0924-1421 (75395a3): 114–116,
+145,730–148,287; staged 99.6/100/99.1/99.8 %, peer 3/0/2/0. Within run-to-run noise.
+Merged v0.3-dev gate: 146 tests, clippy/fmt clean, lean-smoke PASS, image-smoke PASS (3/3 containers).
+Samples + logs: `~/lean-lane-v03/bench/runs/run-0924-1500/`; chain data purged after this record.
+
+**Open** — Phase 4.2 (quake lean service, branch `lean-lane-quake`, agent running); CL catch-up peer
+fan-out for 21 nodes; spammer → small lean load tool; light-client Phase 1.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
