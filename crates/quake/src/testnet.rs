@@ -32,7 +32,7 @@ use crate::infra::{local::LocalInfra, remote::RemoteInfra};
 use crate::infra::{COMPOSE_PROJECT_NAME, PPROF_PROXY_SSM_PORT, RPC_PROXY_SSM_PORT};
 use crate::lean;
 use crate::manifest::Manifest;
-use crate::node::{NodeMetadata, NodeName, EXECUTION_SUFFIX, RETH_HTTP_BASE_PORT};
+use crate::node::{NodeMetadata, NodeName, EXECUTION_SUFFIX, LEAN_SUFFIX, RETH_HTTP_BASE_PORT};
 use crate::nodes::{NodeOrContainerName, NodesMetadata};
 use crate::perturb::{self, Perturbation};
 use crate::rpc::RpcClient;
@@ -828,6 +828,10 @@ impl Testnet {
                 bail!("No arc_execution upgrade version specified in the manifest");
             }
 
+            // Upgrades replace CL/EL containers; the lean node has no upgrade image.
+            let lean_suffix = format!("_{LEAN_SUFFIX}");
+            containers.retain(|c| !c.ends_with(&lean_suffix));
+
             // Filter out containers already upgraded; early return if none remain.
             if !perturb::filter_upgraded_containers(&mut containers)? {
                 return Ok(());
@@ -893,6 +897,12 @@ impl Testnet {
                 info_mod::print_nodes_ip_addresses(&self.nodes_metadata);
                 println!();
 
+                if let Some(lean) = self.manifest.lean() {
+                    println!("* Lean lane");
+                    info_mod::print_lean_info(&self.nodes_metadata, lean).await;
+                    println!();
+                }
+
                 if self.is_remote() {
                     println!("* Remote infrastructure");
                     info_mod::print_remote_infra_data(&self.infra_data);
@@ -940,7 +950,8 @@ impl Testnet {
                 println!("{height}");
             }
             Some(InfoSubcommand::Heights { number }) => {
-                info_mod::loop_print_latest_heights(&node_urls, number).await?;
+                let lean_urls = self.nodes_metadata.all_lean_urls();
+                info_mod::loop_print_latest_heights(&node_urls, &lean_urls, number).await?;
             }
             Some(InfoSubcommand::Mempool) => {
                 println!("* Mempool status -- number of pending and queued transactions");

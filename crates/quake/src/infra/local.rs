@@ -144,6 +144,31 @@ impl LocalInfra {
         }
     }
 
+    /// Clean lean lane data for a node, keeping its (world-writable) directory.
+    pub fn clean_lean_data(&self, name: &str) {
+        let lean_dir = self
+            .root_dir
+            .join(&self.testnet_dir)
+            .join(name)
+            .join("lean");
+        let Ok(entries) = std::fs::read_dir(&lean_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let res = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            if let Err(err) = res {
+                warn!(%err, path=%path.display(), "⚠️ Failed to remove lean data for {name}");
+                return;
+            }
+        }
+        debug!("✅ Lean data removed for {name}");
+    }
+
     fn docker_exec(&self, args: Vec<&str>) -> Result<()> {
         docker::exec(&self.root_dir, args)
     }

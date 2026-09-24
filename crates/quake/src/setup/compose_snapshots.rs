@@ -332,4 +332,27 @@ fn lean_on_adds_a_third_container_per_node() {
     );
     let lean = md.nodes["validator3"].lean.as_ref().unwrap();
     assert_eq!(lean.rpc_url.as_str(), "http://127.0.0.1:8760/");
+
+    // `perturb kill validator3_lean` and friends resolve the container.
+    assert_eq!(
+        md.expand_to_containers_list(&["validator3_lean".to_string()])
+            .unwrap(),
+        ["validator3_lean"]
+    );
+    assert_eq!(
+        md.running_container_name(&"validator3".to_string(), crate::node::LEAN_SUFFIX)
+            .unwrap(),
+        "validator3_lean"
+    );
+    assert_eq!(md.all_lean_urls().len(), 3);
+
+    let off = metadata(
+        &Manifest::from_string(BASE_MANIFEST).unwrap(),
+        &test_images(),
+        InfraType::Local,
+    );
+    assert!(off
+        .running_container_name(&"validator3".to_string(), crate::node::LEAN_SUFFIX)
+        .is_err());
+    assert!(off.all_lean_urls().is_empty());
 }

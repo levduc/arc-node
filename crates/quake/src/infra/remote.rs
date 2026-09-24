@@ -25,7 +25,7 @@ use crate::infra::export::SSH_KEY_FILENAME;
 use crate::infra::terraform::Terraform;
 use crate::infra::{ssm, BuildProfile, InfraData, InfraProvider};
 use crate::node::{Container, ContainerName, IpAddress, NodeName, SubnetName};
-use crate::node::{CONSENSUS_SUFFIX, EXECUTION_SUFFIX, UPGRADED_SUFFIX};
+use crate::node::{CONSENSUS_SUFFIX, EXECUTION_SUFFIX, LEAN_SUFFIX, UPGRADED_SUFFIX};
 use crate::nodes::NodeOrContainerName;
 use crate::shell;
 
@@ -256,8 +256,8 @@ impl RemoteInfra {
     }
 
     /// Given a list of container names, return a list of pairs (node name,
-    /// list of remote container names). A remote container name is either
-    /// `cl` or `el`.
+    /// list of remote container names). A remote container name is `cl`,
+    /// `el`, or `lean`.
     ///
     /// Handles both normal (`<node>_<cl|el>`) and upgraded (`<node>_<cl|el>_u`)
     /// container name formats.
@@ -281,6 +281,7 @@ impl RemoteInfra {
                 let container = match suffix {
                     Some(CONSENSUS_SUFFIX) => CONTAINER_NAME_CONSENSUS.to_string(),
                     Some(EXECUTION_SUFFIX) => CONTAINER_NAME_EXECUTION.to_string(),
+                    Some(LEAN_SUFFIX) => CONTAINER_NAME_LEAN.to_string(),
                     _ => {
                         warn!("Invalid container suffix {suffix:?} for {container}");
                         "".to_string()
@@ -521,6 +522,20 @@ impl RemoteInfra {
             }
             Err(err) => {
                 warn!("⚠️ Failed to remove Malachite data on remote nodes: {err:#}");
+            }
+        }
+    }
+
+    /// Clean lean lane data on all remote nodes.
+    pub fn clean_lean_data(&self) {
+        let cmd = "sudo rm -rf ~/data/lean";
+        info!("Removing lean lane data on remote nodes...");
+        match self.pssh_single_cmd_with_output(&self.infra_data.node_names(), cmd) {
+            Ok(output) => {
+                info!(%output, "✅ Lean lane data removed on remote nodes.");
+            }
+            Err(err) => {
+                warn!("⚠️ Failed to remove lean lane data on remote nodes: {err:#}");
             }
         }
     }

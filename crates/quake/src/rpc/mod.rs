@@ -118,6 +118,18 @@ impl RpcClient {
         Ok(block_number)
     }
 
+    /// Height of a lean lane node: `number` of its `arc_getHead`.
+    pub async fn get_lean_head_number(&self) -> Result<u64> {
+        #[derive(Deserialize)]
+        struct LeanHead {
+            number: u64,
+        }
+        let head = self
+            .rpc_request::<LeanHead>("arc_getHead", json!([]), 0)
+            .await?;
+        Ok(head.number)
+    }
+
     pub async fn get_txpool_status(&self) -> Result<TxpoolStatus> {
         let response = self
             .rpc_request::<TxpoolStatus>("txpool_status", json!([]), 0)
@@ -266,6 +278,16 @@ pub async fn fetch_latest_heights(node_urls: &[(NodeName, Url)]) -> Vec<(NodeNam
     util::in_parallel_tuples(node_urls, |name, url| async move {
         let client = RpcClient::new(url, Duration::from_secs(1));
         let result = client.get_latest_block_number_with_retries(0).await;
+        (name, result)
+    })
+    .await
+}
+
+/// Fetch in parallel the lean lane height of each lean node
+pub async fn fetch_lean_heights(lean_urls: &[(NodeName, Url)]) -> Vec<(NodeName, Result<u64>)> {
+    util::in_parallel_tuples(lean_urls, |name, url| async move {
+        let client = RpcClient::new(url, Duration::from_secs(1));
+        let result = client.get_lean_head_number().await;
         (name, result)
     })
     .await

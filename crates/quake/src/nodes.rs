@@ -393,6 +393,14 @@ impl NodesMetadata {
             .collect()
     }
 
+    /// Lean RPC URLs of the nodes that run a lean container (none when the lane is off).
+    pub fn all_lean_urls(&self) -> Vec<(NodeName, Url)> {
+        self.nodes
+            .iter()
+            .filter_map(|(name, n)| n.lean.as_ref().map(|l| (name.clone(), l.rpc_url.clone())))
+            .collect()
+    }
+
     pub fn all_consensus_metrics_urls(&self) -> Vec<(NodeName, Url)> {
         self.nodes
             .iter()

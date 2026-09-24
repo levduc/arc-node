@@ -25,9 +25,11 @@ use std::sync::Arc;
 
 use color_eyre::eyre::{bail, Result};
 
-use crate::infra::remote::{RemoteInfra, CONTAINER_NAME_CONSENSUS, CONTAINER_NAME_EXECUTION};
+use crate::infra::remote::{
+    RemoteInfra, CONTAINER_NAME_CONSENSUS, CONTAINER_NAME_EXECUTION, CONTAINER_NAME_LEAN,
+};
 use crate::infra::InfraType;
-use crate::node::{NodeName, CONSENSUS_SUFFIX, EXECUTION_SUFFIX};
+use crate::node::{NodeName, CONSENSUS_SUFFIX, EXECUTION_SUFFIX, LEAN_SUFFIX};
 use crate::nodes::NodesMetadata;
 use crate::shell;
 use crate::testnet::Testnet;
@@ -80,6 +82,7 @@ impl ExecBackend {
                 let container = match container {
                     CONSENSUS_SUFFIX => CONTAINER_NAME_CONSENSUS,
                     EXECUTION_SUFFIX => CONTAINER_NAME_EXECUTION,
+                    LEAN_SUFFIX => CONTAINER_NAME_LEAN,
                     _ => bail!("unsupported container suffix '{container}'"),
                 };
                 let remote_cmd = format!("docker exec {container} {}", argv.join(" "));

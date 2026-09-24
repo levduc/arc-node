@@ -150,7 +150,8 @@ enum Commands {
     },
     /// Apply a perturbation (disconnect, kill, pause, or restart) to nodes and/or containers.
     ///
-    /// A node is composed of two containers: '<node_name>_cl' and '<node_name>_el'.
+    /// A node is composed of two containers: '<node_name>_cl' and '<node_name>_el', plus
+    /// '<node_name>_lean' when the manifest enables the lean lane.
     ///
     /// Wildcard '*' is supported; e.g. 'val*_cl' will match all consensus layer containers of all validators.
     #[command(verbatim_doc_comment)]
@@ -522,7 +523,8 @@ struct CleanArgs {
     /// Remove only execution layer data, preserving configuration
     #[clap(short = 'x', long, default_value = "false")]
     execution_data: bool,
-    /// Remove only consensus layer data, preserving configuration
+    /// Remove only consensus layer data, preserving configuration (and the lean
+    /// lane data when the lane is enabled: a lean chain never outlives its CL chain)
     #[clap(short = 'c', long, default_value = "false")]
     consensus_data: bool,
 }

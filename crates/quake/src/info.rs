@@ -26,6 +26,8 @@ use tokio::time::Duration;
 use tracing::warn;
 
 use crate::infra::{InfraData, NodeInfraData};
+use crate::lean::LeanConfig;
+use crate::node::LEAN_SUFFIX;
 use crate::nodes::NodesMetadata;
 use crate::rpc::valset_manager::ContractValidatorStatus;
 use crate::rpc::{self, Controllers};
@@ -65,6 +67,40 @@ pub(crate) fn print_nodes_info(nodes: &NodesMetadata) {
             },
             node.follow,
             node.follow_endpoints.join(",")
+        );
+    }
+}
+
+/// Print the lean lane configuration and each lean container: its RPC port,
+/// URL, private IPs, and live lane height (`arc_getHead`).
+pub(crate) async fn print_lean_info(nodes: &NodesMetadata, lean: &LeanConfig) {
+    println!(
+        "  budget_gas={} fund_accounts={} fund_balance={} fanout_outputs={}",
+        lean.budget_gas, lean.fund_accounts, lean.fund_balance, lean.fanout_outputs
+    );
+    let max_name_len = nodes.max_node_name_len() + LEAN_SUFFIX.len() + 1;
+    let heights: HashMap<String, Result<u64>> = rpc::fetch_lean_heights(&nodes.all_lean_urls())
+        .await
+        .into_iter()
+        .collect();
+    println!(
+        "  {:<max_name_len$} | {:>5} | {:<26} | {:<20} | Height",
+        "", "Port", "RPC", "Private IPs"
+    );
+    for node in nodes.values() {
+        let Some(c) = node.lean.as_ref() else {
+            continue;
+        };
+        let height = match heights.get(&node.name) {
+            Some(Ok(h)) => h.to_string(),
+            _ => "-".to_string(),
+        };
+        println!(
+            "  {:<max_name_len$} | {:>5} | {:<26} | {:<20} | {height}",
+            c.name(),
+            c.rpc_port,
+            c.rpc_url.as_str(),
+            c.subnet_ips.to_string(),
         );
     }
 }
@@ -192,8 +228,17 @@ pub(crate) async fn print_latest_data(
     }
 }
 
-/// Fetch the latest block height of a single node.
+/// Fetch the latest block height of a single node, or the lean lane height of
+/// its lean container when given `<node>_lean`.
 pub(crate) async fn get_node_height(nodes: &NodesMetadata, node: &str) -> Result<u64> {
+    if let Some(lean) = node
+        .strip_suffix(&format!("_{LEAN_SUFFIX}"))
+        .and_then(|n| nodes.get(&n.to_string()))
+        .and_then(|n| n.lean.as_ref())
+    {
+        let client = rpc::RpcClient::new(lean.rpc_url.clone(), Duration::from_secs(5));
+        return client.get_lean_head_number().await;
+    }
     let url = nodes
         .execution_http_url(node)
         .ok_or_else(|| eyre::eyre!("Unknown node '{node}'"))?;
@@ -201,35 +246,32 @@ pub(crate) async fn get_node_height(nodes: &NodesMetadata, node: &str) -> Result
     client.get_latest_block_number_with_retries(0).await
 }
 
+/// Print the EL height of each node every second. With `lean_urls` (lane
+/// enabled), each node's lean lane height follows on a second line.
 pub(crate) async fn loop_print_latest_heights(
     node_urls: &[(String, Url)],
+    lean_urls: &[(String, Url)],
     max_rounds: u32,
 ) -> Result<()> {
     let width = 10;
     for (name, _) in node_urls.iter() {
         print!("{name:>width$} | ");
     }
+    if !lean_urls.is_empty() {
+        print!("(second line: lean lane)");
+    }
     println!();
 
     let mut rounds = 0u32;
     loop {
-        let results = rpc::fetch_latest_heights(node_urls).await;
-        let heights = results.iter().map(|(_, r)| *r.as_ref().unwrap_or(&0));
-
-        let heighest_height = heights
-            .clone()
-            .max()
-            .ok_or_else(|| eyre::eyre!("Failed to get the highest height in {heights:?}"))?;
-
-        for h in heights {
-            if h == heighest_height || h == heighest_height - 1 {
-                print!("{h:>width$} | ");
-            } else {
-                // For lagging nodes, print height in red
-                print!("{} | ", red(&h.to_string(), width));
-            }
+        let (results, lean_results) = tokio::join!(
+            rpc::fetch_latest_heights(node_urls),
+            rpc::fetch_lean_heights(lean_urls)
+        );
+        print_height_row(&results, width);
+        if !lean_results.is_empty() {
+            print_height_row(&lean_results, width);
         }
-        println!();
 
         rounds += 1;
         if max_rounds > 0 && rounds >= max_rounds {
@@ -240,6 +282,24 @@ pub(crate) async fn loop_print_latest_heights(
     }
 
     Ok(())
+}
+
+/// One row of heights (0 when unreachable); nodes more than one block behind
+/// the highest in red.
+fn print_height_row(results: &[(String, Result<u64>)], width: usize) {
+    let heights: Vec<u64> = results
+        .iter()
+        .map(|(_, r)| *r.as_ref().unwrap_or(&0))
+        .collect();
+    let highest = heights.iter().copied().max().unwrap_or(0);
+    for h in heights {
+        if h + 1 >= highest {
+            print!("{h:>width$} | ");
+        } else {
+            print!("{} | ", red(&h.to_string(), width));
+        }
+    }
+    println!();
 }
 
 pub(crate) async fn loop_print_mempool(node_urls: &[(String, Url)]) -> Result<()> {

@@ -101,6 +101,10 @@ async fn clean_local(scope: Scope, testnet: &Testnet, local_infra: Arc<LocalInfr
             }
             if scope.consensus_data {
                 local_infra.clean_malachite_data(&name);
+                // A lean chain never outlives the consensus chain that certified it.
+                if testnet.manifest.lean().is_some() {
+                    local_infra.clean_lean_data(&name);
+                }
             }
         }
     }
@@ -128,6 +132,10 @@ async fn clean_remote(scope: Scope, testnet: &Testnet, remote_infra: Arc<RemoteI
         }
         if scope.consensus_data {
             remote_infra.clean_malachite_data();
+            // A lean chain never outlives the consensus chain that certified it.
+            if testnet.manifest.lean().is_some() {
+                remote_infra.clean_lean_data();
+            }
         }
     }
 }
