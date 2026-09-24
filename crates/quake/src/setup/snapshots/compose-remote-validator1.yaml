@@ -1,0 +1,102 @@
+name: quake
+
+services:
+  el:
+    image: ghcr.io/test/arc-execution:snap
+    container_name: el
+    entrypoint: ["/assets/entrypoint_el.sh"]
+    cap_add:
+      - NET_ADMIN # Required by latency_setup.sh to install tc/netem rules
+    restart: unless-stopped
+    init: true
+    mem_limit: 2560M
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/8545' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - 8545:8545 # HTTP
+      - 8546:8546 # WS
+      - 8551:8551 # AuthRPC
+      - 9001:9001 # Metrics
+      - 6161:6061 # Pprof
+      - 30303:30303 # P2P
+    user: "0:0" # run as root to be able to write to the bind mounts
+    volumes:
+      # Use absolute paths because compose.yaml is a symlink and relative paths
+      # would resolve relative to the symlink target, not the symlink location
+      - /home/ssm-user/assets/:/assets
+      - /home/ssm-user/data/reth:/data/reth
+      - /home/ssm-user/logs:/var/log/arc
+      - /shared:/shared:ro
+      - /shared/validator1/latency_setup.sh:/usr/local/bin/latency_setup.sh:ro
+      - shared-socket-volume:/sockets/
+    environment:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      ARC_LOG_FILE: /var/log/arc/el.log
+    command:
+      - "node"
+      - "--datadir=/data/reth"
+      - "--chain=/assets/genesis.json"
+      - "--http.port=8545"
+      - "--http.addr=0.0.0.0"
+      - "--http.corsdomain=*"
+      - "--ws.port=8546"
+      - "--ws.addr=0.0.0.0"
+      - "--ws.origins=*"
+      - "--metrics=0.0.0.0:9001"
+      - "--arc-rpc-upstream-url=http://cl:31000"
+      - "--ipcpath=/sockets/reth.ipc"
+      - "--auth-ipc"
+      - "--auth-ipc.path=/sockets/auth.ipc"
+      - "--p2p-secret-key=/data/reth/execution-data/nodekey"
+
+  cl:
+    image: ghcr.io/test/arc-consensus:snap
+    container_name: cl
+    entrypoint: ["/assets/entrypoint_cl.sh"]
+    cap_add:
+      - NET_ADMIN # Required by latency_setup.sh to install tc/netem rules
+    depends_on:
+      el:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    mem_limit: 1024M
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - 27000:27000 # Consensus
+      - 29000:29000 # Metrics
+      - 6060:6060 # Pprof
+      - 31000:31000 # RPC
+    user: "0:0" # run as root to be able to write to the bind mounts
+    volumes:
+      # Use absolute paths because compose.yaml is a symlink and relative paths
+      # would resolve relative to the symlink target, not the symlink location
+      - /home/ssm-user/assets/:/assets
+      - /home/ssm-user/data/malachite:/data/malachite
+      - /home/ssm-user/logs:/var/log/arc
+      # Mount /shared so symlinks to NFS can be resolved inside the container
+      - /shared:/shared:ro
+      - /shared/validator1/latency_setup.sh:/usr/local/bin/latency_setup.sh:ro
+      - shared-socket-volume:/sockets/
+    environment:
+      ARC_LOG_FILE: /var/log/arc/cl.log
+      ARC_GENESIS_FILE_PATH: /assets/genesis.json
+      CL_GLOBAL: "1"
+      CL_NODE: "one"
+    command:
+      # - "--log-format=json"
+      - "start"
+      - "--home=/data/malachite"
+      - "--moniker=validator1"
+      - "--eth-socket=/sockets/reth.ipc"
+      - "--execution-socket=/sockets/auth.ipc"
+
+volumes:
+  shared-socket-volume:

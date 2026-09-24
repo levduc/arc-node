@@ -368,18 +368,7 @@ where
         return Ok(());
     }
 
-    // Set up handlebars for template rendering
-    let mut handlebars = Handlebars::new();
-    handlebars
-        .register_template_string("compose", template)
-        .context("Failed to register compose template")?;
-
-    helpers::register(&mut handlebars);
-
-    // Render template
-    let compose_content = handlebars
-        .render("compose", template_data)
-        .context("Failed to render compose template")?;
+    let compose_content = render_compose(template, template_data)?;
 
     // Write compose file to testnet directory
     fs::write(compose_path, compose_content)
@@ -387,6 +376,20 @@ where
 
     debug!("✅ Generated compose file at {}", compose_path.display());
     Ok(())
+}
+
+/// Render a compose template with the given data.
+pub(crate) fn render_compose<T: Serialize>(template: &str, template_data: &T) -> Result<String> {
+    let mut handlebars = Handlebars::new();
+    handlebars
+        .register_template_string("compose", template)
+        .context("Failed to register compose template")?;
+
+    helpers::register(&mut handlebars);
+
+    handlebars
+        .render("compose", template_data)
+        .context("Failed to render compose template")
 }
 
 /// Generate JWT secret for Engine API RPC and write to file
@@ -2140,3 +2143,6 @@ mod tests {
         assert_eq!(flags[0], "--rpc.forwarder=http://192.168.1.1:8545");
     }
 }
+
+#[cfg(test)]
+mod compose_snapshots;
