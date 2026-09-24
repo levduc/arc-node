@@ -1,32 +1,42 @@
 # CLAUDE.md — arc-node working notes
 
-Arc is an EVM-compatible L1: a **customized Reth** execution layer (reth SDK, currently
-`v2.3.0`) driven by the **Malachite** BFT consensus layer over the Engine API. This repo also
-carries a second, experimental **lean payment lane** that runs beside the EVM lane under the
-same consensus.
+Arc is an EVM-compatible L1: a **customized Reth** execution layer driven by the **Malachite**
+BFT consensus layer over the Engine API. The work tracked here adds a second, **lean payment
+lane** that runs beside the EVM lane under the same consensus.
 
-Full chronological history (campaigns, wrong turns, retractions): **`docs/campaign-log.md`**.
-This file is the working document — current state, how to run it, what not to repeat.
+**This repo is the archive and the worklog** (`docs/worklog.md`, `docs/campaign-log.md`,
+`docs/history/`), not the code. This file is the working document: current state, how to run
+it, what not to repeat. The live code:
 
----
+| what | where | notes |
+|---|---|---|
+| CL delta (the port) | arc branch **`lean-lane`**, worktree `~/arc-lean-clean` | clean 8-commit series on origin/main 97f8da0 (reth v2.2.0); guide `docs/lean-lane-integration.md` |
+| CL + height timing | arc branch `lean-lane-instrumented` | `lean-lane` + one commit, for bench runs only |
+| lean node | lean-lane branch **`v0.3-dev`**, worktree `~/lean-lane-v03` | reth v2.3.0, no fork; contract `docs/integration.md`; README has every flag |
+| fleet/bench tooling | lean-lane `bench/` | runner `bench/fleet/fleet`, sampler, `analysis/heights.py`; numbers in `bench/README.md` |
+| archives | arc `lean-lane-v0.2`, lean-lane `v0.2` | frozen; revert points `lean-lane-v0.2-lastgood` / `v0.2-lastgood`; gates tagged `gate-<phase>-<date>` |
+| this repo | `crates/lean-*`, `experiments/` | diverged **v0.1 snapshot** and campaign scripts — history only |
 
 ## 1. Toolchain
 
-- **Rust** per `rust-toolchain.toml`, via rustup.
-- **clang + libclang-dev** — reth-mdbx bindgen needs them (EVM lane only; the lean node has no C deps).
-- **Docker** for `make testnet` / `make build-docker` (EVM lane CL+EL images).
+- **Rust** per `rust-toolchain.toml`, via rustup (each repo pins its own).
+- **clang + libclang-dev** — reth-mdbx bindgen needs them (arc only; the lean node has no C deps).
+- **Docker** for arc images and every testnet (CL+EL containers).
 - **Foundry** pinned in `.foundry-version` (`cast` — governance txs, fund-file generation).
 - **Node ≥20.19 / 22.x (even majors)** — genesis step only. Node 18 fails with a misleading `HH19`.
+- **A fresh arc worktree needs `git submodule update --init --recursive`** — the genesis contract
+  compile fails without it.
 
 ## 2. Common commands
 
 ```bash
-make build                 # cargo build the node
-make genesis               # assets/localdev/genesis.json (idempotent)
-make testnet               # genesis + docker images + quake (5 validators + monitoring)
-make testnet-down / -clean
-make test-unit             # rust unit tests + lint
-cargo build --release -p lean-lane-node -p spammer   # lean lane + load generator
+# arc (~/arc-lean-clean)
+make build / make build-docker        # node / CL+EL images
+make genesis                          # assets/localdev/genesis.json (idempotent)
+make testnet / testnet-down / -clean  # stock quake testnet (5 validators)
+make test-unit                        # rust unit tests + lint
+# lean-lane (~/lean-lane-v03)
+cargo build --release -p lean-lane-node -p spammer
 ```
 
 `quake` is the in-repo testnet manager (`crates/quake`), run via the Makefile, not a global
@@ -36,232 +46,217 @@ binary. Local RPCs for a running testnet: `.quake/localdev/nodes.json`.
 arc-malachitebft-app` silently checks the *git* dependency and prints "Finished" having done
 nothing — it masked 8 real errors once. Always `-p arc-node-consensus`.
 
----
-
-## 3. The two lanes
+## 3. The two lanes (v0.2 design, unchanged on `lean-lane` / `v0.3-dev`)
 
 | | EVM lane | lean payment lane |
 |---|---|---|
-| client | customized reth (`crates/node`, `crates/evm`, …) | `crates/lean-lane-node` (this repo) |
+| client | customized reth (arc) | `lean-lane-node` (lean-lane repo) |
 | chain id | 1337 (localdev) | 1338 |
-| interface to CL | Engine API (IPC) | 4-verb shim RPC (`docs/lean-lane-integration.md`) |
+| interface to CL | Engine API (IPC) | 5-verb JSON-RPC shim, commitment-addressed |
 | state | full MPT, receipts, logs | flat nonce+balance map, keccak commitment chain |
 | tx | EIP-1559 native transfer, 122 B | fan-out type `0x50`, 72 + 28N B |
-| enabled by | always | `ARC_PAYMENT_LEAN_LANE=1` (default off ⇒ stock behaviour) |
+| enabled by | always | `ARC_PAYMENT_LEAN_LANE=1` on all validators from height 1 (off ⇒ upstream, byte-identical) |
 
-Both lanes are committed under **one BFT certificate**: `value_id = keccak(evm_hash ‖
-lean_commitment)`. Voting on the lean lane is **structural only** (parent linkage + timestamp
-lockstep); execution happens in the vote gap and is anchored at decide. Total-STF semantics
-(an invalid tx is a no-op) mean a byzantine proposer can waste bytes but cannot halt or fork
-the lane.
+**One certificate, one voted value.** Consensus votes the **plain EVM block hash**, as upstream;
+the lean block is bound by the EVM header's **`prev_randao` = lean commitment** (zero with the
+lane off). There is no composite value id (that was v0.1). Lean bytes ride beside the EVM
+payload in proposals and value-sync (`[u64 len|LEAN_LANE_BIT][evm SSZ][lean]`, framed by the
+node's flag, fails closed on mixed flags).
 
-**The lean lane is self-contained in this repo** — `crates/lean-native` (wire format + pool
-integration) and `crates/lean-lane-node` (the node) build against upstream reth `v2.3.0` like
-everything else. `~/reth-fork` is history only; nothing here depends on it.
+**Shim verbs:** `arc_buildBlock`, `arc_stageBlock`, `arc_newBlock{blockBytes|commitment}`,
+`arc_getHead`, `arc_getBlockBytes{number|commitment}`; lag is `SYNCING`, never an error. Lean
+nodes gossip to each other with `arc_announceBlock` (announce + backfill pull).
 
----
+**Voting is structural:** resolve (header names a block with no bytes ⇒ must exist locally),
+binding (`prev_randao` = recomputed commitment), timestamp lockstep, parent linkage (with a
+bounded 5 s peer catch-up), then fire-and-forget stage. Verdict `Valid | Invalid | Abstain` —
+being behind abstains, never `Invalid`. Execution happens in the vote gap; decide anchors **by
+commitment** (the node already holds the bytes). A lane-on block with no lean commitment is
+`Invalid` (ede2651 — halt fix, not backported to the v0.2 archive). Total-STF semantics (an
+invalid tx is a no-op) mean a byzantine proposer can waste bytes but cannot halt or fork the lane.
 
 ## 4. Running it
 
-**Verify a machine in one command** (~1 min, no docker/fleet/fork):
+**Verify a machine** (~1 min, no docker/fleet): lean-lane `./scripts/lean-smoke.sh` — three lean
+nodes on loopback, stand-in CL, signed fan-out txs, convergence + replay. Last run: 40 heights,
+9,856 txs, 98,560 payments, 3/3 at one commitment. (`experiments/dual-el/lean-smoke.sh` here
+runs the v0.1 snapshot.)
+
+**Local 5-validator testnet** (arc branch `lean-lane`, lean-lane checkout beside it or
+`LEAN_LANE_DIR=…`):
 
 ```bash
-./experiments/dual-el/lean-smoke.sh
+make testnet-lean                       # images, 5 host lean nodes, quake localdev-lean.toml
+make testnet-lean-load LOAD_SECS=180    # LOAD_RATE, FANOUT, POOL_TARGET
+make testnet-lean-status                # heights, head fullness, lean agreement
+scripts/lean-testnet.sh restart 3       # restart one CL; its lean node stays up
+make testnet-lean-down
 ```
 
-Boots three lean nodes on loopback, drives them with a stand-in CL, feeds signed fan-out
-transactions, asserts convergence. Last run: 40 heights, 9,856 txs, 98,560 payments, 3/3 nodes
-at one commitment.
+`lean-testnet.sh up` wipes `.quake/lean-nodes/` — never keep a log there.
 
-**Genesis funding** — the node funds a fixed address set; it must be exactly the accounts the
-spammer signs with, derivation `m/44'/60'/1'/0/i` (note the **`1'`**, not `0'`):
+**Fleet (4-machine LAN)** — lean-lane `bench/fleet/fleet`, recipe in `bench/README.md`:
 
 ```bash
-./experiments/dual-el/gen-lean-fund.sh 800 ~/lean-fund.txt
+cp bench/fleet/fleet.env.example bench/fleet/fleet.env   # IPs, user, ARC_DIR (git-ignored)
+BUDGET_GAS=400000000 FANOUT=100 bench/fleet/fleet up     # ship, boot, health gate
+LOAD_SECS=600 bench/fleet/fleet load                     # load + per-minute samples
+bench/fleet/fleet down                                   # logs pulled, data kept
+bench/analysis/heights.py proposers bench/runs/<run-id>
+# write the run record (worklog), then: bench/fleet/fleet purge <run-id> --yes
 ```
 
-**Multi-machine**: `cp experiments/dual-el/fleet.env.example experiments/dual-el/fleet.env`
-(hosts/IPs/paths), then `./experiments/dual-el/deploy-lean.sh` (builds + ships binary,
-spammer, feeder, fund file — sha-verified *after* transfer).
+`LANE=evm` is the EVM arm on the same fleet (stock CL, gas limit at genesis, verified off a
+produced block). **Extend this runner rather than hand-rolling per-experiment shell** — every
+gate in it was paid for with a wrong number. `experiments/dual-el/history/lane-bench.sh` and
+`deploy-lean.sh` are its v0.1 predecessors, kept as history.
 
-**Benchmark** — one trigger, either lane:
+**Genesis funding** — every lean node needs the same fund file, exactly the accounts the spammer
+signs with, derivation `m/44'/60'/1'/0/i` (the **`1'`**): lean-lane `scripts/gen-lean-fund.sh 800
+~/lean-fund.txt`. `--fund-balance` is u64 and near max: scale accounts, not balance.
 
-```bash
-./experiments/dual-el/lane-bench.sh evm  75000000
-./experiments/dual-el/lane-bench.sh lean 150000000 100 600
-```
+**21 nodes on AWS** go through quake's remote mode (Phase 4), not the LAN runner.
 
-It carries the whole measurement protocol (§6). **Extend this script rather than hand-rolling
-per-experiment shell** — every gate in it was paid for with a wrong number.
+## 5. Where things stand (4-machine fleet, 500 ms pacer, one spammer per machine)
 
-Setup guide for a fresh machine: `docs/lean-lane-setup.md`.
+All lean rows: every sampled block **100 % of budget**, 0 CL restarts, 4/4 byte-identical at the
+end; 10-min windows unless noted; n=1 per point, ±15 % run-to-run.
 
----
-
-## 5. Where things stand (measured, 4-machine fleet, 500 ms pacer)
-
-At the **2 blk/s product target**, all blocks 100 % of budget unless noted:
-
-| config | cadence | tx/s | payments/s |
+| config | stack | blk/s | payments/s |
 |---|---|---|---|
-| EVM lane, 50M | 1.75 | 4,165 | 4,165 |
-| EVM lane, 75M | 1.69 | 5,972 | 5,972 |
-| EVM lane, 100M | 1.47 | 6,032 | 6,032 (68 % full — delivery-bound) |
-| lean, N=1, 100M | 1.96 | 6,401 | 6,401 (85 % full — headroom left) |
-| lean, N=100, 150M | 1.93 | 555 | **55,534** |
-| lean, N=100, 225M | 1.93 | 833 | **83,286** |
-| lean, mixed-by-payments (avg N=3.8), 225M, serial recovery | 0.63 | 3,542 | 13,318 (100 % full — cadence collapses; slowest validator burns every turn) |
-| lean, mixed-by-payments (avg N=3.8), 225M, **parallel recovery** | 1.86 | 10,504 | **39,484** (100 % full) |
+| lean N=100, 300 M (F7) | v0.2-perf | 1.86–1.92 | 106,914–110,437 |
+| lean N=100, 350 M (F9) / 30-min soak (F14) | v0.2-perf | 1.79–1.83 / mean 1.75 | 120,354–122,667 / 109,038–126,744 |
+| **lean N=100, 400 M (F26)** | v0.2 final | **1.86–1.97** | **142,443–150,965** (staged anchors 1244/1283) |
+| lean N=100, 400 M, 30-min soak (F28) | v0.2 final | 1.57–1.99, mean ~1.78 | 120,529–152,183; 28/28 min > 120k |
+| lean N=100, 450 M (F27) | v0.2 final | 1.91 → 1.64 sliding | 141,586–164,509 |
+| **lean N=100, 400 M (run-0924-1421)** | **clean `lean-lane` + `v0.3-dev`** | **1.90–1.93** | **145,730–148,287** (staged 94–100 %, lean RSS 180–300 MB) |
+| lean N=1, 150 / 300 / 450 / 600 M (F20–F23) | v0.2-perf | 1.90–1.95 / 1.92–1.97 / 1.81–1.84 / 1.43–1.48 | 11.0–11.3k / 22.2–22.7k / 31.3–31.9k / 33.0–34.3k tx/s |
+| EVM N=1, 150 M / 300 M (E150/E300) | stock CL | 0.8–1.57 / 0.68–0.81 | ~6.5k / ~6.4k tx/s mean, **51–78 % / 50–69 % full — never full** |
 
-Fan-out sweep at fixed ~830 KB blocks: N=5 → 35,927 · N=10 → 45,427 · N=20 → 50,590 · N=50 →
-54,172 · N=100 → 55,534 payments/s. Saturates by N=50 at the 28 B/payment wire floor.
+Knee at the 2 blk/s target: **400–450 M** at N=100 (450 M slides within 10 min), 450 M at N=1.
+Above it the fleet is bound by ~4.4 MB/s of block bytes through consensus, not by signatures
+(N=200 = N=100) or chunk size.
 
-Drain (zero ingress) ceiling: **83,286 outputs/s**; lean EL alone imports at **1.03 M
-outputs/s** (`lean-replay-bench.py`).
+### Durable findings
 
-**Mixed-N + parallel recovery (2026-08-26, V6/V7):** the spammer takes weighted mixes
-(`--fanout-outputs "1:20,5:20,..."`); `LEAN_PARALLEL_RECOVERY` is **default-on** (=0 rolls
-back) after the full gate ladder: at a signature-heavy mix (equal payments per N), parallel
-recovery is **4.1×** payments/s unpaced — serial ecrecover on the runtime threads was also
-starving admission — and +30 % at the 2 blk/s target where both arms are build-bound
-(builder packs only ~2.4 k signed txs/block over deep pools: open question). Fleet ops rules
-learned: change ALL CLs together (halt-flip-resume — a lone CL restart wedges permanently:
-sync deadlock + ±128 serving window); enable lean only from height 1 (the enable-boundary
-height is unserveable); consensus params (pacer, timeouts) change LIVE via governance with
-no restarts.
-
-### The four durable findings
-
-1. **Execution is not the bottleneck.** The EL is 7–15 % of a height on *both* lanes. The lean
-   node imports at 0.97 µs/output while consensus delivers ~40 µs/output.
-2. **Consensus transport is.** Height decomposition at drain size: proposal stream+assemble
-   57 %, votes 13 %, anchor 10 %, validate 2 %. Signatures are irrelevant at high N.
-3. **At one payment per signature the lanes are NOT equals** (retracted 2026-09-15). With the
-   spammer offering 4–12 k tx/s per machine and a deep pool target, the EVM lane saturates at
-   ~6.5 k tx/s ≈ 0.14 Ggas/s whatever the gas limit (blocks 50–78 % full at 150 M and 300 M:
-   execution/builder-bound), while the lean lane at N=1 is pacer-bound at 11.3 k (150 M) and
-   22.7 k tx/s (300 M) at 100 % full, and reaches 31.9 k at the 2 blk/s knee (450 M, 0.82 Ggas/s).
-   The old "~6 k on both" number measured a delivery-starved spammer, not either chain.
-4. **Fan-out buys everything else**: 9× the payments on 1/11th the signatures, because it
-   amortises the per-*transaction* costs (signature, mempool entry, envelope) — not the
-   per-payment ones. Per 100 payments: 100→1 signatures, 3.3 ms→33 µs ecrecover, 100→1 pool
-   entries, 10,000→2,872 wire bytes; execution unchanged but conflict-free by construction.
-5. **Per-signature work must stay off the node's runtime threads.** Serial ecrecover in the
-   block-receive path both loses the staging race (anchor 317 ms vs 103 ms) and starves
-   admission on the same tokio runtime. At the 2 blk/s target with full 5.7 k-sig blocks,
-   serial mode cannot hold cadence at all (0.63 blk/s; the slowest validator misses every
-   propose window); rayon-parallel recovery (default-on) holds 1.86 — **3.0× payments/s**
-   (39,484 vs 13,318), 4.1× unpaced. Parallel *execution* stays off: neutral-to-slower.
-   Two pool landmines found en route: the builder was wrongly suspected (it packs a full
-   225 M block from a 40 k pool in 10–12 ms); the real thief was reth's per-sender slot cap
-   flagging deep-nonce senders as spammers (one dropped tx nonce-poisons the sender's whole
-   stream — 62 % feed bounce). Fixed: `max_account_slots` 256→4096 (rejections → 1 in 2.1 M).
-
----
+1. **Execution is not the bottleneck.** The lean node imports at ~1 µs/output; a staged anchor
+   costs 8–11 ms at 400 M. The EL was 7–15 % of a height on both lanes (v0.1).
+2. **Consensus transport is.** v0.1 decomposition at drain size: proposal stream+assemble 57 %,
+   votes 13 %, anchor 10 %. v0.2 at 300 M (F7): first part 115–150 ms, stream 116–129, votes
+   60–120, decided→anchor 76–98, period ~530 ⇒ pacer-bound with ~170 ms slack.
+3. **At one payment per signature the lanes are NOT equals** (retracted 2026-09-15). The EVM lane
+   saturates at ~6.5 k tx/s ≈ 0.14 Ggas/s at any gas limit with blocks never full
+   (execution/builder-bound); the lean lane at N=1 is pacer-bound at 100 % full (11.3k/22.7k) and
+   does ~32k at the knee. The old "~6 k on both" measured a delivery-starved spammer.
+4. **Fan-out buys the rest**: ~20× the EVM lane's payments at N=100 (142–151k vs ~6.5k), ~4.5×
+   lean N=1 at the same byte wall. It amortises per-*transaction* costs (signature, pool entry,
+   envelope): per 100 payments 100→1 signatures, 10,000→2,872 wire bytes; execution unchanged
+   but conflict-free by construction.
+5. **Nothing per-signature or O(chain) on the node's serving/runtime path.** Serial ecrecover
+   starved admission (0.63 vs 1.86 blk/s with rayon; always parallel in v0.3). A backward log
+   scan on `arc_getBlockBytes{commitment}` caused a 10-minute cadence drift (100 → 57 blk/min)
+   invisible in short windows — measure ≥ 10 min. The CL's staged block can arrive *after* its
+   anchor on a LAN (loopback cannot show it): a 60 ms anchor grace took peer-pulls 515 → 16.
+   Pool: reth's per-sender slot cap nonce-poisoned deep senders; `max_account_slots` 4096.
 
 ## 6. Measurement protocol (why every number needs it)
 
 A validator can look perfectly healthy — containers up, agreement passing, blocks 100 % full —
-while contributing **nothing**. Two ways seen live: a **parked CL** (booted while its lean node
-was down → "Manual intervention required"), and a CL degenerated into a **pure sync-follower**
-(decides by fetching, never proposes). Each costs ~25 % of cadence and is invisible to
-agreement checks. **Always attribute failed round-0s by proposer.**
+while contributing **nothing**: a **parked CL** (booted while its lean node was down → "Manual
+intervention required"), or a CL degenerated into a **pure sync-follower** (decides by fetching,
+never proposes). Each costs ~25 % of cadence and is invisible to agreement checks. **Always
+attribute failed round-0s by proposer** (`heights.py proposers`).
 
-Baked into `lane-bench.sh`, and mandatory for any hand-run experiment:
+Baked into `bench/fleet`, and mandatory for any hand-run experiment:
 
-- per-machine **container census** before measuring;
-- **pool wipe before recreating CLs** (a CL that boots while its lean node is down parks);
-- pre-measure **CL health gate** (live + unparked);
-- **chain-static check** before `-l` corpus generation (a surviving feeder advances nonces →
-  corpus born stale → queued forever);
-- **corpus probe**: submit one tx, require `pending ≥ 1`;
-- **per-machine corpus generation** (never ship 90 MB over tailscale);
-- **remote-effect verification** — tailscale ssh exit codes lie when its session check expires;
+- **health gate** after boot: containers up, unparked, EL fresh, zero CL restarts, chain advancing;
+- **lean nodes before CLs**, lane on from height 1 of a fresh chain;
 - **fullness with every number** — a non-full block measures delivery, not the chain;
-- sample from an **uninvolved wired validator**.
+- **one spammer per machine** on loopback, disjoint accounts (a remote one is delivery-bound);
+- **per-validator restarts, pool depth, `staged%`** every minute (reference ≥ 95 % staged);
+- **chain-static check** before `-l` corpora (a surviving feeder advances nonces → corpus born
+  stale → queued forever); the lean `eth_getTransactionCount` returns the committed nonce, so
+  a corpus generated over a non-empty pool restarts at already-pooled nonces — empty pools only;
+- **logs captured before teardown**; **remote effects verified by reading them back** (ssh exit
+  codes lie once the tailscale session expires); sample from an **uninvolved wired validator**.
 
 ### Ops landmines (each cost a run)
 
+- **tailscale ssh expires after ~4–5 h** and only the user can re-auth: they run a waiting command
+  per machine (`tailscale ssh <host> true` prints a login URL and blocks until approved). Rows
+  with restarts `-1` are invalid; after re-auth, `fleet down` the orphaned run before anything.
+  Queue the important runs first. The preflight refuses a relayed (DERP) path — wait it out.
+- **Run dirs hold root-owned files** (container data): delete only via `fleet purge` (root
+  container) — plain `rm -rf` leaves GBs behind. **Write the run record before purging.**
+- **Two chains sharing a run id**: RUN_ID is minute-granular; an orphaned subshell started a run
+  in the same minute as a relaunch and its `down` killed the live one. Kill orphans, or set
+  `RUN_ID` explicitly.
+- Old stopped containers can reference a deleted docker network — remove them before `up`.
 - `pkill`/`pgrep -f` matches the shell carrying the pattern; `pkill` returning 1 aborts a
   compound block. Split kill and launch into separate calls; guard with `|| true`.
-- Remote background launches need `(setsid nohup … &)` + `</dev/null`; tailscale-ssh teardown
-  kills a plain `&`.
-- bash bare `wait` blocks on *any* backgrounded job — `disown` daemons, wait on explicit PIDs.
-- zsh aborts a compound command on a no-match glob (`setopt nonomatch` or enumerate).
-- zsh does **not** word-split `set -- $var`.
-- RPC bodies go through **files, never argv** — a budget-full block's base64 is ~1 MB and trips
-  "Argument list too long".
-- Fan-out **drains sender balances one-way** (~4.4 k txs at N=100 bankrupts them even at 10×
-  funding) — refund by regenerating genesis.
-- Never wipe a lean chain under a live CL chain: certificates bind destroyed bytes and
-  laggards can never sync that span.
-- The lean `getTransactionCount` is **pool-inclusive** — generate `-l` corpora only against
-  empty pools.
-
----
+- Remote background launches need `(setsid nohup … &)` + `</dev/null` (env vars *before*
+  `nohup`); bash bare `wait` blocks on *any* job — `disown` daemons, wait on explicit PIDs.
+- zsh aborts a compound command on a no-match glob (`setopt nonomatch` or enumerate), and does
+  **not** word-split `set -- $var` (a spammer once got `-r "4000 8000 600"`).
+- RPC bodies go through **files, never argv** — a budget-full block's base64 is MBs.
+- Fan-out **drains sender balances one-way** (bankruptcy ~4.4 k txs at N=100): N=100 runs with 800
+  accounts stay ≤ 30 min; refund by regenerating genesis.
+- Never wipe a lean chain under a live CL chain: certificates bind destroyed bytes and laggards
+  can never sync that span. Enable the lane only from height 1 (the enable-boundary height is
+  unserveable); change CL flags on ALL CLs together (halt-flip-resume — a lone CL restart
+  wedged: sync deadlock + ±128 serving window). Consensus params (pacer, timeouts) change live
+  via governance.
 
 ## 7. Layout
 
-```
-crates/lean-native/        fan-out wire format (0x50), pool integration
-crates/lean-lane-node/     the lean node (shim RPC, flat state, append-only log)
-crates/malachite-app/      CL: lean lane arms are flag-gated (ARC_PAYMENT_LEAN_LANE)
-crates/eth-engine/         lean_shim.rs — the 4-verb client
-experiments/dual-el/       lean-smoke.sh · lane-bench.sh · deploy-lean.sh ·
-                           gen-lean-fund.sh · lean-feeder.py · fleet.env.example
-experiments/dual-el/fleet/ historical launchers (hardcode the old fleet — history, not the live path)
-docs/lean-lane-setup.md    fresh-machine recipe
-docs/lean-lane-integration.md  shim contract (4 verbs + SYNCING), CL delta, candidate removals
-docs/campaign-log.md       full chronological history
-2026.arc.payment.highway.claude/  paper + lab notebook (append-only, figures)
-```
-
----
+- arc `lean-lane`: `crates/malachite-app/src/lean_lane/` (binding, catch-up, anchor),
+  `crates/eth-engine/src/lean_shim.rs` (`LeanNode`), `crates/types/src/lean.rs` (framing),
+  `scripts/lean-testnet.sh`, `docs/lean-lane-integration.md` (CL delta, porting order, config).
+- lean-lane `v0.3-dev`: `crates/{lean-native,lean-lane-node,spammer}`, `docs/integration.md`,
+  `docs/setup.md`, `scripts/` (smoke, fund, feeder, replay-bench), `bench/`.
+- this repo: `docs/history/` (superseded guides, plans), `experiments/dual-el/history/`,
+  `fleet/`, `fleet-v7/` (old runners), `2026.arc.payment.highway.claude/` (paper + notebook).
 
 ## 8. Session log — REQUIRED
 
-Every working session appends one dated entry to **`docs/worklog.md`** before it
-ends. This is how the work stays reviewable remotely (`git log -p docs/worklog.md`),
-so it is not optional and not a summary of the chat — it is the record:
+Every session appends one dated entry to **`docs/worklog.md`** (this repo) before it ends —
+the record that keeps the work reviewable remotely (`git log -p`), not a chat summary:
 
-- **Changed** — what was edited/built, with commit hashes.
-- **Measured** — numbers *with cadence and fullness*, and the config that produced
-  them. A number without fullness is not a result (§6).
-- **Broke / retracted** — anything that failed, and any earlier claim this session
-  invalidated. Retractions are the most valuable lines in the file.
+- **Changed** — what was edited/built, with commit hashes (and which repo/branch).
+- **Measured** — numbers *with cadence and fullness*, and the config that produced them. A
+  number without fullness is not a result (§6).
+- **Broke / retracted** — failures, and earlier claims invalidated (the most valuable lines).
 - **Decided** — design decisions taken, with the reason.
 - **Open** — what the next session should pick up.
 
-Mark speculation as **BRAINSTORM** so it is never mistaken for measurement.
-Durable conclusions get promoted into this file (§5/§6); the worklog stays raw.
+Mark speculation as **BRAINSTORM** so it is never mistaken for measurement. Durable conclusions
+get promoted into this file (§5/§6); the worklog stays raw.
 
----
+## 9. Scope — what is done, what is next
 
-## 8. Scope — what is done, what is next
+**Done.** v0.2 design (§3); self-healing lean nodes (announce/pull, SYNCING queue, backfill,
+snapshots); §5. De-slop (plan `~/arc-lean-perf/.superpowers/deslop-plan.md`): Phase 0, Phase 1
+(`lean-lane`, +3,388 lines vs upstream, was ~12,000; review CLEAN vs v0.2), Phase 2 items 1–6, 9
++ peer-pull race (`v0.3-dev`), Phase 3 (tooling → `bench/`, these docs); fleet parity.
 
-**Done and measured.** Dual-lane consensus with one certificate; fan-out transaction type;
-structural voting + vote-gap execution + anchored promote; self-healing lean nodes (announce/
-pull gossip, SYNCING queue, peer backfill, snapshot recovery); the numbers in §5; repo
-self-containment.
-
-**Not done / known limits.** Longest verified soak is 6 h (lean load died at 1.6 h on the
-balance drain). n=1 for most points, ±15 % run-to-run. Four validators, heterogeneous, one of
-them on wifi. No comparison against a published system. Sync-storm under drain load is
-characterised but unfixed. No formal safety argument for the multi-lane commitment.
+**Not done / known limits.** Clean stack has a 10-min fleet run only, no soak; ~8 % late decline
+over 30-min soaks (F10/F14/F28) unexplained. Four heterogeneous validators, one on wifi; n=1
+per point. No comparison against a published system. No formal safety argument for the binding.
 
 **Next, in the order I would do them:**
 
-1. **Endurance at the operating point** (one night, unattended) — add `--fanout-amount` to the
-   spammer (fixed tiny amounts, so senders don't bankrupt), then 12 h+ at N=50/150M with the
-   watchdogs. This is the gap between "measured" and "trustworthy" and is cheap.
-2. **Compact proposals** (multi-day, CL-side) — propose tx *hashes* against pre-distributed
-   bodies. It is the only remaining structural lever: it attacks the 57 %-of-height proposal
-   stream, the p90 tail, *and* the value-sync storm at once. Byte-law estimate: ~10× fewer
-   consensus bytes. Note honestly that this is Narwhal's separation applied to an existing BFT
-   stack, not a new idea.
-3. **Cheap robustness** — fold lean-node teardown into `clean-fleet.sh`; add per-validator
-   proposer-turn attribution to the health gate (it catches parked/hung CLs, not slow ones).
+1. **Phase 2 rest** (lean node): item 7 collapse the concurrency to the commit gate + one arrival
+   wait (fleet path-mix re-measure, staged ≥ 95 %), item 8 test consolidation, item 10 spammer →
+   a small lean load tool; tag v0.3.0. Gate: tests, smoke, local e2e, fleet 400 M + 30-min soak.
+2. **Phase 4 — 21 nodes on AWS via quake**: lean node image (ghcr), `[lean]` manifest section +
+   lean service in both compose templates, load container per node, CL catch-up peer fan-out;
+   ladder local 5 → local 10 → LAN parity → AWS 21 single-AZ → multi-region. Measure gossipsub
+   `flood_publish` and the value-sync 10 MiB cap first; expect the knee to drop at 21.
+3. **Light client Phase 1** — attested indexer over certified bytes (no protocol change).
+4. Endurance: 60 min at 300 M with 1,600 accounts (drain limit) to chase the late decline.
 
-**Explicitly parked** (measured, not promising): parallel execution (execution is ~1 µs/
-payment); bigger blocks (knee mapped at ~225 M); further packing (28 B/payment is the wire
-floor); prebuild/builder-separation beyond v1.1 (needs fork-level pending visibility).
+**Deferred until measured:** reth-pool replacement (behind a differential test + soak); removing
+the CL-side catch-up (fleet A/B: kill one lean node 60 s under load). **Structural lever still
+open:** compact proposals (tx hashes against pre-distributed bodies — Narwhal's separation on an
+existing BFT stack). **Parked** (measured, not promising): parallel execution; bigger blocks
+(knee 400–450 M); packing below 28 B/payment (BRAINSTORM: index-encoded recipient ~12 B).
