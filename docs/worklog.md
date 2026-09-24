@@ -1345,3 +1345,72 @@ limit set at genesis and verified on a produced block, 0 restarts, 4/4 EL hash a
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-16 → 2026-09-24 — de-slop audit and plan, clean port branch, lean node v0.3-dev, fleet parity; landing page
+
+**Changed** (nothing pushed except the landing page, which the user published)
+- Landing page `levduc.github.io/fastlane/` (homepage repo `static/fastlane/index.html`): product framing
+  ("one consensus, many commitments"), no Arc/Circle naming, every number from the 2026-09-14/15 fleet runs.
+- Audits (read-only) of the CL delta, the lean node and the tooling/docs → plan
+  `~/arc-lean-perf/.superpowers/deslop-plan.md` (Phases 0–4, incl. the 21-node AWS path via quake:
+  `design-21node.md`). Found: the unpushed arc `lean-lane-v0.2` carried infrastructure details (IPs,
+  hostnames, user, home paths) in 6 files + 2 commit messages — it must never be pushed as is.
+- Revert points: arc `lean-lane-v0.2-lastgood` (186928a), lean-lane `v0.2-lastgood` (039b990); every gate
+  tagged `gate-<phase>-<date>`.
+- arc, new branch `lean-lane` (worktree `~/arc-lean-clean`, from origin/main 97f8da0), 8 commits:
+  ba4ec93 prev_randao through generate_block · d0e0fd7 types/framing · ff1a055 one `LeanNode` trait ·
+  94a8cf8 validation behind validate_consensus_block (`LeanVerdict::{Valid,Invalid,Abstain}`) · 2d74a72
+  handler arms, node in State, env read once · 2d85cab tests (flag-off pins, reuse decision table) ·
+  8758678 local testnet + 238-line guide · **ede2651 a lane-enabled network block without a lean
+  commitment is Invalid** (halt fix, below). +3,388 lines vs upstream (1,638 prod, 1,303 tests), was
+  ~12,000. Side branches: `lean-lane-instrumented` (+ height timing, adc8b43), `consensus-db-scans`
+  (store range reads, 1b2803e). Independent review vs v0.2: CLEAN (lane-on behaviour equivalent, flag-off
+  byte-identical to upstream).
+- lean-lane, new branch `v0.3-dev` (worktree `~/lean-lane-v03`): 7608d5e complete commitment index from
+  replay (log scan deleted) · 6a6b07a all settings are CLI flags · 09078e5 tracing + metrics ·
+  407b8ce delete self-drive, bench, dead executors, receipt ring + eth_getTransactionReceipt · 73e1a84
+  doc fixes (eth_getTransactionCount returns the committed nonce) · 4e72107 smoke honours
+  CARGO_TARGET_DIR · 58fb403 node.rs split into 7 modules, one execute→Delta + one append · ff7e6ab
+  pool into the node crate · 0203de3 shuffle + race peer pulls (`--peer-fanout 3`, `--announce-fanout`) ·
+  75395a3 fleet runner/sampler/analysis moved to `bench/` (placeholders only; real fleet.env git-ignored).
+  Rust 17,341 → ~16,000 lines so far; 162 workspace tests.
+
+**Measured**
+- Local 5 validators (`lean-lane` @ ede2651 image + `v0.3-dev`, 100 M, N=100, 3,000 tx/s, validator 3's
+  CL restarted after minute 1): 119 / 120 / 111 heights/min, every sampled block 191/191 = 100 % full,
+  5/5 lean nodes identical at 474, 0 parks/panics/equivocations, 0 restarts, 0 Invalid/abstain verdicts.
+- Fleet smoke run-0924-1413 (bench runner, 150 M, N=100, 2 min): 115.00 blocks/min, 287/287 = 100 % full,
+  55,008 payments/s, 4/4 identical at 274, 0 restarts.
+- **Fleet run-0924-1421 (clean stack, 400 M, N=100, 10 min, one spammer per machine): 114–116 blocks/min
+  (1.90–1.93 blk/s), every sample 767/767 = 100 % full, 1,457–1,483 tx/s, 145,730–148,287 payments/s,
+  0 restarts, 4/4 byte-identical at 1198.** Anchors from the staged copy 94–100 % (100 % on all four from
+  minute 2 except ≤ 2 % on two nodes late), lean RSS 180–300 MB (was ~1.9 GB with the receipt ring).
+  Reference F26 (v0.2, 2026-09-15): 111.43–118.10 blocks/min, 142,443–150,965 — parity, tighter band.
+  Samples + CL/EL/lean logs: `~/lean-lane-v03/bench/runs/run-0924-1421/`; chain data under
+  `~/arc-runs/run-0924-{1413,1421}/` on all four machines.
+
+**Broke / retracted**
+- Halt path (present in v0.2 too, found by the review): with the lane on, a network block with no lean
+  bytes and a zero prev_randao was voted Valid, and every node's decide then refused the certified height
+  forever — one faulty proposal halts the chain. Fixed on `lean-lane` (ede2651); NOT backported to the
+  frozen `lean-lane-v0.2` archive.
+- First local gate attempt failed on environment only: the fresh worktree had no git submodules
+  (genesis contract compile) and our own week-old stopped containers referenced a deleted docker network.
+- Landing-page verification: Playwright's bundled Chromium on this host renders the site's typewriter
+  font as blank (the published auctions page too) — environment; verified in Playwright Firefox instead.
+
+**Decided**
+- Delete the receipt ring (done); fleet tooling lives in `lean-lane/bench/`; the clean arc branch is
+  `lean-lane`; reth-pool replacement and removing the CL-side catch-up stay deferred until measured.
+- 21 nodes go through quake's AWS mode (lean node as a third container per node), not the LAN script.
+
+**Open**
+- Phase 2 medium: collapse the lean node's concurrency to the commit gate + one arrival wait (needs a
+  fleet path-mix re-measure), test consolidation; spammer → small lean load tool.
+- Phase 3 docs: CLAUDE.md §3/§5/§8 still describe v0.1 (composite value id, 4 verbs, old §5 table);
+  campaign repo → archive.
+- Phase 4: lean-node image + quake integration + CL catch-up peer fan-out, then the 21-node ladder.
+- Purge `~/arc-runs/run-0924-*` after this record (bench: `fleet purge <run-id> --yes`).
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
