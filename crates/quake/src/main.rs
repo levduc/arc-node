@@ -47,6 +47,7 @@ mod genesis;
 mod info;
 mod infra;
 mod latency;
+mod lean;
 mod load;
 mod manifest;
 mod mcp;

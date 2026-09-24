@@ -29,6 +29,8 @@ pub(crate) const COMPOSE_FILENAME: &str = "compose.yaml";
 pub(crate) const COMPOSE_BUILD_FILENAME: &str = "arc_builders.yaml";
 pub(crate) const DEFAULT_IMAGE_CL: &str = "arc_consensus:latest";
 pub(crate) const DEFAULT_IMAGE_EL: &str = "arc_execution:latest";
+/// Lean lane node image, built from a lean-lane checkout (`scripts/build-image.sh`).
+pub(crate) const DEFAULT_IMAGE_LEAN: &str = "lean-lane:local";
 
 const BLOCKSCOUT_CONTAINERS: [&str; 5] = [
     "blockscout-db-init",

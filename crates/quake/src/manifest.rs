@@ -25,8 +25,9 @@ use tracing::warn;
 
 use arc_node_consensus_cli::cmd::start::StartCmd;
 
-use crate::infra;
+use crate::infra::{self, InfraType};
 use crate::latency;
+use crate::lean::{self, LeanConfig};
 use crate::manifest::raw::RawManifest;
 use crate::node::NodeName;
 use crate::node::SubnetName;
@@ -566,6 +567,9 @@ pub(crate) struct Manifest {
     pub cl_cpu_limit: Option<f64>,
     /// Memory limit for the CL container, in GiB. Fractional values are allowed (e.g. 1.5).
     pub cl_memory_limit_gb: Option<f64>,
+    /// `[lean]` section: the lean payment lane as a per-node service. Kept as
+    /// written; use [`Manifest::lean`] to know whether the lane is on.
+    pub lean: Option<LeanConfig>,
 }
 
 impl Manifest {
@@ -886,6 +890,8 @@ impl Manifest {
             bail!("At least one node must be defined");
         }
 
+        self.validate_lean()?;
+
         if let Some(gb) = self.node_disk_gb {
             if gb < MIN_DISK_GB {
                 bail!("node_disk_gb must be at least {MIN_DISK_GB} (got {gb})");
@@ -1072,6 +1078,57 @@ impl Manifest {
         Ok(())
     }
 
+    /// The lean lane configuration, if the lane is enabled.
+    pub fn lean(&self) -> Option<&LeanConfig> {
+        self.lean.as_ref().filter(|l| l.enabled)
+    }
+
+    /// Lane-enabled manifests: every node runs the lane from height 1, and quake
+    /// owns the CL's `ARC_PAYMENT_LEAN_*` environment.
+    fn validate_lean(&self) -> Result<()> {
+        let Some(lean) = self.lean() else {
+            return Ok(());
+        };
+        lean.validate()?;
+        for (node_name, node) in self.nodes.iter() {
+            if let Some(start_at) = node.start_at.filter(|h| *h > 1) {
+                bail!(
+                    "Node '{node_name}' starts at height {start_at}, but the lean lane must run \
+                     on every node from height 1"
+                );
+            }
+            if node.follow {
+                bail!("Node '{node_name}' uses follow mode, which the lean lane does not support");
+            }
+            if let Some(key) = node
+                .cl_env
+                .keys()
+                .find(|k| k.starts_with(lean::CL_ENV_PREFIX))
+            {
+                bail!(
+                    "Node '{node_name}' sets {key} in cl.env; with [lean] enabled quake sets \
+                     the {}* variables itself",
+                    lean::CL_ENV_PREFIX
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve the Docker images for the given infrastructure: the CL/EL images
+    /// (see [`DockerImages::to_local`], [`DockerImages::to_remote`]) plus the lean
+    /// node image when the lane is enabled.
+    pub fn resolve_images(&self, infra_type: InfraType) -> Result<testnet::DockerImages> {
+        let mut images = match infra_type {
+            InfraType::Local => self.images.to_local()?,
+            InfraType::Remote => self.images.to_remote()?,
+        };
+        if self.lean().is_some() {
+            images.lean = Some(self.images.resolve_lean(infra_type)?);
+        }
+        Ok(images)
+    }
+
     /// Returns the number of validator nodes in the manifest
     pub fn num_validators(&self) -> usize {
         self.nodes
@@ -1189,6 +1246,8 @@ pub(crate) struct DockerImages {
     pub cl_upgrade: Option<String>,
     /// Execution layer upgrade image: used by `quake upgrade` to replace running EL containers.
     pub el_upgrade: Option<String>,
+    /// Lean lane node image (`[lean] image`); only used when the lane is enabled.
+    pub lean: Option<String>,
 }
 
 /// Per-node or per-node-group CL/EL image override for mixed-version networks.
@@ -1215,6 +1274,7 @@ impl DockerImages {
             el: Self::resolve_image(&self.el, infra::local::DEFAULT_IMAGE_EL)?,
             cl_upgrade: self.cl_upgrade.clone(),
             el_upgrade: self.el_upgrade.clone(),
+            lean: None,
         })
     }
 
@@ -1230,16 +1290,37 @@ impl DockerImages {
             el: Self::resolve_image(&self.el, infra::remote::DEFAULT_IMAGE_EL)?,
             cl_upgrade: None,
             el_upgrade: None,
+            lean: None,
         };
 
         for img in [&images.cl, &images.el] {
-            if !img.starts_with("ghcr.io/") {
-                bail!("Image {img} must start with 'ghcr.io/' for remote mode");
-            }
+            ensure_remote_image(img)?;
         }
 
         Ok(images)
     }
+
+    /// Resolve the lean node image: the `[lean] image` override, else the
+    /// infrastructure default. Remote images follow the same `ghcr.io/` rule as
+    /// the CL and EL images.
+    pub fn resolve_lean(&self, infra_type: InfraType) -> Result<String> {
+        match infra_type {
+            InfraType::Local => Self::resolve_image(&self.lean, infra::local::DEFAULT_IMAGE_LEAN),
+            InfraType::Remote => {
+                let img = Self::resolve_image(&self.lean, infra::remote::DEFAULT_IMAGE_LEAN)?;
+                ensure_remote_image(&img)?;
+                Ok(img)
+            }
+        }
+    }
+}
+
+/// Remote nodes pull only from `ghcr.io`.
+fn ensure_remote_image(img: &str) -> Result<()> {
+    if !img.starts_with("ghcr.io/") {
+        bail!("Image {img} must start with 'ghcr.io/' for remote mode");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3132,5 +3213,194 @@ mod tests {
     fn validate_resource_limits_rejects_negative_memory() {
         let err = validate_resource_limits(None, Some(-2.0), None, None).unwrap_err();
         assert!(err.to_string().contains("el_memory_limit_gb"));
+    }
+
+    const LEAN_MANIFEST: &str = r#"
+        [lean]
+        enabled = true
+        budget_gas = 150_000_000
+        fund_accounts = 50
+        fund_balance = "10000000000000000000"
+        fanout_outputs = 100
+
+        [nodes.validator1]
+        [nodes.validator2]
+    "#;
+
+    #[test]
+    fn lean_section_parses() {
+        let manifest = Manifest::from_string(LEAN_MANIFEST).unwrap();
+        let lean = manifest.lean().expect("lane enabled");
+        assert_eq!(lean.budget_gas, 150_000_000);
+        assert_eq!(lean.fund_accounts, 50);
+        assert_eq!(lean.fund_balance, "10000000000000000000");
+        assert_eq!(lean.fanout_outputs, 100);
+        assert_eq!(lean.image, None);
+        assert_eq!(manifest.images.lean, None);
+    }
+
+    #[test]
+    fn lean_absent_or_disabled_is_off() {
+        let manifest = Manifest::from_string("[nodes.validator1]").unwrap();
+        assert!(manifest.lean.is_none());
+        assert!(manifest.lean().is_none());
+        assert_eq!(
+            manifest.resolve_images(InfraType::Local).unwrap().lean,
+            None
+        );
+
+        let manifest =
+            Manifest::from_string("[lean]\nenabled = false\n[nodes.validator1]").unwrap();
+        assert!(manifest.lean().is_none());
+        assert_eq!(
+            manifest.resolve_images(InfraType::Local).unwrap().lean,
+            None
+        );
+    }
+
+    #[test]
+    fn lean_defaults_when_only_enabled() {
+        let manifest = Manifest::from_string("[lean]\nenabled = true\n[nodes.validator1]").unwrap();
+        let lean = manifest.lean().unwrap();
+        assert_eq!(lean.budget_gas, 100_000_000);
+        assert_eq!(lean.fund_accounts, 200);
+        assert_eq!(lean.fund_balance, "10000000000000000000");
+        assert_eq!(lean.fanout_outputs, 10);
+    }
+
+    #[test]
+    fn lean_rejects_unknown_keys_and_bad_values() {
+        let err = Manifest::from_string("[lean]\nenabled = true\nbudget = 1\n[nodes.validator1]")
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("unknown field"), "{err:#}");
+
+        let err = Manifest::from_string(
+            "[lean]\nenabled = true\nfund_balance = \"lots\"\n[nodes.validator1]",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("fund_balance"), "{err}");
+
+        // Validation only applies when the lane is on.
+        Manifest::from_string("[lean]\nenabled = false\nbudget_gas = 0\n[nodes.validator1]")
+            .unwrap();
+    }
+
+    #[test]
+    fn lean_rejects_user_supplied_lane_env() {
+        let err = Manifest::from_string(
+            r#"
+            [lean]
+            enabled = true
+            [cl.env]
+            ARC_PAYMENT_LEAN_BUDGET_GAS = "1"
+            [nodes.validator1]
+            "#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("ARC_PAYMENT_LEAN_BUDGET_GAS"),
+            "{err}"
+        );
+
+        // Without [lean] the variables stay user-owned (host-process lean nodes).
+        let manifest = Manifest::from_string(
+            r#"
+            [cl.env]
+            ARC_PAYMENT_LEAN_LANE = "1"
+            [nodes.validator1]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.nodes["validator1"].cl_env["ARC_PAYMENT_LEAN_LANE"],
+            "1"
+        );
+    }
+
+    #[test]
+    fn lean_rejects_late_start_and_follow_nodes() {
+        let err = Manifest::from_string(
+            "[lean]\nenabled = true\n[nodes.validator1]\n[nodes.full1]\nstart_at = 10",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("height 1"), "{err}");
+
+        Manifest::from_string(
+            "[lean]\nenabled = true\n[nodes.validator1]\n[nodes.full1]\nstart_at = 1",
+        )
+        .unwrap();
+
+        let err = Manifest::from_string(
+            r#"
+            [lean]
+            enabled = true
+            [nodes.validator1]
+            [nodes.full1]
+            follow = true
+            follow_endpoints = ["validator1"]
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("follow"), "{err}");
+    }
+
+    #[test]
+    fn lean_image_local_default_and_override() {
+        let manifest = Manifest::from_string(LEAN_MANIFEST).unwrap();
+        let images = manifest.resolve_images(InfraType::Local).unwrap();
+        assert_eq!(images.lean.as_deref(), Some("lean-lane:local"));
+
+        let manifest = Manifest::from_string(
+            "[lean]\nenabled = true\nimage = \"lean-lane:abc123\"\n[nodes.validator1]",
+        )
+        .unwrap();
+        assert_eq!(manifest.images.lean.as_deref(), Some("lean-lane:abc123"));
+        let images = manifest.resolve_images(InfraType::Local).unwrap();
+        assert_eq!(images.lean.as_deref(), Some("lean-lane:abc123"));
+    }
+
+    #[test]
+    fn lean_image_remote_must_be_ghcr() {
+        let base = r#"
+            image_cl = "ghcr.io/org/arc-consensus:1"
+            image_el = "ghcr.io/org/arc-execution:1"
+        "#;
+        let manifest = Manifest::from_string(&format!(
+            "{base}\n[lean]\nenabled = true\nimage = \"lean-lane:local\"\n[nodes.validator1]"
+        ))
+        .unwrap();
+        let err = manifest.resolve_images(InfraType::Remote).unwrap_err();
+        assert!(err.to_string().contains("ghcr.io/"), "{err}");
+
+        let manifest = Manifest::from_string(&format!(
+            "{base}\n[lean]\nenabled = true\nimage = \"ghcr.io/org/lean-lane:1\"\n[nodes.validator1]"
+        ))
+        .unwrap();
+        let images = manifest.resolve_images(InfraType::Remote).unwrap();
+        assert_eq!(images.lean.as_deref(), Some("ghcr.io/org/lean-lane:1"));
+
+        // A non-ghcr lean image is irrelevant while the lane is off.
+        let manifest = Manifest::from_string(&format!(
+            "{base}\n[lean]\nenabled = false\nimage = \"lean-lane:local\"\n[nodes.validator1]"
+        ))
+        .unwrap();
+        assert_eq!(
+            manifest.resolve_images(InfraType::Remote).unwrap().lean,
+            None
+        );
+    }
+
+    #[test]
+    fn lean_section_round_trips() {
+        let manifest = Manifest::from_string(LEAN_MANIFEST).unwrap();
+        let raw = RawManifest::try_from(manifest.clone()).unwrap();
+        let toml_str = toml::to_string(&raw).unwrap();
+        let manifest2 = Manifest::from_string(&toml_str).unwrap();
+        assert_eq!(manifest.lean, manifest2.lean);
+
+        // No [lean] in, no [lean] out.
+        let manifest = Manifest::from_string("[nodes.validator1]").unwrap();
+        let toml_str = toml::to_string(&RawManifest::try_from(manifest).unwrap()).unwrap();
+        assert!(!toml_str.contains("lean"), "{toml_str}");
     }
 }

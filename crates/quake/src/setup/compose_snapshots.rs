@@ -54,6 +54,7 @@ pub(super) fn test_images() -> testnet::DockerImages {
         el: "ghcr.io/test/arc-execution:snap".to_string(),
         cl_upgrade: None,
         el_upgrade: None,
+        lean: None,
     }
 }
 

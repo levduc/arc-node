@@ -78,6 +78,9 @@ pub(crate) struct DockerImages {
     pub cl_upgrade: Option<String>,
     /// Execution layer upgrade image, if an upgrade scenario is configured.
     pub el_upgrade: Option<String>,
+    /// Lean lane node image, set only when the manifest enables the lane.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lean: Option<String>,
 }
 
 pub(crate) struct Testnet {
@@ -156,10 +159,7 @@ impl Testnet {
         let infra_data = InfraData::new(&dir, testnet_name.clone(), &manifest.nodes, force_remote)?;
 
         // Now that we know the infrastructure type, define Docker images for the testnet
-        let images = match infra_data.infra_type {
-            InfraType::Local => manifest.images.to_local()?,
-            InfraType::Remote => manifest.images.to_remote()?,
-        };
+        let images = manifest.resolve_images(infra_data.infra_type)?;
 
         // Load list of upgraded containers from file
         let upgraded_containers_file = quake_dir.join(UPGRADED_CONTAINERS_FILENAME);
@@ -451,6 +451,7 @@ impl Testnet {
                         el,
                         cl_upgrade: None,
                         el_upgrade: None,
+                        lean: self.images.lean.clone(),
                     };
 
                     // Generate CL CLI flags including persistent peers. Pass this

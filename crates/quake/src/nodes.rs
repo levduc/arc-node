@@ -681,6 +681,7 @@ mod tests {
             el: "ghcr.io/org/el:1".to_string(),
             cl_upgrade: None,
             el_upgrade: None,
+            lean: None,
         };
         let err = NodesMetadata::new(infra_data, &manifest, &base, &BTreeSet::new()).unwrap_err();
         assert!(

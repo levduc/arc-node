@@ -279,6 +279,7 @@ impl Manifest {
             el_memory_limit_gb: None,
             cl_cpu_limit: None,
             cl_memory_limit_gb: None,
+            lean: None,
         })
     }
 

@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::cli_version::ensure_cl_image_supported;
+use crate::lean::LeanConfig;
 use crate::manifest::subnets::Subnets;
 use crate::manifest::{
     default_subnet_singleton, ClGossipSubConfig, ClPruningPreset, DockerImages, ElConfigOverride,
@@ -337,6 +338,9 @@ pub struct RawManifest {
     cl_cpu_limit: Option<f64>,
     /// Memory limit for the CL container, in GiB. Fractional values are allowed.
     cl_memory_limit_gb: Option<f64>,
+    /// Lean payment lane (`[lean]`); absent means off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lean: Option<LeanConfig>,
 }
 
 impl RawManifest {
@@ -347,6 +351,7 @@ impl RawManifest {
             el: self.image_el.clone(),
             cl_upgrade: self.image_cl_upgrade.clone(),
             el_upgrade: self.image_el_upgrade.clone(),
+            lean: self.lean.as_ref().and_then(|l| l.image.clone()),
         }
     }
 }
@@ -384,6 +389,7 @@ impl Default for RawManifest {
             el_memory_limit_gb: None,
             cl_cpu_limit: None,
             cl_memory_limit_gb: None,
+            lean: None,
         }
     }
 }
@@ -643,6 +649,7 @@ impl TryFrom<RawManifest> for Manifest {
             el_memory_limit_gb: raw.el_memory_limit_gb,
             cl_cpu_limit: raw.cl_cpu_limit,
             cl_memory_limit_gb: raw.cl_memory_limit_gb,
+            lean: raw.lean,
         })
     }
 }
@@ -699,6 +706,7 @@ impl TryFrom<Manifest> for RawManifest {
             el_memory_limit_gb: manifest.el_memory_limit_gb,
             cl_cpu_limit: manifest.cl_cpu_limit,
             cl_memory_limit_gb: manifest.cl_memory_limit_gb,
+            lean: manifest.lean,
         })
     }
 }

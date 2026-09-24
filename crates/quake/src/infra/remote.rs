@@ -31,6 +31,7 @@ use crate::shell;
 
 pub(crate) const DEFAULT_IMAGE_CL: &str = "${IMAGE_REGISTRY_URL}/arc-consensus:latest";
 pub(crate) const DEFAULT_IMAGE_EL: &str = "${IMAGE_REGISTRY_URL}/arc-execution:latest";
+pub(crate) const DEFAULT_IMAGE_LEAN: &str = "${IMAGE_REGISTRY_URL}/lean-lane:latest";
 pub(crate) const USER_NAME: &str = "ssm-user";
 pub(crate) const CC_INSTANCE: &str = "cc";
 
