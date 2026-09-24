@@ -205,6 +205,50 @@ as `host.docker.internal` (the `extra_hosts` entry in the local compose
 template). `status` reports the head block's transaction count next to the
 heights, since a rate without fullness measures delivery, not the chain.
 
+### Lean nodes as quake containers
+
+The same network with the lean nodes as containers that quake manages next
+to each validator's CL and EL. Needs Docker and the lean node image
+(`scripts/build-image.sh` in a lean-lane checkout tags `lean-lane:local`);
+no Foundry, no host processes.
+
+```bash
+make testnet QUAKE_MANIFEST=crates/quake/scenarios/localdev-lean-docker.toml
+cargo run --bin quake -- info heights               # EL heights, lean heights below
+cargo run --bin quake -- perturb kill validator3_lean   # lean node self-heal
+cargo run --bin quake -- clean                      # both chains, always together
+```
+
+The scenario's `[lean]` section is all the configuration there is:
+
+```toml
+[lean]
+enabled = true
+budget_gas = 100_000_000                # ARC_PAYMENT_LEAN_BUDGET_GAS
+fund_accounts = 500                     # assets/lean-fund.txt, m/44'/60'/1'/0/i
+fund_balance = "10000000000000000000"   # wei per account (a string)
+fanout_outputs = 100                    # default fan-out N for lean load
+# image = "ghcr.io/<owner>/lean-lane:<tag>"   # required form on remote testnets
+```
+
+`quake setup` writes the fund file into the testnet's `assets/`, gives every
+node a `<node>_lean` service (port 8560 inside, `8560 + 100·i` on the host,
+data in `.quake/<testnet>/<node>/lean`), peers each lean node with all the
+others, and sets `ARC_PAYMENT_LEAN_{LANE,BUDGET_GAS,RPC,PEER_RPCS}` on each CL
+(`http://<node>_lean:8560`); a scenario must not set those itself. Each CL
+starts only once its lean node is healthy. `clean -c` wipes the lean data with
+the consensus data. Load, from the same image on the host network (lean
+nodes do not relay transactions to each other, so target every node):
+
+```bash
+docker run --rm --network host --entrypoint spammer lean-lane:local \
+  ws --targets ws://127.0.0.1:8560,ws://127.0.0.1:8660,ws://127.0.0.1:8760,ws://127.0.0.1:8860,ws://127.0.0.1:8960 \
+  -r 1000 -g 5 -a 200 -t 120 --chain-id 1338 --mix fanout=100 --fanout-outputs 100
+```
+
+`scripts/lean-testnet.sh` and `localdev-lean.toml` above remain the
+host-process path.
+
 ## 8. Operating rules
 
 - Start the lean node before the CL when possible. The CL waits for it, but

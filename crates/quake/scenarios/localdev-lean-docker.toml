@@ -1,0 +1,33 @@
+# localdev with the lean payment lane, lean nodes as quake containers:
+# 5 validators, each with a <node>_lean container beside its CL and EL.
+# quake generates the fund file and wires every CL (ARC_PAYMENT_LEAN_*) and
+# lean node (--peers) itself; see docs/lean-lane-integration.md §7.
+#
+#   (lean-lane checkout) scripts/build-image.sh     # -> lean-lane:local
+#   make testnet QUAKE_MANIFEST=crates/quake/scenarios/localdev-lean-docker.toml
+#
+# The host-process variant is localdev-lean.toml + scripts/lean-testnet.sh.
+
+cl.config.execution_persistence_backpressure = true
+
+[lean]
+enabled = true
+budget_gas = 100_000_000
+fund_accounts = 500
+fund_balance = "10000000000000000000"
+fanout_outputs = 100
+
+[nodes.validator1]
+cl_suggested_fee_recipient = "0x1111111111111111111111111111111111111111"
+
+[nodes.validator2]
+cl_suggested_fee_recipient = "0x2222222222222222222222222222222222222222"
+
+[nodes.validator3]
+cl_suggested_fee_recipient = "0x3333333333333333333333333333333333333333"
+
+[nodes.validator4]
+cl_suggested_fee_recipient = "0x4444444444444444444444444444444444444444"
+
+[nodes.validator5]
+cl_suggested_fee_recipient = "0x5555555555555555555555555555555555555555"
