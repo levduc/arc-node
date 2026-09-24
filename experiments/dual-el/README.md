@@ -1,3 +1,7 @@
+> **Historical.** Everything in `experiments/` is the campaign's record. The live fleet runner is
+> lean-lane `bench/fleet/fleet`; `history/` holds its v0.1 predecessors (`lane-bench.sh`,
+> `deploy-lean.sh`), and `fleet/`, `fleet-v7/` are older launchers.
+
 # Dual-EL payment lane — step 2 (1 CL + 2 EL per node)
 
 `launch-payment-els.sh` adds a **second reth EL ("payment lane")** per validator to a running

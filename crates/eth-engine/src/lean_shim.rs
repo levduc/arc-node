@@ -1,5 +1,5 @@
 //! Client for the LEAN payment-lane node's CL shim (contract:
-//! docs/lean-lane-integration.md; server: ~/reth-fork crates/lean-lane-node).
+//! docs/history/lean-lane-integration.md; server: ~/reth-fork crates/lean-lane-node).
 //!
 //! NOT the Engine API: the lean lane has no Ethereum header, no forkchoice, no
 //! payload IDs. Three verbs drive it: buildBlock (proposer), newBlock

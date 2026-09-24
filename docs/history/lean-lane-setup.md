@@ -1,3 +1,5 @@
+> **Historical (v0.1).** Superseded by the lean-lane repo README ("Run a node"), `docs/setup.md` and `bench/README.md` (fleet runner).
+
 # Running the lean payment lane on a fresh machine
 
 The lean lane is **in this repo** — `crates/lean-native` (wire format + pool
@@ -45,7 +47,7 @@ standard test mnemonic. Note the **`1'`**, not the usual `0'`.
 `--shim` means the CL drives block production (`arc_buildBlock` / `arc_newBlock`);
 without it the node self-drives, which is only useful for standalone benchmarks.
 `--peers` is the gossip/backfill mesh — see the shim contract in
-`docs/lean-lane-integration.md`.
+`docs/history/lean-lane-integration.md`.
 
 ## Point a CL at it
 

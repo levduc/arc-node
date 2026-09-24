@@ -1,3 +1,5 @@
+> **Historical (2026-08-25 plan).** Superseded by `CLAUDE.md` §9 and the `docs/worklog.md` entries from 2026-09-15 on.
+
 # Lean payment lane — scope and plan (drafted 2026-08-25)
 
 Written after the measurement campaign closed, against the code as it stands.

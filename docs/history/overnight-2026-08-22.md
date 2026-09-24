@@ -1,3 +1,5 @@
+> **Historical run log (2026-08-22).** Context in `docs/campaign-log.md`.
+
 # Overnight autonomous run — 2026-08-22 (user-directed)
 
 ## GOAL (sharpened): a fleet running BOTH lanes under constant load that sustains 2 blk/s.

@@ -62,7 +62,7 @@ pub struct EnvConfig {
     pub payment_deferred_exec: bool,
     /// EXPERIMENTAL (`ARC_PAYMENT_LEAN_LANE=1`): the payment lane is a LEAN
     /// lane node (no Ethereum header; commitment chain) driven via the CL shim
-    /// (docs/lean-lane-integration.md). Mutually exclusive with a reth payment
+    /// (docs/history/lean-lane-integration.md). Mutually exclusive with a reth payment
     /// engine. Default off = byte-identical legacy behavior.
     pub payment_lean_lane: bool,
     /// Lean lane node RPC (`ARC_PAYMENT_LEAN_RPC`, default http://127.0.0.1:8560).

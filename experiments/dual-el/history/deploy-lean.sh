@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# HISTORICAL (v0.1 campaign runner). The live runner is lean-lane `bench/fleet/fleet`
+# (see its bench/README.md). Kept for the record; drives the old soak4 layout.
 # deploy-lean.sh — put everything a lean-lane fleet run needs on every machine.
 #
 #   ./deploy-lean.sh          # build locally, ship to the hosts in fleet.env
@@ -9,7 +11,7 @@
 # when its session check has expired (a silent no-op cost a whole campaign
 # night). Idempotent: matching sha = skipped.
 set -uo pipefail
-cd "$(cd "$(dirname "$0")/../.." && pwd)" || exit 1
+cd "$(cd "$(dirname "$0")/../../.." && pwd)" || exit 1
 CFG=experiments/dual-el/fleet.env
 [ -f "$CFG" ] || { echo "missing $CFG — copy fleet.env.example and edit"; exit 1; }
 # shellcheck disable=SC1090

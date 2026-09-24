@@ -1,3 +1,5 @@
+> **Historical (v0.1).** Superseded by the arc branch `lean-lane` guide `docs/lean-lane-integration.md` (CL delta) and the lean-lane repo `docs/integration.md` (node contract).
+
 # Lean lane integration — Malachite CL driving the lean lane node
 
 Branch: `lean-lane-integration` (off `builder-separation`). Counterpart: `~/reth-fork`

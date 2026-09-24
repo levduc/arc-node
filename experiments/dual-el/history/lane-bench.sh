@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# HISTORICAL (v0.1 campaign runner). The live runner is lean-lane `bench/fleet/fleet`
+# (see its bench/README.md). Kept for the record; drives the old soak4 layout.
 # lane-bench.sh — ONE trigger to benchmark either lane on the 4-machine fleet.
 #
 #   ./lane-bench.sh evm  <gas>            [window_s]      # EVM lane (chainId 1337)
@@ -30,9 +32,9 @@
 # by local spammers (reth gossips txs fleet-wide); the lean lane has no tx
 # gossip, so each machine feeds its own node from its own corpus partition.
 set -uo pipefail
-cd "$(dirname "$0")/../.." || exit 1
+cd "$(dirname "$0")/../../.." || exit 1
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 LANE=${1:?usage: lane-bench.sh evm|lean <gas> [N] [window_s]}
 GAS=${2:?gas budget, e.g. 150000000}
 if [ "$LANE" = lean ]; then N=${3:-100}; WINDOW=${4:-600}; else N=1; WINDOW=${3:-600}; fi
