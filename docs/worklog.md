@@ -1495,3 +1495,50 @@ spammer); image to ghcr + a remote rung; lean-testnet.sh `down` → `docker rm`.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-24/25 — lean lane made independently testable and optimizable: SPEC, reference oracle, differential suite, engine 2.7x (5x at N=100)
+
+**Changed** (lean-lane, branch `engine` = `v0.3-dev` + the following; nothing pushed; tags `engine-start-2026-09-24`,
+`engine-merged-2026-09-24`, `gate-engine-safetynet-2026-09-24`, `gate-engine-opt-2026-09-25`)
+- 161b754 `SPEC.md` (397 lines): normative wire format, signing domain, recovery, STF, commitment, digest,
+  8 vectors from the real code, Appendix B of surprises (no-op sender write, high-s accepted, trailing bytes
+  after a valid tx ignored for execution but committed, unchecked balance `+=`, beneficiary `0x…be` written
+  every block, u32 nonce cap, no timestamp/size rule on received blocks).
+- 4a1a710 `crates/lean-oracle`: reference implementation written from SPEC.md ONLY (agent barred from the
+  code; own k256 recovery, BTreeMap state); matched all vectors first try; 12 spec questions recorded.
+- 7f0d470 / 55560ab `crates/lean-core`: pure engine `process_block`; hot path in one file `engine.rs`
+  (EVOLVE markers); the node uses it on every path (stage/build/commit/promote/sync/replay); replay digest
+  identical before/after. 76d881a / 7fc2e06 `crates/lean-bench` + BASELINE.md.
+- d6970a1 `crates/lean-diff` (differential engine vs oracle, shrinking reproducers, restart equivalence incl.
+  a real node, mutational decode fuzzer, golden vectors) and 75b1efe `scripts/engine-gate.sh` (one JSON line:
+  correct + payments/s). 6 injected engine bugs all caught.
+- `engine-opt` (9 accepted commits f9bcb29…db8a5e7, all attempts logged in crates/lean-bench/OPTIMIZATION.md):
+  sort/merge execute instead of per-block HashMaps, commitment keccak overlapped with recovery, keyed fast
+  address hasher, in-place apply, 64-shard account map with parallel apply, one-pass decode+recover with the
+  signing hash taken from wire bytes, counting-sort credits, parallel write-set merge.
+
+**Measured** (engine only, i7-11700F 8C/16T, pinned 8 threads, blocks 99.9–100 % full, K=5 alternating medians)
+| scenario | before | after |
+|---|---|---|
+| 1e6 accounts, N=1, 450 M | 191,904 tx/s | 230,070 (1.20x; 96 % ecrecover — at the libsecp256k1 ceiling) |
+| 1e6, N=100, 450 M | 1,793,186 payments/s | **9,045,787 (5.04x)** |
+| 1e6, mixed N, 450 M | 1,552,652 | 4,915,746 (3.17x) |
+| 1e7, N=100, 450 M | 1,468,397 | 8,282,018 (5.64x) |
+| e2e through a real node, N=10 (fsync / no-fsync) | 485k / 509k | 616k / 657k (+27 / +29 %) |
+- Gate (controller re-run): correct=true, geomean 2,131,036 payments/s (baseline 800,493); diff 80,000 blocks,
+  fuzz 1,000,000 inputs; workspace 213 tests green. Safety-net runs: 500,000 adversarial blocks + 5M fuzz
+  inputs, zero engine/oracle/spec mismatches.
+- Final single-thread profile at N=100: ecrecover 53.9 %, execute 14.4 %, three keccaks ~9–10 % each
+  (all required). Recovery scales 7.3x on 8 cores, +9 % at 16 threads.
+
+**Decided** — skydiscover deferred: the remaining cost is libsecp256k1 + mandatory keccaks; the gate script is
+ready if a later profile shows an open design space. The lean engine is ~60x above today's fleet rate at N=100
+(9.0M vs 145–148k payments/s): consensus byte transport is the limit, not the lane.
+
+**Open** — shard index (top 6 address bits) is unkeyed: an adversary can crowd one shard (slows that shard's
+apply only); rayon overhead on tiny blocks (no serial cut-off); glibc page re-faulting (~+9 % from malloc tuning,
+binary-level); balance overflow near 2^128 (oracle panics, engine wraps) — decide checked-add semantics; the
+engine's genesis loader duplicates the node's main.rs loop.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
