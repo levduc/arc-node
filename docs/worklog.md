@@ -1542,3 +1542,30 @@ engine's genesis loader duplicates the node's main.rs loop.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
+
+## 2026-09-25 (evening) — comprehensive fleet test of the push candidates: all five legs pass; the 30-min decline is gone
+
+Stack: arc `lean-lane` @ ede2651 (image), lean-lane `engine` @ 554232e (optimized engine), 4 machines, one spammer
+per machine, runner `lean-lane/bench/fleet`. Every lean sample below 100 % full; 0 CL crash-restarts throughout.
+
+| leg | run | result |
+|---|---|---|
+| T1 400 M, N=100, 10 min | run-0925-2042 | 112–116 blocks/min, **143,173–148,287 payments/s**, 767/767 full, staged anchors 94.6–100 %, 4/4 identical at 1193 |
+| T2 N=1, 450 M, 6 min | run-0925-2055 | **115–116 blocks/min, 33,172–33,460 tx/s** (Sept 15: 108.6–110.6, 31,317–31,910 — +5 %, now at the pacer), 17,307/17,307 full, 4/4 at 738 |
+| T3 400 M under faults | run-0925-2104 | lean node 3 killed 60 s @2½ min: caught up in 12 s, CL restarts 0, not parked; CL 2 `docker restart` @6½ min: rejoined in 2 s, no dip; **during the lean outage cadence fell to 77 then 49 blocks/min (98,432 / 62,638 payments/s)** — the lean-less validator misses every proposer turn (3 s propose timeout); recovered to 115–118 (up to 150,843); 4/4 at 1102 |
+| T4 EVM lane only (lane off), 150 M | run-0925-2116 | 85–91 blocks/min, 6,254–7,572 tx/s, 60–74 % full (EVM lane behaviour as before), 4/4 EL hash agreement at 503 |
+| T5 400 M, 30-min soak | run-0925-2124 | **mean 114.5 blocks/min (1.91 blk/s), 140,617–148,287 payments/s, 29/29 samples 767/767 full, no decline** (first 10 min ≈ last 10 min); staged anchors 3487/3516/3470/3514 of 3516, grace misses 0/0/12/0, blocks = head on all (no double append), 4/4 identical at 3486 |
+
+**Retracted / resolved** — the "~4–8 % late decline over 30-min soaks" (F10, F14, F28) does not reproduce on this
+stack: T5 is flat. Most likely the removed receipt ring (lean RSS ~2 GB → ~300 MB) and the leaner execution path;
+not isolated, n=1.
+
+**New finding** — a single validator's lean-node outage costs ~58 % throughput for its duration (its proposer turns
+time out). BRAINSTORM fix: when the lean node is unreachable, the proposer builds an EMPTY lean block itself from its
+own last header's commitment (number+1, same timestamp rule, zero txs) instead of missing the turn.
+T3 side effect: validator 3's load generator died with its lean node (runner does not restart it).
+
+Samples + logs: `~/lean-lane-engine/bench/runs/run-0925-*`; chain data purged after this record.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YPWyXFV8A1u4RpuQmquB7S
